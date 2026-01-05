@@ -12,7 +12,8 @@ services:
     environment:
       - STORAGE_PATH=/data/boms
       - LOG_LEVEL=info
-      - BASE_URL=http://localhost:8081
+      # Set BASE_URL for production, defaults to http://localhost:8080
+      # - BASE_URL=https://pastebom.com
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
