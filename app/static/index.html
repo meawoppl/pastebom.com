@@ -100,6 +100,57 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        .history {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: #16213e;
+            border-radius: 8px;
+        }
+        .history h2 {
+            color: #4ecca3;
+            font-size: 1.1rem;
+            margin: 0 0 1rem 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .history-clear {
+            background: transparent;
+            color: #888;
+            font-size: 0.8rem;
+            padding: 0.25rem 0.5rem;
+            margin: 0;
+        }
+        .history-clear:hover { color: #ff6b6b; background: transparent; }
+        .history-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .history-list li {
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #2a2a4e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+        .history-list li:last-child { border-bottom: none; }
+        .history-list a {
+            color: #4ecca3;
+            text-decoration: none;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .history-list a:hover { text-decoration: underline; }
+        .history-list .history-meta {
+            color: #666;
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+        .history-empty { color: #666; font-style: italic; }
     </style>
 </head>
 <body>
@@ -136,10 +187,61 @@
 
     <div class="result" id="result"></div>
 
+    <div class="history" id="history"></div>
+
     <script>
         const dropzone = document.getElementById('dropzone');
         const fileInput = document.getElementById('fileInput');
         const result = document.getElementById('result');
+        const historyEl = document.getElementById('history');
+        const STORAGE_KEY = 'pastebom_history';
+        const MAX_HISTORY = 20;
+
+        function getHistory() {
+            try {
+                return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+            } catch {
+                return [];
+            }
+        }
+
+        function saveToHistory(bom) {
+            const history = getHistory();
+            history.unshift({
+                url: bom.url,
+                filename: bom.filename,
+                components: bom.components,
+                created: new Date().toISOString()
+            });
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
+            renderHistory();
+        }
+
+        function clearHistory() {
+            localStorage.removeItem(STORAGE_KEY);
+            renderHistory();
+        }
+
+        function renderHistory() {
+            const history = getHistory();
+            if (history.length === 0) {
+                historyEl.innerHTML = '';
+                return;
+            }
+            const items = history.map(h => {
+                const date = new Date(h.created).toLocaleDateString();
+                return `<li>
+                    <a href="${h.url}" target="_blank" title="${h.filename}">${h.filename}</a>
+                    <span class="history-meta">${h.components} parts - ${date}</span>
+                </li>`;
+            }).join('');
+            historyEl.innerHTML = `
+                <h2>Recent BOMs <button class="history-clear" onclick="clearHistory()">Clear</button></h2>
+                <ul class="history-list">${items}</ul>
+            `;
+        }
+
+        renderHistory();
 
         dropzone.addEventListener('click', () => fileInput.click());
         dropzone.addEventListener('dragover', (e) => {
@@ -192,6 +294,8 @@
                 if (!response.ok) {
                     throw new Error(data.detail?.message || data.message || 'Upload failed');
                 }
+
+                saveToHistory(data);
 
                 result.innerHTML = `
                     <p>Your PasteBOM is ready:</p>
