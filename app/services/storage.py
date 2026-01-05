@@ -63,14 +63,13 @@ class S3Storage:
 
         Returns the S3 key for the HTML file.
         """
-        # Store HTML with public-read ACL
+        # Store HTML (bucket policy controls public access)
         html_key = self._bom_key(bom_id)
         self.s3.put_object(
             Bucket=self.bucket,
             Key=html_key,
             Body=html.encode("utf-8"),
             ContentType="text/html; charset=utf-8",
-            ACL="public-read",
         )
         logger.info(f"Stored BOM: s3://{self.bucket}/{html_key}")
 
