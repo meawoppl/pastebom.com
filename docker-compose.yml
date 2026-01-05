@@ -11,7 +11,7 @@ services:
       - LOG_LEVEL=info
       # S3 configuration (required)
       - S3_BUCKET=${S3_BUCKET}
-      - S3_REGION=${S3_REGION:-us-east-1}
+      - S3_REGION=${S3_REGION:-us-west-2}
       - S3_UPLOADS_PREFIX=${S3_UPLOADS_PREFIX:-uploads}
       - S3_BOMS_PREFIX=${S3_BOMS_PREFIX:-boms}
       # Optional: for LocalStack/MinIO testing

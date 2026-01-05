@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # S3 storage configuration
     S3_BUCKET: str  # Required - bucket name
-    S3_REGION: str = "us-east-1"
+    S3_REGION: str = "us-west-2"
     S3_ENDPOINT_URL: Optional[str] = None  # For LocalStack/MinIO testing
     S3_UPLOADS_PREFIX: str = "uploads"
     S3_BOMS_PREFIX: str = "boms"
