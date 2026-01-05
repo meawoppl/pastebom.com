@@ -203,6 +203,11 @@ class BomGenerator:
                 "components": len(components),
             }
 
+        except Exception as e:
+            # Move failed upload to failed folder for regression testing
+            self.storage.move_to_failed(bom_id, filename, str(e))
+            raise
+
         finally:
             os.unlink(tmp_path)
 

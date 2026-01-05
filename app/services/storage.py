@@ -20,6 +20,7 @@ class S3Storage:
         self.region = settings.S3_REGION
         self.uploads_prefix = settings.S3_UPLOADS_PREFIX
         self.boms_prefix = settings.S3_BOMS_PREFIX
+        self.failed_prefix = settings.S3_FAILED_PREFIX
 
         # Create S3 client
         client_kwargs = {"region_name": self.region}
@@ -121,3 +122,38 @@ class S3Storage:
             if e.response["Error"]["Code"] == "404":
                 return False
             raise
+
+    def move_to_failed(self, bom_id: str, filename: str, error: str) -> None:
+        """
+        Move an upload to the failed folder for regression testing.
+
+        Copies the original upload and adds an error log file.
+        """
+        src_key = self._upload_key(bom_id, filename)
+        dest_key = f"{self.failed_prefix}/{bom_id}/{filename}"
+
+        # Copy the file to failed folder
+        try:
+            self.s3.copy_object(
+                Bucket=self.bucket,
+                CopySource={"Bucket": self.bucket, "Key": src_key},
+                Key=dest_key,
+            )
+            logger.info(f"Copied failed upload to: s3://{self.bucket}/{dest_key}")
+
+            # Store error info
+            error_key = f"{self.failed_prefix}/{bom_id}/error.txt"
+            self.s3.put_object(
+                Bucket=self.bucket,
+                Key=error_key,
+                Body=error.encode("utf-8"),
+                ContentType="text/plain",
+            )
+            logger.info(f"Stored error log: s3://{self.bucket}/{error_key}")
+
+            # Delete from uploads folder
+            self.s3.delete_object(Bucket=self.bucket, Key=src_key)
+            logger.info(f"Deleted original upload: s3://{self.bucket}/{src_key}")
+
+        except ClientError as e:
+            logger.error(f"Failed to move upload to failed folder: {e}")
