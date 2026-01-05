@@ -96,24 +96,31 @@ async def upload(
     try:
         result = generator.generate(content, file.filename, config_overrides)
     except ValueError as e:
+        logging.warning(f"Unsupported format: {e}")
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "unsupported_format",
-                "message": str(e),
-                "supported": [".kicad_pcb", ".json", ".brd", ".fbrd"]
+                "message": "Unsupported file format. Please upload a KiCad, EasyEDA, or Eagle file.",
             }
         )
     except RuntimeError as e:
+        logging.warning(f"Parse error: {e}")
         raise HTTPException(
             status_code=422,
-            detail={"error": "parse_error", "message": str(e)}
+            detail={
+                "error": "parse_error",
+                "message": "Failed to parse PCB file. Please check the file is valid.",
+            }
         )
     except Exception as e:
         logging.exception("Generation error")
         raise HTTPException(
             status_code=500,
-            detail={"error": "generation_error", "message": str(e)}
+            detail={
+                "error": "generation_error",
+                "message": "An error occurred while generating the BOM. Please try again.",
+            }
         )
 
     return BomResponse(
