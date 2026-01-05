@@ -237,6 +237,7 @@
             }).join('');
             historyEl.innerHTML = `
                 <h2>Recent BOMs <button class="history-clear" onclick="clearHistory()">Clear</button></h2>
+                <p class="meta" style="margin-bottom: 0.5rem;">Stored in browser cookies. Save links before clearing.</p>
                 <ul class="history-list">${items}</ul>
             `;
         }
@@ -304,7 +305,6 @@
                     <button onclick="copyToClipboard('${data.url}')">
                         Copy Link
                     </button>
-                    <p class="meta" style="margin-top: 1rem;">Save this link! It won't be emailed or stored in your account.</p>
                 `;
             } catch (err) {
                 result.classList.add('error');
