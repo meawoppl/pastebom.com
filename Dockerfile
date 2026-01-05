@@ -52,11 +52,7 @@ COPY --from=base /opt/InteractiveHtmlBom /app/InteractiveHtmlBom
 # Copy application
 COPY app/ /app/app/
 
-# Create data directory
-RUN mkdir -p /data/boms
-
 # Environment
-ENV STORAGE_PATH=/data/boms
 ENV LOG_LEVEL=info
 
 EXPOSE 8080
