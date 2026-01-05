@@ -116,15 +116,15 @@
         <summary>Advanced options</summary>
         <div class="options-grid">
             <label>
-                <input type="checkbox" id="opt-dark-mode">
+                <input type="checkbox" id="opt-dark-mode" checked>
                 Dark mode default
             </label>
             <label>
-                <input type="checkbox" id="opt-include-tracks">
+                <input type="checkbox" id="opt-include-tracks" checked>
                 Include tracks
             </label>
             <label>
-                <input type="checkbox" id="opt-include-nets">
+                <input type="checkbox" id="opt-include-nets" checked>
                 Include nets
             </label>
             <label>
@@ -163,20 +163,12 @@
         });
 
         function getConfigOverrides() {
-            const config = {};
-            if (document.getElementById('opt-dark-mode').checked) {
-                config.dark_mode = true;
-            }
-            if (document.getElementById('opt-include-tracks').checked) {
-                config.include_tracks = true;
-            }
-            if (document.getElementById('opt-include-nets').checked) {
-                config.include_nets = true;
-            }
-            if (document.getElementById('opt-show-fabrication').checked) {
-                config.show_fabrication = true;
-            }
-            return Object.keys(config).length > 0 ? config : null;
+            return {
+                dark_mode: document.getElementById('opt-dark-mode').checked,
+                include_tracks: document.getElementById('opt-include-tracks').checked,
+                include_nets: document.getElementById('opt-include-nets').checked,
+                show_fabrication: document.getElementById('opt-show-fabrication').checked
+            };
         }
 
         async function uploadFile(file) {
@@ -187,11 +179,7 @@
 
             const formData = new FormData();
             formData.append('file', file);
-
-            const configOverrides = getConfigOverrides();
-            if (configOverrides) {
-                formData.append('config', JSON.stringify(configOverrides));
-            }
+            formData.append('config', JSON.stringify(getConfigOverrides()));
 
             try {
                 const response = await fetch('/upload', {
@@ -206,12 +194,13 @@
                 }
 
                 result.innerHTML = `
-                    <p>Your BOM is ready:</p>
+                    <p>Your PasteBOM is ready:</p>
                     <a href="${data.url}" target="_blank">${data.url}</a>
                     <p class="meta">${data.filename} - ${data.components} components</p>
                     <button onclick="copyToClipboard('${data.url}')">
                         Copy Link
                     </button>
+                    <p class="meta" style="margin-top: 1rem;">Save this link! It won't be emailed or stored in your account.</p>
                 `;
             } catch (err) {
                 result.classList.add('error');
