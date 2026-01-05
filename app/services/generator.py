@@ -1,6 +1,5 @@
 """BOM Generator Service - wraps InteractiveHtmlBom for headless use."""
 
-import io
 import json
 import logging
 import os
@@ -9,6 +8,9 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+from .storage import S3Storage
 
 # Set NO_DISPLAY and CLI_MODE env vars to skip wx imports in InteractiveHtmlBom
 os.environ["INTERACTIVE_HTML_BOM_NO_DISPLAY"] = "1"
@@ -109,9 +111,8 @@ class HeadlessConfig:
 class BomGenerator:
     """Generates interactive HTML BOMs from PCB files."""
 
-    def __init__(self, storage_path: str):
-        self.storage_path = Path(storage_path)
-        self.storage_path.mkdir(parents=True, exist_ok=True)
+    def __init__(self, storage: S3Storage):
+        self.storage = storage
         self.logger = HeadlessLogger()
         self._ibom_version = None
 
@@ -163,6 +164,12 @@ class BomGenerator:
             **(config_overrides or {})
         )
 
+        # Generate UUID upfront so we can store upload with same ID
+        bom_id = str(uuid.uuid4())
+
+        # Store original upload to S3 for durability
+        self.storage.store_upload(bom_id, filename, file_content)
+
         # Write to temp file (parsers expect file path)
         ext = os.path.splitext(filename)[1]
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
@@ -187,8 +194,7 @@ class BomGenerator:
             # Generate HTML
             html_content = self._render_html(pcbdata, config, LZString, round_floats)
 
-            # Store with UUID
-            bom_id = str(uuid.uuid4())
+            # Store to S3
             self._store(bom_id, html_content, filename, len(components))
 
             return {
@@ -247,19 +253,7 @@ class BomGenerator:
         filename: str,
         components: int
     ) -> None:
-        """Store the generated HTML and metadata."""
-
-        # Shard by first 2 chars of UUID
-        shard = bom_id[:2]
-        shard_dir = self.storage_path / shard
-        shard_dir.mkdir(exist_ok=True)
-
-        # Write HTML
-        html_path = shard_dir / f"{bom_id}.html"
-        html_path.write_text(html_content, encoding="utf-8")
-
-        # Write metadata
-        meta_path = shard_dir / f"{bom_id}.meta.json"
+        """Store the generated HTML and metadata to S3."""
         meta = {
             "id": bom_id,
             "filename": filename,
@@ -267,20 +261,14 @@ class BomGenerator:
             "file_size": len(html_content.encode("utf-8")),
             "created_at": datetime.utcnow().isoformat() + "Z",
         }
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        self.storage.store_bom(bom_id, html_content, meta)
 
-    def get(self, bom_id: str) -> str | None:
-        """Retrieve stored HTML by UUID."""
-        shard = bom_id[:2]
-        html_path = self.storage_path / shard / f"{bom_id}.html"
-        if html_path.exists():
-            return html_path.read_text(encoding="utf-8")
-        return None
+    def get_bom_url(self, bom_id: str) -> Optional[str]:
+        """Get public URL for a BOM."""
+        if not self.storage.bom_exists(bom_id):
+            return None
+        return self.storage.get_bom_url(bom_id)
 
-    def get_meta(self, bom_id: str) -> dict | None:
-        """Retrieve metadata by UUID."""
-        shard = bom_id[:2]
-        meta_path = self.storage_path / shard / f"{bom_id}.meta.json"
-        if meta_path.exists():
-            return json.loads(meta_path.read_text(encoding="utf-8"))
-        return None
+    def get_meta(self, bom_id: str) -> Optional[dict]:
+        """Retrieve metadata from S3."""
+        return self.storage.get_meta(bom_id)

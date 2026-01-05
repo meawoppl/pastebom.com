@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
+from .services.storage import S3Storage
 from .services.generator import BomGenerator
 from .models.bom import BomResponse, BomMeta
 
@@ -26,8 +27,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Initialize generator
-generator = BomGenerator(settings.STORAGE_PATH)
+# Initialize storage and generator
+storage = S3Storage()
+generator = BomGenerator(storage)
 
 # Serve static files
 static_dir = Path(__file__).parent / "static"
@@ -124,13 +126,13 @@ async def upload(
     )
 
 
-@app.get("/b/{bom_id}", response_class=HTMLResponse)
+@app.get("/b/{bom_id}")
 async def view_bom(bom_id: str):
-    """View a generated BOM."""
-    html = generator.get(bom_id)
-    if html is None:
+    """Redirect to generated BOM on S3."""
+    url = generator.get_bom_url(bom_id)
+    if url is None:
         raise HTTPException(status_code=404, detail="BOM not found")
-    return HTMLResponse(content=html)
+    return RedirectResponse(url=url, status_code=302)
 
 
 @app.get("/b/{bom_id}/meta")
