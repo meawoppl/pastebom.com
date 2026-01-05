@@ -14,6 +14,7 @@ services:
       - S3_REGION=${S3_REGION:-us-west-2}
       - S3_UPLOADS_PREFIX=${S3_UPLOADS_PREFIX:-uploads}
       - S3_BOMS_PREFIX=${S3_BOMS_PREFIX:-boms}
+      - S3_FAILED_PREFIX=${S3_FAILED_PREFIX:-failed}
       # Optional: for LocalStack/MinIO testing
       # - S3_ENDPOINT_URL=http://localhost:4566
       # AWS credentials (or use IAM role)

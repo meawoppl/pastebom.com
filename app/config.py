@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     S3_ENDPOINT_URL: Optional[str] = None  # For LocalStack/MinIO testing
     S3_UPLOADS_PREFIX: str = "uploads"
     S3_BOMS_PREFIX: str = "boms"
+    S3_FAILED_PREFIX: str = "failed"
 
     # BOM defaults
     DEFAULT_DARK_MODE: bool = False
