@@ -1,0 +1,20 @@
+services:
+  ibom-gist:
+    build:
+      context: .
+      args:
+        IBOM_REPO: https://github.com/meawoppl/InteractiveHtmlBom.git
+        IBOM_BRANCH: meawoppl/optional-wx-dep
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./data:/data/boms
+    environment:
+      - STORAGE_PATH=/data/boms
+      - LOG_LEVEL=info
+      - BASE_URL=http://localhost:8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
