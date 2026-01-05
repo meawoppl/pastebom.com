@@ -3,12 +3,20 @@
 # =============================================================================
 FROM kicad/kicad:8.0 AS base
 
-# Install Python dependencies
+USER root
+
+# Install Python dependencies and git for cloning
 RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-venv \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
+
+# Clone InteractiveHtmlBom fork
+ARG IBOM_REPO=https://github.com/meawoppl/InteractiveHtmlBom.git
+ARG IBOM_BRANCH=meawoppl/optional-wx-dep
+RUN git clone --depth 1 --branch ${IBOM_BRANCH} ${IBOM_REPO} /opt/InteractiveHtmlBom
 
 # Create venv to avoid system package conflicts
 RUN python3 -m venv /opt/venv
@@ -23,6 +31,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # =============================================================================
 FROM kicad/kicad:8.0
 
+USER root
+
 # Install curl for healthcheck
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
@@ -30,14 +40,14 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY --from=base /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Set up KiCad Python path
-ENV PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH}"
+# Set up KiCad Python path - append after venv to avoid conflicts
+ENV PYTHONPATH="/opt/venv/lib/python3.11/site-packages:/usr/lib/python3/dist-packages"
 
 # Create app directory
 WORKDIR /app
 
-# Copy InteractiveHtmlBom (should be vendored or submodule)
-COPY InteractiveHtmlBom/ /app/InteractiveHtmlBom/
+# Copy InteractiveHtmlBom from build stage
+COPY --from=base /opt/InteractiveHtmlBom /app/InteractiveHtmlBom
 
 # Copy application
 COPY app/ /app/app/
