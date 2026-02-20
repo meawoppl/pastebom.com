@@ -16,7 +16,8 @@ RUN apt-get update && apt-get install -y \
 # Clone InteractiveHtmlBom fork
 ARG IBOM_REPO=https://github.com/openscopeproject/InteractiveHtmlBom.git
 ARG IBOM_BRANCH=master
-RUN git clone --depth 1 --branch ${IBOM_BRANCH} ${IBOM_REPO} /opt/InteractiveHtmlBom
+RUN git clone --depth 1 --branch ${IBOM_BRANCH} ${IBOM_REPO} /opt/InteractiveHtmlBom \
+    && echo "" > /opt/InteractiveHtmlBom/__init__.py
 
 # Create venv to avoid system package conflicts
 RUN python3 -m venv /opt/venv
