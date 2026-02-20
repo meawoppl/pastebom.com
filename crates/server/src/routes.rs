@@ -30,6 +30,8 @@ async fn health() -> &'static str {
 #[derive(Serialize)]
 struct UploadResponse {
     url: String,
+    id: String,
+    components: usize,
 }
 
 #[derive(Serialize)]
@@ -56,6 +58,12 @@ async fn upload(
     }
 
     let (filename, data) = file_data.ok_or_else(|| error_response("No file uploaded"))?;
+
+    // Validate file size (50 MB limit)
+    const MAX_SIZE: usize = 50 * 1024 * 1024;
+    if data.len() > MAX_SIZE {
+        return Err(error_response("File too large (50 MB limit)"));
+    }
 
     // Detect format from filename
     let path = std::path::Path::new(&filename);
@@ -104,10 +112,13 @@ async fn upload(
         .put_object(&upload_key, data, "application/octet-stream")
         .await;
 
+    let component_count = pcb_data.footprints.len();
     let base_url =
         std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
     Ok(Json(UploadResponse {
         url: format!("{base_url}/b/{id}"),
+        id: id.clone(),
+        components: component_count,
     }))
 }
 

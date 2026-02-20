@@ -1,7 +1,9 @@
+use crate::bom::{generate_bom, BomConfig};
 use crate::error::ExtractError;
 use crate::parsers::kicad_sexpr::{self, SExpr};
 use crate::types::*;
 use crate::ExtractOptions;
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 /// Parse a KiCad .kicad_pcb file from bytes into PcbData.
@@ -53,13 +55,28 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         }
     }
 
-    // Parse footprints
-    let footprints: Vec<Footprint> = root
+    // Parse footprints and collect component data for BOM
+    let fp_nodes: Vec<&SExpr> = root
         .find_all("footprint")
         .into_iter()
-        .chain(root.find_all("module").into_iter()) // KiCad 5 compat
-        .map(|fp| parse_footprint(fp, &layer_map, &nets))
+        .chain(root.find_all("module").into_iter())
         .collect();
+
+    let mut footprints = Vec::new();
+    let mut components = Vec::new();
+
+    for (idx, fp) in fp_nodes.iter().enumerate() {
+        let (footprint, comp) = parse_footprint(fp, &layer_map, &nets, idx);
+        footprints.push(footprint);
+        components.push(comp);
+    }
+
+    // Generate BOM
+    let bom = Some(generate_bom(
+        &footprints,
+        &components,
+        &BomConfig::default(),
+    ));
 
     // Parse tracks and zones if requested
     let (tracks, zones) = if opts.include_tracks {
@@ -95,7 +112,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         },
         footprints,
         metadata,
-        bom: None,
+        bom,
         ibom_version: None,
         tracks,
         zones,
@@ -260,10 +277,9 @@ fn parse_gr_circle(node: &SExpr) -> Option<(Drawing, String)> {
     let radius = (dx * dx + dy * dy).sqrt();
     let width = parse_width(node);
     let fill_node = node.find("fill");
-    let filled =
-        fill_node
-            .and_then(|f| f.value("type"))
-            .map(|t| if t == "solid" { 1u8 } else { 0u8 });
+    let filled = fill_node
+        .and_then(|f| f.value("type"))
+        .map(|t| if t == "solid" { 1u8 } else { 0u8 });
     let layer = get_layer_name(node);
     Some((
         Drawing::Circle {
@@ -375,7 +391,12 @@ fn parse_gr_poly(node: &SExpr) -> Option<(Drawing, String)> {
 
 // ─── Footprint parsing ──────────────────────────────────────────────
 
-fn parse_footprint(node: &SExpr, _layer_map: &KicadLayerMap, nets: &[String]) -> Footprint {
+fn parse_footprint(
+    node: &SExpr,
+    _layer_map: &KicadLayerMap,
+    nets: &[String],
+    footprint_index: usize,
+) -> (Footprint, Component) {
     // Footprint position
     let at_node = node.find("at");
     let fp_x = at_node.and_then(|n| n.f64_at(0)).unwrap_or(0.0);
@@ -386,11 +407,15 @@ fn parse_footprint(node: &SExpr, _layer_map: &KicadLayerMap, nets: &[String]) ->
     let fp_layer = get_layer_name(node);
     let side = if fp_layer.starts_with("B.") { "B" } else { "F" };
 
-    // Reference
-    let mut ref_ = String::new();
-    let mut _value = String::new();
+    // Footprint library name (e.g. "Resistor_SMD:R_0402_1005Metric")
+    let fp_lib_name = node.atom_at(0).unwrap_or("").to_string();
 
-    // Parse fp_text / property nodes for ref and value
+    // Reference, value, and extra fields
+    let mut ref_ = String::new();
+    let mut value = String::new();
+    let mut extra_fields: HashMap<String, String> = HashMap::new();
+    let mut attr = None;
+
     for child in node.children() {
         match child.tag() {
             Some("fp_text") => {
@@ -398,7 +423,13 @@ fn parse_footprint(node: &SExpr, _layer_map: &KicadLayerMap, nets: &[String]) ->
                 let text_val = child.atom_at(1).unwrap_or("");
                 match text_type {
                     "reference" => ref_ = text_val.to_string(),
-                    "value" => _value = text_val.to_string(),
+                    "value" => value = text_val.to_string(),
+                    "user" => {
+                        let field_name = text_val.to_string();
+                        if !field_name.is_empty() {
+                            extra_fields.insert(format!("user_{}", extra_fields.len()), field_name);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -407,9 +438,16 @@ fn parse_footprint(node: &SExpr, _layer_map: &KicadLayerMap, nets: &[String]) ->
                 let prop_val = child.atom_at(1).unwrap_or("");
                 match prop_name {
                     "Reference" => ref_ = prop_val.to_string(),
-                    "Value" => _value = prop_val.to_string(),
-                    _ => {}
+                    "Value" => value = prop_val.to_string(),
+                    "Footprint" | "ki_fp_filters" | "ki_description" => {}
+                    _ => {
+                        extra_fields.insert(prop_name.to_string(), prop_val.to_string());
+                    }
                 }
+            }
+            Some("attr") => {
+                // Component attributes (e.g. "smd", "through_hole", "virtual", "board_only")
+                attr = child.atom_at(0).map(|s| s.to_string());
             }
             _ => {}
         }
@@ -422,20 +460,22 @@ fn parse_footprint(node: &SExpr, _layer_map: &KicadLayerMap, nets: &[String]) ->
         .map(|p| parse_pad(p, fp_x, fp_y, fp_angle, nets))
         .collect();
 
-    // Parse footprint drawings (on copper layers)
+    // Parse footprint drawings
     let mut drawings = Vec::new();
     for child in node.children() {
         let tag = match child.tag() {
             Some(t) => t,
             None => continue,
         };
+
+        // Handle shape drawings
         let graphic = match tag {
             "fp_line" => parse_fp_line(child, fp_x, fp_y, fp_angle),
             "fp_rect" => parse_fp_rect(child, fp_x, fp_y, fp_angle),
             "fp_circle" => parse_fp_circle(child, fp_x, fp_y, fp_angle),
             "fp_arc" => parse_fp_arc(child, fp_x, fp_y, fp_angle),
             "fp_poly" => parse_fp_poly(child, fp_x, fp_y, fp_angle),
-            _ => continue,
+            _ => None,
         };
         if let Some((drawing, layer_name)) = graphic {
             if let Some(s) = layer_to_side(&layer_name) {
@@ -447,6 +487,22 @@ fn parse_footprint(node: &SExpr, _layer_map: &KicadLayerMap, nets: &[String]) ->
                         layer: s.to_string(),
                         drawing: FootprintDrawingItem::Shape(drawing),
                     });
+                }
+            }
+        }
+
+        // Handle text drawings
+        if tag == "fp_text" || tag == "property" {
+            if let Some((text_drawing, layer_name)) =
+                parse_fp_text(child, tag, fp_x, fp_y, fp_angle)
+            {
+                if let Some(s) = layer_to_side(&layer_name) {
+                    if layer_name.contains("Silk") || layer_name.contains("Fab") {
+                        drawings.push(FootprintDrawing {
+                            layer: s.to_string(),
+                            drawing: FootprintDrawingItem::Text(text_drawing),
+                        });
+                    }
                 }
             }
         }
@@ -480,14 +536,28 @@ fn parse_footprint(node: &SExpr, _layer_map: &KicadLayerMap, nets: &[String]) ->
         angle: fp_angle,
     };
 
-    Footprint {
-        ref_,
+    let comp_side = if side == "B" { Side::Back } else { Side::Front };
+
+    let footprint = Footprint {
+        ref_: ref_.clone(),
         center: [fp_x, fp_y],
         bbox: fp_bbox,
         pads,
         drawings,
         layer: side.to_string(),
-    }
+    };
+
+    let component = Component {
+        ref_: ref_,
+        val: value,
+        footprint_name: fp_lib_name,
+        layer: comp_side,
+        footprint_index,
+        extra_fields,
+        attr,
+    };
+
+    (footprint, component)
 }
 
 // ─── Pad parsing ─────────────────────────────────────────────────────
@@ -702,10 +772,9 @@ fn parse_fp_circle(node: &SExpr, fp_x: f64, fp_y: f64, fp_angle: f64) -> Option<
     let width = parse_width(node);
     let layer = get_layer_name(node);
     let fill_node = node.find("fill");
-    let filled =
-        fill_node
-            .and_then(|f| f.value("type"))
-            .map(|t| if t == "solid" { 1u8 } else { 0u8 });
+    let filled = fill_node
+        .and_then(|f| f.value("type"))
+        .map(|t| if t == "solid" { 1u8 } else { 0u8 });
     Some((
         Drawing::Circle {
             start: [cx, cy],
@@ -788,6 +857,106 @@ fn parse_fp_poly(node: &SExpr, fp_x: f64, fp_y: f64, fp_angle: f64) -> Option<(D
             polygons: vec![points],
             filled: Some(1),
             width,
+        },
+        layer,
+    ))
+}
+
+// ─── Text extraction ─────────────────────────────────────────────────
+
+fn parse_fp_text(
+    node: &SExpr,
+    tag: &str,
+    fp_x: f64,
+    fp_y: f64,
+    fp_angle: f64,
+) -> Option<(TextDrawing, String)> {
+    let (text_type, text_val, layer) = if tag == "fp_text" {
+        let text_type = node.atom_at(0)?;
+        let text_val = node.atom_at(1).unwrap_or("");
+        let layer = get_layer_name(node);
+        (text_type, text_val, layer)
+    } else {
+        // KiCad 8+ property node
+        let prop_name = node.atom_at(0)?;
+        let text_val = node.atom_at(1).unwrap_or("");
+        let layer = get_layer_name(node);
+        // Map property name to text type
+        let text_type = match prop_name {
+            "Reference" => "reference",
+            "Value" => "value",
+            _ => "user",
+        };
+        (text_type, text_val, layer)
+    };
+
+    // Skip hidden text
+    if node.find("hide").is_some() {
+        return None;
+    }
+
+    // Get text position
+    let at_node = node.find("at");
+    let text_local_x = at_node.and_then(|n| n.f64_at(0)).unwrap_or(0.0);
+    let text_local_y = at_node.and_then(|n| n.f64_at(1)).unwrap_or(0.0);
+    let text_angle = at_node.and_then(|n| n.f64_at(2)).unwrap_or(0.0);
+
+    let (abs_x, abs_y) = rotate_and_translate(text_local_x, text_local_y, fp_x, fp_y, fp_angle);
+
+    // Get text effects (font size, thickness, justification)
+    let effects = node.find("effects");
+    let font = effects.and_then(|e| e.find("font"));
+    let size_node = font.and_then(|f| f.find("size"));
+    let height = size_node.and_then(|s| s.f64_at(0)).unwrap_or(1.0);
+    let width = size_node.and_then(|s| s.f64_at(1)).unwrap_or(1.0);
+    let thickness = font.and_then(|f| f.value_f64("thickness")).unwrap_or(0.15);
+
+    // Justification
+    let justify = effects.and_then(|e| e.find("justify"));
+    let mut jx: i8 = 0; // 0=center, -1=left, 1=right
+    let mut jy: i8 = 0; // 0=center, -1=top, 1=bottom
+    if let Some(j) = justify {
+        for child in j.children() {
+            match child.as_atom() {
+                Some("left") => jx = -1,
+                Some("right") => jx = 1,
+                Some("top") => jy = -1,
+                Some("bottom") => jy = 1,
+                Some("mirror") => {}
+                _ => {}
+            }
+        }
+    }
+
+    let is_ref = if text_type == "reference" {
+        Some(1u8)
+    } else {
+        None
+    };
+    let is_val = if text_type == "value" {
+        Some(1u8)
+    } else {
+        None
+    };
+
+    let mut attrs = Vec::new();
+    if font.and_then(|f| f.find("italic")).is_some() {
+        attrs.push("italic".to_string());
+    }
+
+    Some((
+        TextDrawing {
+            svgpath: None,
+            thickness: Some(thickness),
+            is_ref,
+            val: is_val,
+            pos: Some([abs_x, abs_y]),
+            text: Some(text_val.to_string()),
+            height: Some(height),
+            width: Some(width),
+            justify: Some([jx, jy]),
+            angle: Some(text_angle + fp_angle),
+            attr: if attrs.is_empty() { None } else { Some(attrs) },
         },
         layer,
     ))

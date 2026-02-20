@@ -68,8 +68,8 @@ pub fn extract_bytes(
 ) -> Result<PcbData, ExtractError> {
     match format {
         PcbFormat::KiCad => parsers::kicad::parse(data, opts),
-        PcbFormat::EasyEda => todo!("EasyEDA parser not yet implemented"),
-        PcbFormat::Eagle => todo!("Eagle parser not yet implemented"),
+        PcbFormat::EasyEda => parsers::easyeda::parse(data, opts),
+        PcbFormat::Eagle => parsers::eagle::parse(data, opts),
         PcbFormat::Altium => parsers::altium::parse(data, opts),
     }
 }
