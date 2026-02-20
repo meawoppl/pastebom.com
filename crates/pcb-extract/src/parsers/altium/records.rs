@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ─── Parsed record types ─────────────────────────────────────────────
@@ -67,8 +65,6 @@ pub struct AltiumVia {
     pub y: i32,
     pub diameter: i32,
     pub hole_size: i32,
-    pub start_layer: u8,
-    pub end_layer: u8,
 }
 
 #[derive(Debug)]
@@ -79,7 +75,6 @@ pub struct AltiumFill {
     pub y1: i32,
     pub x2: i32,
     pub y2: i32,
-    pub rotation: f64,
 }
 
 // ─── Text property record parsers ────────────────────────────────────
@@ -216,22 +211,6 @@ fn parse_subrecords(data: &[u8]) -> Vec<(u8, Vec<u8>)> {
     records
 }
 
-/// Parse all records from a binary stream that uses subrecord encoding.
-/// Each logical record starts with a set of subrecords.
-fn parse_binary_records(data: &[u8]) -> Vec<Vec<(u8, Vec<u8>)>> {
-    // The stream is a flat sequence of subrecords.
-    // We need to group them into logical records.
-    // Tracks/Arcs/Vias/Fills: single subrecord per record
-    // Pads/Texts: multiple subrecords per record
-    //
-    // Since we can't reliably detect record boundaries without
-    // knowing the record type, we parse all subrecords and
-    // handle grouping in the specific parsers.
-    let all = parse_subrecords(data);
-    // For single-subrecord types, each subrecord is one record
-    all.into_iter().map(|sr| vec![sr]).collect()
-}
-
 pub fn parse_tracks(data: &[u8]) -> Vec<AltiumTrack> {
     let subrecords = parse_subrecords(data);
     subrecords
@@ -282,7 +261,7 @@ pub fn parse_vias(data: &[u8]) -> Vec<AltiumVia> {
     subrecords
         .into_iter()
         .filter_map(|(_tag, sr)| {
-            if sr.len() < 31 {
+            if sr.len() < 29 {
                 return None;
             }
             Some(AltiumVia {
@@ -291,8 +270,6 @@ pub fn parse_vias(data: &[u8]) -> Vec<AltiumVia> {
                 y: read_i32(&sr, 17),
                 diameter: read_i32(&sr, 21),
                 hole_size: read_i32(&sr, 25),
-                start_layer: read_u8(&sr, 29),
-                end_layer: read_u8(&sr, 30),
             })
         })
         .collect()
@@ -303,7 +280,7 @@ pub fn parse_fills(data: &[u8]) -> Vec<AltiumFill> {
     subrecords
         .into_iter()
         .filter_map(|(_tag, sr)| {
-            if sr.len() < 37 {
+            if sr.len() < 29 {
                 return None;
             }
             Some(AltiumFill {
@@ -313,7 +290,6 @@ pub fn parse_fills(data: &[u8]) -> Vec<AltiumFill> {
                 y1: read_i32(&sr, 17),
                 x2: read_i32(&sr, 21),
                 y2: read_i32(&sr, 25),
-                rotation: read_f64(&sr, 29),
             })
         })
         .collect()
@@ -383,4 +359,67 @@ pub fn parse_pads(data: &[u8]) -> Vec<AltiumPad> {
     }
 
     pads
+}
+
+// ─── Text records ───────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct AltiumText {
+    pub layer: u8,
+    pub component_id: u16,
+    pub x: i32,
+    pub y: i32,
+    pub height: i32,
+    pub rotation: f64,
+    pub text: String,
+    pub is_designator: bool,
+    pub is_comment: bool,
+}
+
+pub fn parse_texts(data: &[u8]) -> Vec<AltiumText> {
+    // Texts6 stream contains paired subrecords:
+    // Subrecord 0: text string (variable-length)
+    // Subrecord 1: text geometry (binary)
+    let all_subrecords = parse_subrecords(data);
+
+    let mut texts = Vec::new();
+    let mut i = 0;
+    while i + 1 < all_subrecords.len() {
+        let text_data = &all_subrecords[i].1;
+        let geom = &all_subrecords[i + 1].1;
+        i += 2;
+
+        let text_str = String::from_utf8_lossy(text_data)
+            .trim_end_matches('\0')
+            .to_string();
+
+        if geom.len() < 41 {
+            continue;
+        }
+
+        let layer = read_u8(geom, 0);
+        let component_id = read_u16(geom, 7);
+        let x = read_i32(geom, 13);
+        let y = read_i32(geom, 17);
+        let height = read_i32(geom, 21);
+        let rotation = read_f64(geom, 27);
+
+        // Detect designator/comment from text content
+        let is_designator = text_str == ".Designator";
+        let is_comment = text_str == ".Comment";
+
+        texts.push(AltiumText {
+            layer,
+            component_id,
+            x,
+            y,
+            height,
+            rotation,
+            text: text_str,
+            is_designator,
+            is_comment,
+        });
+    }
+
+    texts
 }

@@ -50,6 +50,10 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         .map(|data| records::parse_fills(&data))
         .unwrap_or_default();
 
+    let texts = read_binary_stream(&mut cfb, "/Texts6/Data")
+        .map(|data| records::parse_texts(&data))
+        .unwrap_or_default();
+
     // 6. Build footprints from components + child objects
     let footprints = build_footprints(
         &components,
@@ -57,6 +61,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         &tracks,
         &arcs,
         &fills,
+        &texts,
         &nets,
         &layer_map,
     );
@@ -272,11 +277,46 @@ fn extract_board_edges(board_records: &[HashMap<String, String>]) -> Vec<Drawing
             let start = convert_point(x0, y0);
             let end = convert_point(x1, y1);
 
-            edges.push(Drawing::Segment {
-                start,
-                end,
-                width: 0.05,
-            });
+            // Check for arc segment (SA = start angle, EA = end angle, CX/CY = center)
+            let sa_key = format!("SA{i}");
+            let ea_key = format!("EA{i}");
+            let cx_key = format!("CX{i}");
+            let cy_key = format!("CY{i}");
+
+            let has_arc = record.contains_key(&sa_key);
+
+            if has_arc {
+                let sa: f64 = record
+                    .get(&sa_key)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.0);
+                let ea: f64 = record
+                    .get(&ea_key)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(360.0);
+                let cx = parse_altium_coord(record, &cx_key);
+                let cy = parse_altium_coord(record, &cy_key);
+                let center = convert_point(cx, cy);
+
+                // Compute radius from center to start point
+                let dx = start[0] - center[0];
+                let dy = start[1] - center[1];
+                let radius = (dx * dx + dy * dy).sqrt();
+
+                edges.push(Drawing::Arc {
+                    start: center,
+                    radius,
+                    startangle: sa,
+                    endangle: ea,
+                    width: 0.05,
+                });
+            } else {
+                edges.push(Drawing::Segment {
+                    start,
+                    end,
+                    width: 0.05,
+                });
+            }
         }
     }
     edges
@@ -298,6 +338,7 @@ fn build_footprints(
     tracks: &[records::AltiumTrack],
     arcs: &[records::AltiumArc],
     fills: &[records::AltiumFill],
+    texts: &[records::AltiumText],
     nets: &[records::AltiumNet],
     layer_map: &layers::LayerMap,
 ) -> Vec<Footprint> {
@@ -329,6 +370,11 @@ fn build_footprints(
             }
             for f in fills.iter().filter(|f| f.component_id == comp_id) {
                 if let Some(d) = convert_fill_drawing(f, layer_map) {
+                    fp_drawings.push(d);
+                }
+            }
+            for txt in texts.iter().filter(|t| t.component_id == comp_id) {
+                if let Some(d) = convert_text_drawing(txt, comp, layer_map) {
                     fp_drawings.push(d);
                 }
             }
@@ -383,11 +429,28 @@ fn convert_pad(
     let size_x = altium_to_mm(pad.size_x);
     let size_y = altium_to_mm(pad.size_y);
 
-    let shape = match pad.shape {
-        1 => "circle",
-        2 => "rect",
-        9 => "roundrect",
-        _ => "rect",
+    let (shape, polygons) = match pad.shape {
+        1 => ("circle", None),
+        2 => ("rect", None),
+        3 => {
+            // Octagonal pad — generate 8-vertex polygon
+            let sx = size_x / 2.0;
+            let sy = size_y / 2.0;
+            let chamfer = sx.min(sy) * 0.3; // ~30% chamfer for octagon
+            let verts = vec![
+                [sx, sy - chamfer],
+                [sx - chamfer, sy],
+                [-(sx - chamfer), sy],
+                [-sx, sy - chamfer],
+                [-sx, -(sy - chamfer)],
+                [-(sx - chamfer), -sy],
+                [sx - chamfer, -sy],
+                [sx, -(sy - chamfer)],
+            ];
+            ("custom", Some(vec![verts]))
+        }
+        9 => ("roundrect", None),
+        _ => ("rect", None),
     };
 
     let is_th = pad.hole_size > 0;
@@ -439,7 +502,7 @@ fn convert_pad(
         drillshape,
         drillsize,
         svgpath: None,
-        polygons: None,
+        polygons,
     }
 }
 
@@ -505,6 +568,54 @@ fn convert_fill_drawing(
             start,
             end,
             width: 0.0,
+        }),
+    })
+}
+
+fn convert_text_drawing(
+    txt: &records::AltiumText,
+    comp: &records::AltiumComponent,
+    layer_map: &layers::LayerMap,
+) -> Option<FootprintDrawing> {
+    let cat = layer_map.category(txt.layer);
+    let side = match cat {
+        layers::LayerCategory::SilkF | layers::LayerCategory::FabF => "F",
+        layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
+        _ => return None,
+    };
+    let pos = convert_point(txt.x, txt.y);
+    let height = altium_to_mm(txt.height);
+
+    let text_content = if txt.is_designator {
+        comp.designator.clone()
+    } else if txt.is_comment {
+        comp.comment.clone()
+    } else {
+        txt.text.clone()
+    };
+
+    let is_ref = if txt.is_designator { Some(1u8) } else { None };
+    let val = if txt.is_comment { Some(1u8) } else { None };
+    let angle = if txt.rotation != 0.0 {
+        Some(txt.rotation)
+    } else {
+        None
+    };
+
+    Some(FootprintDrawing {
+        layer: side.to_string(),
+        drawing: FootprintDrawingItem::Text(TextDrawing {
+            svgpath: None,
+            thickness: None,
+            is_ref,
+            val,
+            pos: Some(pos),
+            text: Some(text_content),
+            height: Some(height),
+            width: None,
+            justify: None,
+            angle,
+            attr: None,
         }),
     })
 }

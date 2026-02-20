@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -11,7 +9,6 @@ pub enum LayerCategory {
     SilkB,
     FabF,
     FabB,
-    EdgeCuts,
     Other,
 }
 
