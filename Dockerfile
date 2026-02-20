@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Build environment with KiCad
 # =============================================================================
-FROM kicad/kicad:8.0 AS base
+FROM kicad/kicad:9.0 AS base
 
 USER root
 
@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
-FROM kicad/kicad:8.0
+FROM kicad/kicad:9.0
 
 USER root
 
