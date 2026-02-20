@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Build environment with KiCad
 # =============================================================================
-FROM kicad/kicad:8.0 AS base
+FROM kicad/kicad:9.0 AS base
 
 USER root
 
@@ -14,9 +14,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone InteractiveHtmlBom fork
-ARG IBOM_REPO=https://github.com/meawoppl/InteractiveHtmlBom.git
-ARG IBOM_BRANCH=meawoppl/optional-wx-dep
-RUN git clone --depth 1 --branch ${IBOM_BRANCH} ${IBOM_REPO} /opt/InteractiveHtmlBom
+ARG IBOM_REPO=https://github.com/openscopeproject/InteractiveHtmlBom.git
+ARG IBOM_BRANCH=master
+RUN git clone --depth 1 --branch ${IBOM_BRANCH} ${IBOM_REPO} /opt/InteractiveHtmlBom \
+    && echo "" > /opt/InteractiveHtmlBom/__init__.py
 
 # Create venv to avoid system package conflicts
 RUN python3 -m venv /opt/venv
@@ -29,7 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
-FROM kicad/kicad:8.0
+FROM kicad/kicad:9.0
 
 USER root
 
