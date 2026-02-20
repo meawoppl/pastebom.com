@@ -1,6 +1,7 @@
 mod layers;
 mod records;
 
+use crate::bom::{generate_bom, BomConfig};
 use crate::error::ExtractError;
 use crate::types::*;
 use crate::ExtractOptions;
@@ -60,6 +61,34 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         &layer_map,
     );
 
+    // 6b. Build Component structs for BOM generation
+    let bom_components: Vec<Component> = components
+        .iter()
+        .enumerate()
+        .map(|(idx, comp)| {
+            let side = if layer_map.side(comp.layer) == "B" {
+                Side::Back
+            } else {
+                Side::Front
+            };
+            Component {
+                ref_: comp.designator.clone(),
+                val: comp.comment.clone(),
+                footprint_name: comp.pattern.clone(),
+                layer: side,
+                footprint_index: idx,
+                extra_fields: HashMap::new(),
+                attr: None,
+            }
+        })
+        .collect();
+
+    let bom = Some(generate_bom(
+        &footprints,
+        &bom_components,
+        &BomConfig::default(),
+    ));
+
     // 7. Board edges
     let edges = extract_board_edges(&board_records);
     let edges_bbox = compute_edges_bbox(&edges);
@@ -92,7 +121,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         drawings,
         footprints,
         metadata: extract_metadata(&board_records),
-        bom: None,
+        bom,
         ibom_version: None,
         tracks: track_data,
         zones: zone_data,
