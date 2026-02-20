@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone InteractiveHtmlBom fork
-ARG IBOM_REPO=https://github.com/meawoppl/InteractiveHtmlBom.git
+ARG IBOM_REPO=https://github.com/openscopeproject/InteractiveHtmlBom.git
 ARG IBOM_BRANCH=master
 RUN git clone --depth 1 --branch ${IBOM_BRANCH} ${IBOM_REPO} /opt/InteractiveHtmlBom
 
