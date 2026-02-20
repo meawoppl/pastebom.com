@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PasteBOM - Interactive BOM Hosting</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        h1 { color: #4ecca3; margin-bottom: 0.5rem; }
+        .subtitle { color: #888; margin-bottom: 2rem; }
+        .subtitle a { color: #4ecca3; }
+        .upload-zone {
+            border: 2px dashed #4ecca3;
+            border-radius: 12px;
+            padding: 3rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: #16213e;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #7effc3;
+            background: #1a2744;
+        }
+        .upload-zone input { display: none; }
+        .formats { color: #888; font-size: 0.9rem; margin-top: 1rem; }
+        .result {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: #16213e;
+            border-radius: 8px;
+            display: none;
+        }
+        .result.show { display: block; }
+        .result a { color: #4ecca3; word-break: break-all; font-size: 1.1rem; }
+        .result .meta { color: #888; margin-top: 0.5rem; font-size: 0.9rem; }
+        .error { background: #3d1a1a; border: 1px solid #ff4444; }
+        .loading { opacity: 0.6; pointer-events: none; }
+        button {
+            background: #4ecca3;
+            color: #1a1a2e;
+            border: none;
+            padding: 0.75rem 2rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-top: 1rem;
+        }
+        button:hover { background: #7effc3; }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #4ecca3;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .history {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: #16213e;
+            border-radius: 8px;
+        }
+        .history h2 {
+            color: #4ecca3;
+            font-size: 1.1rem;
+            margin: 0 0 1rem 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .history-clear {
+            background: transparent;
+            color: #888;
+            font-size: 0.8rem;
+            padding: 0.25rem 0.5rem;
+            margin: 0;
+        }
+        .history-clear:hover { color: #ff6b6b; background: transparent; }
+        .history-list { list-style: none; padding: 0; margin: 0; }
+        .history-list li {
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #2a2a4e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+        .history-list li:last-child { border-bottom: none; }
+        .history-list a {
+            color: #4ecca3;
+            text-decoration: none;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .history-list a:hover { text-decoration: underline; }
+        .history-list .history-meta { color: #666; font-size: 0.8rem; white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <h1>PasteBOM</h1>
+    <p class="subtitle">Share interactive Bill of Materials and PCB layout viewers.</p>
+
+    <div class="upload-zone" id="dropzone">
+        <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd,.pcbdoc">
+        <p>Drop your PCB file here or click to browse</p>
+        <p class="formats">Supports: KiCad (.kicad_pcb), EasyEDA (.json), Eagle (.brd, .fbrd), Altium (.PcbDoc)</p>
+    </div>
+
+    <div class="result" id="result"></div>
+    <div class="history" id="history"></div>
+
+    <script>
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const result = document.getElementById('result');
+        const historyEl = document.getElementById('history');
+        const STORAGE_KEY = 'pastebom_history';
+        const MAX_HISTORY = 20;
+
+        function getHistory() {
+            try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+            catch { return []; }
+        }
+
+        function saveToHistory(entry) {
+            const history = getHistory();
+            history.unshift({ url: entry.url, filename: entry.filename, created: new Date().toISOString() });
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
+            renderHistory();
+        }
+
+        function clearHistory() {
+            localStorage.removeItem(STORAGE_KEY);
+            renderHistory();
+        }
+
+        function renderHistory() {
+            const history = getHistory();
+            if (history.length === 0) { historyEl.innerHTML = ''; return; }
+            const items = history.map(h => {
+                const date = new Date(h.created).toLocaleDateString();
+                return `<li><a href="${h.url}" target="_blank">${h.filename || h.url}</a><span class="history-meta">${date}</span></li>`;
+            }).join('');
+            historyEl.innerHTML = `
+                <h2>Recent BOMs <button class="history-clear" onclick="clearHistory()">Clear</button></h2>
+                <ul class="history-list">${items}</ul>`;
+        }
+
+        renderHistory();
+
+        dropzone.addEventListener('click', () => fileInput.click());
+        dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+        dropzone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
+
+        async function uploadFile(file) {
+            dropzone.classList.add('loading');
+            result.className = 'result show';
+            result.innerHTML = '<span class="spinner"></span>Generating BOM...';
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Upload failed');
+                saveToHistory({ url: data.url, filename: file.name });
+                result.innerHTML = `
+                    <p>Your PasteBOM is ready:</p>
+                    <a href="${data.url}" target="_blank">${data.url}</a>
+                    <button onclick="navigator.clipboard.writeText('${data.url}').then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy Link',2000)})">Copy Link</button>`;
+            } catch (err) {
+                result.classList.add('error');
+                result.innerHTML = `<p>Error: ${err.message}</p>`;
+            } finally {
+                dropzone.classList.remove('loading');
+            }
+        }
+    </script>
+</body>
+</html>
