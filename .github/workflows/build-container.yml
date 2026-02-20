@@ -48,6 +48,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            IBOM_REPO=https://github.com/meawoppl/InteractiveHtmlBom.git
-            IBOM_BRANCH=meawoppl/optional-wx-dep
