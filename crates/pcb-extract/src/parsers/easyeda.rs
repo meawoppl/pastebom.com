@@ -165,6 +165,7 @@ fn categorize_easyeda_layer(layer_id: u32) -> EasyEdaLayerCat {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_shape(
     shape: &str,
     origin_x: f64,
@@ -260,9 +261,8 @@ fn parse_shape(
                 end: [0.0, 0.0],
                 width,
             };
-            match categorize_easyeda_layer(layer) {
-                EasyEdaLayerCat::Edge => edges.push(drawing),
-                _ => {}
+            if categorize_easyeda_layer(layer) == EasyEdaLayerCat::Edge {
+                edges.push(drawing);
             }
         }
         _ => {}
@@ -402,10 +402,8 @@ fn parse_easyeda_component(
     }
 
     // Determine component center from bbox or first pad
-    if !pads.is_empty() {
-        if bbox.minx != f64::INFINITY {
-            center = [(bbox.minx + bbox.maxx) / 2.0, (bbox.miny + bbox.maxy) / 2.0];
-        }
+    if !pads.is_empty() && bbox.minx != f64::INFINITY {
+        center = [(bbox.minx + bbox.maxx) / 2.0, (bbox.miny + bbox.maxy) / 2.0];
     }
 
     // Determine layer from first pad

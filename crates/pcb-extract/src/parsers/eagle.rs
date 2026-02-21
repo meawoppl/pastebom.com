@@ -502,6 +502,7 @@ fn parse_elements(
 
 // ─── Parse plain (board edges, drawings) ─────────────────────────────
 
+#[allow(clippy::type_complexity)]
 fn parse_plain(
     board: &roxmltree::Node,
 ) -> (

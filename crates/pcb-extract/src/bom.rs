@@ -79,6 +79,7 @@ fn group_components(
     side_filter: Option<Side>,
 ) -> Vec<Vec<(String, usize)>> {
     // Group key: (value, footprint_name)
+    #[allow(clippy::type_complexity)]
     let mut groups: Vec<(String, String, Vec<(String, usize)>)> = Vec::new();
 
     for comp in components {

@@ -98,7 +98,7 @@ fn app() -> Html {
     let redraw_trigger = use_state(|| 0u32);
     let board_flipped = use_state(|| false);
     let bom_sidebar_open = use_state(|| true);
-    let view_sidebar_open = use_state(|| false);
+    let view_sidebar_open = use_state(|| true);
 
     // Fetch pcbdata on mount
     {
@@ -276,9 +276,7 @@ fn app() -> Html {
 
         Callback::from(move |e: WheelEvent| {
             e.prevent_default();
-            if let (Some(ref state), Some(ref data)) =
-                ((*viewer_state).as_ref(), (*pcbdata).as_ref())
-            {
+            if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
                 let mut vs = state.borrow_mut();
 
                 let mut wheeldelta = e.delta_y();
@@ -336,9 +334,7 @@ fn app() -> Html {
         let marked_footprints = marked_footprints.clone();
 
         Callback::from(move |e: PointerEvent| {
-            if let (Some(ref state), Some(ref data)) =
-                ((*viewer_state).as_ref(), (*pcbdata).as_ref())
-            {
+            if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
                 let mut vs = state.borrow_mut();
                 if !vs.pointer_states.contains_key(&e.pointer_id()) {
                     return;
@@ -391,9 +387,7 @@ fn app() -> Html {
         let current_row = current_row.clone();
 
         Callback::from(move |e: PointerEvent| {
-            if let (Some(ref state), Some(ref data)) =
-                ((*viewer_state).as_ref(), (*pcbdata).as_ref())
-            {
+            if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
                 let mut vs = state.borrow_mut();
 
                 if e.button() == 2 {
@@ -463,9 +457,7 @@ fn app() -> Html {
         let hl = (*highlighted_footprints).clone();
         let hn = (*highlighted_net).clone();
         use_effect_with((hl, hn), move |_| {
-            if let (Some(ref state), Some(ref data)) =
-                ((*viewer_state).as_ref(), (*pcbdata).as_ref())
-            {
+            if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
                 let mut vs = state.borrow_mut();
                 let hl = (*highlighted_footprints).clone();
                 let hn = (*highlighted_net).clone();
@@ -703,6 +695,7 @@ fn app() -> Html {
     let oncontextmenu = Callback::from(|e: MouseEvent| e.prevent_default());
 
     let layer_label = if *board_flipped { "Back" } else { "Front" };
+    let layer_prefix = if *board_flipped { "B" } else { "F" };
 
     html! {
         <div id="topmostdiv" class={classes!("topmostdiv", dark_class)}>
@@ -852,6 +845,37 @@ fn app() -> Html {
                         }}>{"×"}</button>
                     </div>
                     <div class="sidebar-settings">
+                        // ─── Layer color key ──────────────────────────
+                        <div class="layer-key">
+                            <div class="layer-key-title">{format!("Layers ({})", layer_label)}</div>
+                            <div class="layer-key-item">
+                                <span class="layer-swatch" style="background: var(--pad-color);"></span>
+                                <span>{format!("{}.Cu (pads)", layer_prefix)}</span>
+                            </div>
+                            if has_tracks {
+                                <div class="layer-key-item">
+                                    <span class="layer-swatch" style={format!("background: var(--track-color-{});", if *board_flipped { "back" } else { "front" })}></span>
+                                    <span>{format!("{}.Cu (tracks)", layer_prefix)}</span>
+                                </div>
+                                <div class="layer-key-item">
+                                    <span class="layer-swatch" style={format!("background: var(--zone-color-{});", if *board_flipped { "back" } else { "front" })}></span>
+                                    <span>{format!("{}.Cu (zones)", layer_prefix)}</span>
+                                </div>
+                            }
+                            <div class="layer-key-item">
+                                <span class="layer-swatch" style="background: var(--silkscreen-edge-color);"></span>
+                                <span>{format!("{}.SilkS", layer_prefix)}</span>
+                            </div>
+                            <div class="layer-key-item">
+                                <span class="layer-swatch" style="background: var(--fabrication-edge-color);"></span>
+                                <span>{format!("{}.Fab", layer_prefix)}</span>
+                            </div>
+                            <div class="layer-key-item">
+                                <span class="layer-swatch" style="background: var(--pcb-edge-color);"></span>
+                                <span>{"Edge.Cuts"}</span>
+                            </div>
+                        </div>
+                        // ─── Settings ─────────────────────────────────
                         <SettingCheckbox label="Dark mode" checked={settings.dark_mode}
                             on_change={toggle_dark_mode.clone()} is_top={true} />
                         <SettingCheckbox label="Silkscreen" checked={settings.render_silkscreen}

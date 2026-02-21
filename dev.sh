@@ -19,7 +19,7 @@ cmd_start() {
 
     echo "=== Starting container on port $PORT ==="
     docker rm -f "$IMAGE" 2>/dev/null || true
-    docker run -d --name "$IMAGE" -p "$PORT:8080" "$IMAGE"
+    docker run -d --name "$IMAGE" -p "$PORT:8080" -e "BASE_URL=http://localhost:$PORT" "$IMAGE"
     echo "Running at http://localhost:$PORT"
 }
 

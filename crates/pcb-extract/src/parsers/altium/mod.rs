@@ -333,6 +333,7 @@ fn parse_altium_coord(record: &HashMap<String, String>, key: &str) -> i32 {
 
 // ─── Build footprints ────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn build_footprints(
     components: &[records::AltiumComponent],
     pads: &[records::AltiumPad],
