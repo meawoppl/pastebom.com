@@ -43,6 +43,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         Some(LayerData {
             front: track_f,
             back: track_b,
+            inner: HashMap::new(),
         })
     } else {
         None
@@ -55,10 +56,12 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             silkscreen: LayerData {
                 front: silk_f,
                 back: silk_b,
+                inner: HashMap::new(),
             },
             fabrication: LayerData {
                 front: fab_f,
                 back: fab_b,
+                inner: HashMap::new(),
             },
         },
         footprints,
@@ -465,8 +468,8 @@ fn parse_elements(
             }
 
             let fp_bbox = FootprintBBox {
-                pos: [bbox.minx, bbox.miny],
-                relpos: [bbox.minx - x, bbox.miny - (y)],
+                pos: [x, y],
+                relpos: [bbox.minx - x, bbox.miny - y],
                 size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
                 angle,
             };

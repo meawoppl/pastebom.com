@@ -1,0 +1,40 @@
+[package]
+name = "pastebom-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+yew = { version = "0.21", features = ["csr"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+gloo = { version = "0.11", features = ["net", "events", "storage", "timers", "utils"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+wasm-logger = "0.2"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "HtmlInputElement",
+    "CanvasRenderingContext2d",
+    "Path2d",
+    "CssStyleDeclaration",
+    "DomRect",
+    "MouseEvent",
+    "WheelEvent",
+    "PointerEvent",
+    "KeyboardEvent",
+    "Storage",
+    "Node",
+    "NodeList",
+    "EventTarget",
+    "Performance",
+    "Location",
+]

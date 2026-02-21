@@ -108,6 +108,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             Some(LayerData {
                 front: Vec::new(),
                 back: Vec::new(),
+                inner: HashMap::new(),
             }),
         )
     } else {
@@ -406,7 +407,7 @@ fn build_footprints(
                 ref_: comp.designator.clone(),
                 center,
                 bbox: FootprintBBox {
-                    pos: [bbox.minx, bbox.miny],
+                    pos: center,
                     relpos: [bbox.minx - center[0], bbox.miny - center[1]],
                     size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
                     angle: comp.rotation,
@@ -689,10 +690,12 @@ fn categorize_drawings(
         silkscreen: LayerData {
             front: silk_f,
             back: silk_b,
+            inner: HashMap::new(),
         },
         fabrication: LayerData {
             front: fab_f,
             back: fab_b,
+            inner: HashMap::new(),
         },
     }
 }
@@ -779,7 +782,11 @@ fn build_track_data(
         });
     }
 
-    LayerData { front, back }
+    LayerData {
+        front,
+        back,
+        inner: HashMap::new(),
+    }
 }
 
 // ─── Metadata ────────────────────────────────────────────────────────

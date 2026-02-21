@@ -27,7 +27,11 @@ htmlcov/
 # Local development
 .env
 data/
+localdata/
 *.log
+
+# Rust
+target/
 
 # Distribution
 dist/
