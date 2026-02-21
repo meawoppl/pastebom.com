@@ -15,19 +15,10 @@ pub enum PcbFormat {
     Altium,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExtractOptions {
     pub include_tracks: bool,
     pub include_nets: bool,
-}
-
-impl Default for ExtractOptions {
-    fn default() -> Self {
-        Self {
-            include_tracks: false,
-            include_nets: false,
-        }
-    }
 }
 
 /// Detect format from file extension.

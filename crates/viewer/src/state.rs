@@ -33,7 +33,7 @@ impl Default for Settings {
             canvas_layout: "FB".to_string(),
             bom_layout: "left-right".to_string(),
             bom_mode: "grouped".to_string(),
-            dark_mode: false,
+            dark_mode: true,
             highlight_pin1: "none".to_string(),
             redraw_on_drag: true,
             board_rotation: 0.0,
@@ -119,6 +119,9 @@ pub fn init_settings(prefix: &str) -> Settings {
     }
     if let Some(v) = read_storage("zonesVisible", prefix) {
         s.render_zones = v != "false";
+    }
+    if let Some(v) = read_storage("dnpOutline", prefix) {
+        s.render_dnp_outline = v == "true";
     }
     if let Some(v) = read_storage("redrawOnDrag", prefix) {
         s.redraw_on_drag = v != "false";

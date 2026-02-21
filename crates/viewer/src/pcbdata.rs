@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct PcbData {
     pub edges_bbox: BBox,
     pub edges: Vec<Drawing>,
@@ -150,6 +151,7 @@ pub struct FootprintDrawing {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Footprint {
     #[serde(rename = "ref")]
     pub ref_: String,
@@ -224,6 +226,7 @@ pub enum Track {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Zone {
     #[serde(default)]
     pub polygons: Option<Vec<Vec<[f64; 2]>>>,
@@ -246,6 +249,7 @@ pub struct GlyphData {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Metadata {
     pub title: String,
     pub revision: String,
@@ -259,6 +263,7 @@ pub type BomRef = (String, usize);
 pub type BomGroup = Vec<BomRef>;
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct BomData {
     pub both: Vec<BomGroup>,
     #[serde(rename = "F")]

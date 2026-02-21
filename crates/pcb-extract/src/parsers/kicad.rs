@@ -59,7 +59,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     let fp_nodes: Vec<&SExpr> = root
         .find_all("footprint")
         .into_iter()
-        .chain(root.find_all("module").into_iter())
+        .chain(root.find_all("module"))
         .collect();
 
     let mut footprints = Vec::new();
@@ -552,7 +552,7 @@ fn parse_footprint(
     };
 
     let component = Component {
-        ref_: ref_,
+        ref_,
         val: value,
         footprint_name: fp_lib_name,
         layer: comp_side,
@@ -609,8 +609,6 @@ fn parse_pad(node: &SExpr, fp_x: f64, fp_y: f64, fp_angle: f64, nets: &[String])
                 .filter_map(|name| {
                     if name.contains("Cu") {
                         layer_to_side(name).map(|s| s.to_string())
-                    } else if name == "*.Cu" {
-                        None // handled below
                     } else {
                         None
                     }

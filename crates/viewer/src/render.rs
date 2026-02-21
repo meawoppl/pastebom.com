@@ -297,7 +297,7 @@ fn draw_edge(ctx: &CanvasRenderingContext2d, scalefactor: f64, drawing: &Drawing
             ctx.begin_path();
             ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
             ctx.close_path();
-            if filled.map_or(false, |f| f != 0) {
+            if filled.is_some_and(|f| f != 0) {
                 ctx.fill();
             } else {
                 ctx.stroke();
@@ -340,7 +340,7 @@ fn draw_polygon_shape(
         ctx.translate(pos[0], pos[1]).unwrap();
         ctx.rotate(deg2rad(-angle)).unwrap();
         let path = get_polygons_path(polygons);
-        if filled.map_or(true, |f| f != 0) {
+        if filled.is_none_or(|f| f != 0) {
             ctx.set_fill_style_str(color);
             ctx.fill_with_path_2d(&path);
         } else {
@@ -600,6 +600,7 @@ struct FootprintColors {
     outline: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_footprint(
     ctx: &CanvasRenderingContext2d,
     layer: &str,
@@ -684,6 +685,7 @@ pub fn draw_edge_cuts(
     let _ = (settings, font_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_footprints(
     canvas: &HtmlCanvasElement,
     layer: &str,
@@ -701,10 +703,7 @@ pub fn draw_footprints(
     let font_data = pcbdata.font_data.as_ref();
 
     for (i, fp) in pcbdata.footprints.iter().enumerate() {
-        let is_dnp = pcbdata
-            .bom
-            .as_ref()
-            .map_or(false, |b| b.skipped.contains(&i));
+        let is_dnp = pcbdata.bom.as_ref().is_some_and(|b| b.skipped.contains(&i));
         let outline = settings.render_dnp_outline && is_dnp;
         let h = highlighted_footprints.contains(&i);
         let d = marked_footprints.contains(&i);
@@ -767,6 +766,7 @@ pub fn draw_footprints(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_bg_layer(
     canvas: &HtmlCanvasElement,
     layer_name: &str,
@@ -944,6 +944,7 @@ pub fn draw_zones(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_nets(
     canvas: &HtmlCanvasElement,
     layer: &str,
@@ -1127,6 +1128,7 @@ pub fn recalc_layer_scale(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_background(
     layer: &LayerCanvases,
     pcbdata: &PcbData,
@@ -1142,7 +1144,7 @@ pub fn draw_background(
     clear_canvas(&layer.fab, None);
     clear_canvas(&layer.silk, None);
 
-    // Draw opposite layer nets first at reduced opacity (see-through)
+    // Draw opposite layer at reduced opacity (see-through)
     let opposite = if layer.layer == "F" { "B" } else { "F" };
     {
         let ctx = get_ctx(&layer.bg);
@@ -1159,9 +1161,21 @@ pub fn draw_background(
         highlighted_net,
         zone_cache,
     );
+    draw_footprints(
+        &layer.bg,
+        opposite,
+        layer.transform.s * layer.transform.zoom,
+        false,
+        pcbdata,
+        colors,
+        settings,
+        highlighted_footprints,
+        marked_footprints,
+        cache,
+    );
     get_ctx(&layer.bg).restore();
 
-    // Draw primary layer nets at full opacity
+    // Draw primary layer at full opacity
     draw_nets(
         &layer.bg,
         &layer.layer,
@@ -1221,6 +1235,7 @@ pub fn draw_background(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_highlights_on_layer(
     layer: &LayerCanvases,
     pcbdata: &PcbData,
@@ -1274,6 +1289,7 @@ pub fn draw_highlights_on_layer(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn redraw_canvas(
     layer: &LayerCanvases,
     pcbdata: &PcbData,
@@ -1343,20 +1359,68 @@ fn point_within_distance_to_segment(
 }
 
 pub fn bbox_hit_scan(layer: &str, x: f64, y: f64, pcbdata: &PcbData) -> Vec<usize> {
+    let opposite = if layer == "F" { "B" } else { "F" };
     let mut result = Vec::new();
-    for (i, fp) in pcbdata.footprints.iter().enumerate() {
-        if fp.layer == layer {
-            let v = rotate_vector([x - fp.bbox.pos[0], y - fp.bbox.pos[1]], fp.bbox.angle);
-            if fp.bbox.relpos[0] <= v[0]
-                && v[0] <= fp.bbox.relpos[0] + fp.bbox.size[0]
-                && fp.bbox.relpos[1] <= v[1]
-                && v[1] <= fp.bbox.relpos[1] + fp.bbox.size[1]
-            {
-                result.push(i);
+    // Check primary layer first, then opposite
+    for check_layer in &[layer, opposite] {
+        for (i, fp) in pcbdata.footprints.iter().enumerate() {
+            if fp.layer == *check_layer {
+                let v = rotate_vector([x - fp.bbox.pos[0], y - fp.bbox.pos[1]], fp.bbox.angle);
+                if fp.bbox.relpos[0] <= v[0]
+                    && v[0] <= fp.bbox.relpos[0] + fp.bbox.size[0]
+                    && fp.bbox.relpos[1] <= v[1]
+                    && v[1] <= fp.bbox.relpos[1] + fp.bbox.size[1]
+                {
+                    result.push(i);
+                }
             }
+        }
+        if !result.is_empty() {
+            return result;
         }
     }
     result
+}
+
+fn track_hit_scan(tracks: &[Track], x: f64, y: f64) -> Option<String> {
+    for track in tracks {
+        match track {
+            Track::Segment {
+                start,
+                end,
+                width,
+                net,
+                ..
+            } => {
+                if point_within_distance_to_segment(
+                    x,
+                    y,
+                    start[0],
+                    start[1],
+                    end[0],
+                    end[1],
+                    width / 2.0,
+                ) {
+                    return net.clone();
+                }
+            }
+            Track::Arc {
+                center,
+                radius,
+                width,
+                net,
+                ..
+            } => {
+                let dx = x - center[0];
+                let dy = y - center[1];
+                let dist = (dx * dx + dy * dy).sqrt();
+                if (dist - radius).abs() <= width / 2.0 {
+                    return net.clone();
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn net_hit_scan(
@@ -1366,57 +1430,37 @@ pub fn net_hit_scan(
     pcbdata: &PcbData,
     settings: &Settings,
 ) -> Option<String> {
-    if settings.render_tracks {
-        if let Some(tracks) = pcbdata.tracks.as_ref().and_then(|t| t.get(layer)) {
-            for track in tracks {
-                match track {
-                    Track::Segment {
-                        start,
-                        end,
-                        width,
-                        net,
-                        ..
-                    } => {
-                        if point_within_distance_to_segment(
-                            x,
-                            y,
-                            start[0],
-                            start[1],
-                            end[0],
-                            end[1],
-                            width / 2.0,
-                        ) {
-                            return net.clone();
-                        }
-                    }
-                    Track::Arc {
-                        center,
-                        radius,
-                        width,
-                        net,
-                        ..
-                    } => {
-                        let dx = x - center[0];
-                        let dy = y - center[1];
-                        let dist = (dx * dx + dy * dy).sqrt();
-                        if (dist - radius).abs() <= width / 2.0 {
-                            return net.clone();
-                        }
-                    }
+    let opposite = if layer == "F" { "B" } else { "F" };
+
+    // Build layer check order: primary, opposite, then inner layers
+    let mut layers_to_check: Vec<&str> = vec![layer, opposite];
+    if let Some(ref tracks_data) = pcbdata.tracks {
+        for name in tracks_data.inner_layer_names() {
+            layers_to_check.push(name.as_str());
+        }
+    }
+
+    for check_layer in &layers_to_check {
+        if settings.render_tracks {
+            if let Some(tracks) = pcbdata.tracks.as_ref().and_then(|t| t.get(check_layer)) {
+                if let Some(net) = track_hit_scan(tracks, x, y) {
+                    return Some(net);
                 }
             }
         }
-    }
-    if settings.render_pads {
-        for fp in &pcbdata.footprints {
-            for pad in &fp.pads {
-                if pad.layers.iter().any(|l| l == layer) {
-                    let v =
-                        rotate_vector([x - pad.pos[0], y - pad.pos[1]], pad.angle.unwrap_or(0.0));
-                    let hx = pad.size[0] / 2.0;
-                    let hy = pad.size[1] / 2.0;
-                    if v[0].abs() <= hx && v[1].abs() <= hy {
-                        return pad.net.clone();
+        if settings.render_pads {
+            for fp in &pcbdata.footprints {
+                for pad in &fp.pads {
+                    if pad.layers.iter().any(|l| l == *check_layer) {
+                        let v = rotate_vector(
+                            [x - pad.pos[0], y - pad.pos[1]],
+                            pad.angle.unwrap_or(0.0),
+                        );
+                        let hx = pad.size[0] / 2.0;
+                        let hy = pad.size[1] / 2.0;
+                        if v[0].abs() <= hx && v[1].abs() <= hy {
+                            return pad.net.clone();
+                        }
                     }
                 }
             }
