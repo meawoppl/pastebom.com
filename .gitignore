@@ -1,37 +1,17 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-.venv/
-ENV/
-env/
-.eggs/
-*.egg-info/
-*.egg
-
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
 # Local development
 .env
 data/
+localdata/
 *.log
 
-# Distribution
-dist/
-build/
+# Rust
+target/
 
-# InteractiveHtmlBom (vendored separately)
-# InteractiveHtmlBom/
+# WASM build output
+crates/viewer/dist/

@@ -1,27 +1,19 @@
 services:
-  ibom-gist:
+  pastebom:
     build:
       context: .
-      args:
-        IBOM_REPO: https://github.com/meawoppl/InteractiveHtmlBom.git
-        IBOM_BRANCH: meawoppl/optional-wx-dep
+      dockerfile: Dockerfile
     ports:
       - "8081:8080"
     environment:
-      - LOG_LEVEL=info
-      # S3 configuration (required)
+      - RUST_LOG=info
+      - BIND_ADDR=0.0.0.0:8080
       - S3_BUCKET=${S3_BUCKET}
-      - S3_REGION=${S3_REGION:-us-west-2}
-      - S3_UPLOADS_PREFIX=${S3_UPLOADS_PREFIX:-uploads}
-      - S3_BOMS_PREFIX=${S3_BOMS_PREFIX:-boms}
-      - S3_FAILED_PREFIX=${S3_FAILED_PREFIX:-failed}
-      # Optional: for LocalStack/MinIO testing
-      # - S3_ENDPOINT_URL=http://localhost:4566
-      # AWS credentials (or use IAM role)
+      - S3_PREFIX=${S3_PREFIX:-}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      # Set BASE_URL for production
-      # - BASE_URL=https://pastebom.com
+      - AWS_REGION=${AWS_REGION:-us-west-2}
+      - BASE_URL=${BASE_URL:-http://localhost:8081}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
