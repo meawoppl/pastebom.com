@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/pcb-extract", "crates/server", "crates/viewer"]
+resolver = "2"

@@ -17,6 +17,7 @@
         }
         h1 { color: #4ecca3; margin-bottom: 0.5rem; }
         .subtitle { color: #888; margin-bottom: 2rem; }
+        .subtitle a { color: #4ecca3; }
         .upload-zone {
             border: 2px dashed #4ecca3;
             border-radius: 12px;
@@ -40,11 +41,7 @@
             display: none;
         }
         .result.show { display: block; }
-        .result a {
-            color: #4ecca3;
-            word-break: break-all;
-            font-size: 1.1rem;
-        }
+        .result a { color: #4ecca3; word-break: break-all; font-size: 1.1rem; }
         .result .meta { color: #888; margin-top: 0.5rem; font-size: 0.9rem; }
         .error { background: #3d1a1a; border: 1px solid #ff4444; }
         .loading { opacity: 0.6; pointer-events: none; }
@@ -59,33 +56,6 @@
             margin-top: 1rem;
         }
         button:hover { background: #7effc3; }
-        .options {
-            margin-top: 2rem;
-            padding: 1rem;
-            background: #16213e;
-            border-radius: 8px;
-        }
-        .options summary {
-            cursor: pointer;
-            color: #888;
-            padding: 0.5rem;
-        }
-        .options-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 0.5rem;
-            margin-top: 1rem;
-        }
-        .options label {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.25rem;
-        }
-        .options input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-        }
         .spinner {
             display: inline-block;
             width: 20px;
@@ -97,9 +67,7 @@
             margin-right: 8px;
             vertical-align: middle;
         }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .history {
             margin-top: 2rem;
             padding: 1.5rem;
@@ -122,11 +90,7 @@
             margin: 0;
         }
         .history-clear:hover { color: #ff6b6b; background: transparent; }
-        .history-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
+        .history-list { list-style: none; padding: 0; margin: 0; }
         .history-list li {
             padding: 0.75rem 0;
             border-bottom: 1px solid #2a2a4e;
@@ -145,48 +109,20 @@
             white-space: nowrap;
         }
         .history-list a:hover { text-decoration: underline; }
-        .history-list .history-meta {
-            color: #666;
-            font-size: 0.8rem;
-            white-space: nowrap;
-        }
-        .history-empty { color: #666; font-style: italic; }
+        .history-list .history-meta { color: #666; font-size: 0.8rem; white-space: nowrap; }
     </style>
 </head>
 <body>
     <h1>PasteBOM</h1>
-    <p class="subtitle">Share interactive Bill of Materials and PCB layout viewers. Powered by <a href="https://github.com/openscopeproject/InteractiveHtmlBom" target="_blank" style="color: #4ecca3;">InteractiveHtmlBom</a>.</p>
+    <p class="subtitle">Share interactive Bill of Materials and PCB layout viewers.</p>
 
     <div class="upload-zone" id="dropzone">
-        <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd">
+        <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd,.pcbdoc">
         <p>Drop your PCB file here or click to browse</p>
-        <p class="formats">Supports: KiCad (.kicad_pcb), EasyEDA (.json), Eagle (.brd, .fbrd)</p>
+        <p class="formats">Supports: KiCad (.kicad_pcb), EasyEDA (.json), Eagle (.brd, .fbrd), Altium (.PcbDoc)</p>
     </div>
 
-    <details class="options">
-        <summary>Advanced options</summary>
-        <div class="options-grid">
-            <label>
-                <input type="checkbox" id="opt-dark-mode" checked>
-                Dark mode default
-            </label>
-            <label>
-                <input type="checkbox" id="opt-include-tracks" checked>
-                Include tracks
-            </label>
-            <label>
-                <input type="checkbox" id="opt-include-nets" checked>
-                Include nets
-            </label>
-            <label>
-                <input type="checkbox" id="opt-show-fabrication">
-                Show fabrication layer
-            </label>
-        </div>
-    </details>
-
     <div class="result" id="result"></div>
-
     <div class="history" id="history"></div>
 
     <script>
@@ -198,21 +134,13 @@
         const MAX_HISTORY = 20;
 
         function getHistory() {
-            try {
-                return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-            } catch {
-                return [];
-            }
+            try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+            catch { return []; }
         }
 
-        function saveToHistory(bom) {
+        function saveToHistory(entry) {
             const history = getHistory();
-            history.unshift({
-                url: bom.url,
-                filename: bom.filename,
-                components: bom.components,
-                created: new Date().toISOString()
-            });
+            history.unshift({ url: entry.url, filename: entry.filename, created: new Date().toISOString() });
             localStorage.setItem(STORAGE_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
             renderHistory();
         }
@@ -224,102 +152,49 @@
 
         function renderHistory() {
             const history = getHistory();
-            if (history.length === 0) {
-                historyEl.innerHTML = '';
-                return;
-            }
+            if (history.length === 0) { historyEl.innerHTML = ''; return; }
             const items = history.map(h => {
                 const date = new Date(h.created).toLocaleDateString();
-                return `<li>
-                    <a href="${h.url}" target="_blank" title="${h.filename}">${h.filename}</a>
-                    <span class="history-meta">${h.components} parts - ${date}</span>
-                </li>`;
+                return `<li><a href="${h.url}" target="_blank">${h.filename || h.url}</a><span class="history-meta">${date}</span></li>`;
             }).join('');
             historyEl.innerHTML = `
                 <h2>Recent BOMs <button class="history-clear" onclick="clearHistory()">Clear</button></h2>
-                <p class="meta" style="margin-bottom: 0.5rem;">Stored in browser cookies. Save links before clearing.</p>
-                <ul class="history-list">${items}</ul>
-            `;
+                <ul class="history-list">${items}</ul>`;
         }
 
         renderHistory();
 
         dropzone.addEventListener('click', () => fileInput.click());
-        dropzone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropzone.classList.add('dragover');
-        });
-        dropzone.addEventListener('dragleave', () => {
-            dropzone.classList.remove('dragover');
-        });
-        dropzone.addEventListener('drop', (e) => {
+        dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+        dropzone.addEventListener('drop', e => {
             e.preventDefault();
             dropzone.classList.remove('dragover');
-            if (e.dataTransfer.files.length) {
-                uploadFile(e.dataTransfer.files[0]);
-            }
+            if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
         });
-        fileInput.addEventListener('change', () => {
-            if (fileInput.files.length) {
-                uploadFile(fileInput.files[0]);
-            }
-        });
-
-        function getConfigOverrides() {
-            return {
-                dark_mode: document.getElementById('opt-dark-mode').checked,
-                include_tracks: document.getElementById('opt-include-tracks').checked,
-                include_nets: document.getElementById('opt-include-nets').checked,
-                show_fabrication: document.getElementById('opt-show-fabrication').checked
-            };
-        }
+        fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
 
         async function uploadFile(file) {
             dropzone.classList.add('loading');
-            result.className = 'result';
+            result.className = 'result show';
             result.innerHTML = '<span class="spinner"></span>Generating BOM...';
-            result.classList.add('show');
-
             const formData = new FormData();
             formData.append('file', file);
-            formData.append('config', JSON.stringify(getConfigOverrides()));
-
             try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-
+                const response = await fetch('/upload', { method: 'POST', body: formData });
                 const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.detail?.message || data.message || 'Upload failed');
-                }
-
-                saveToHistory(data);
-
+                if (!response.ok) throw new Error(data.error || 'Upload failed');
+                saveToHistory({ url: data.url, filename: file.name });
                 result.innerHTML = `
                     <p>Your PasteBOM is ready:</p>
                     <a href="${data.url}" target="_blank">${data.url}</a>
-                    <p class="meta">${data.filename} - ${data.components} components</p>
-                    <button onclick="copyToClipboard('${data.url}')">
-                        Copy Link
-                    </button>
-                `;
+                    <button onclick="navigator.clipboard.writeText('${data.url}').then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy Link',2000)})">Copy Link</button>`;
             } catch (err) {
                 result.classList.add('error');
                 result.innerHTML = `<p>Error: ${err.message}</p>`;
             } finally {
                 dropzone.classList.remove('loading');
             }
-        }
-
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                const btn = event.target;
-                btn.textContent = 'Copied!';
-                setTimeout(() => btn.textContent = 'Copy Link', 2000);
-            });
         }
     </script>
 </body>
