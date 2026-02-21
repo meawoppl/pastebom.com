@@ -20,7 +20,7 @@ Shareable interactive PCB BOM viewer. Upload a PCB file, get a link to an intera
 ./dev.sh status       # check if running and print URL
 ```
 
-Builds everything inside Docker (`Dockerfile.rust`): server binaries + viewer WASM via Trunk. Storage lives inside the container with no volume mount — every restart is a clean slate.
+Builds everything inside Docker (`Dockerfile`): server binaries + viewer WASM via Trunk. Storage lives inside the container with no volume mount — every restart is a clean slate.
 
 ## Local Development (without Docker)
 

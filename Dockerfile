@@ -1,66 +1,77 @@
 # =============================================================================
-# Stage 1: Build environment with KiCad
+# Stage 1: Build Rust binaries
 # =============================================================================
-FROM kicad/kicad:9.0 AS base
+FROM rust:1.84-bookworm AS builder
 
-USER root
-
-# Install Python dependencies and git for cloning
 RUN apt-get update && apt-get install -y \
-    python3-pip \
-    python3-venv \
-    curl \
-    git \
+    cmake \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone InteractiveHtmlBom fork
-ARG IBOM_REPO=https://github.com/openscopeproject/InteractiveHtmlBom.git
-ARG IBOM_BRANCH=master
-RUN git clone --depth 1 --branch ${IBOM_BRANCH} ${IBOM_REPO} /opt/InteractiveHtmlBom \
-    && echo "" > /opt/InteractiveHtmlBom/__init__.py
+# Install trunk and wasm target for viewer build
+RUN cargo install trunk \
+    && rustup target add wasm32-unknown-unknown
 
-# Create venv to avoid system package conflicts
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /build
 
-# Install Python packages
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Cache dependencies by copying manifests first
+COPY Cargo.toml Cargo.toml
+COPY crates/pcb-extract/Cargo.toml crates/pcb-extract/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY crates/viewer/Cargo.toml crates/viewer/Cargo.toml
+
+# Create dummy source files for dependency caching
+RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src \
+    && echo "pub fn main() {}" > crates/pcb-extract/src/main.rs \
+    && echo "pub fn lib() {}" > crates/pcb-extract/src/lib.rs \
+    && echo "fn main() {}" > crates/server/src/main.rs \
+    && echo "<html></html>" > crates/server/static/index.html \
+    && echo "fn main() {}" > crates/viewer/src/main.rs
+
+# Build dependencies only (cached layer)
+RUN cargo build --release 2>/dev/null || true
+
+# Copy actual source code
+COPY crates/ crates/
+
+# Touch source files to invalidate cache
+RUN touch crates/pcb-extract/src/main.rs \
+    crates/pcb-extract/src/lib.rs \
+    crates/server/src/main.rs \
+    crates/viewer/src/main.rs
+
+# Build release binaries
+RUN cargo build --release
+
+# Build viewer WASM
+RUN cd crates/viewer && trunk build --release
 
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
-FROM kicad/kicad:9.0
+FROM debian:bookworm-slim
 
-USER root
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install curl for healthcheck
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-
-# Copy venv from builder
-COPY --from=base /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Set up KiCad Python path - append after venv to avoid conflicts
-ENV PYTHONPATH="/opt/venv/lib/python3.11/site-packages:/usr/lib/python3/dist-packages"
-
-# Create app directory
 WORKDIR /app
 
-# Copy InteractiveHtmlBom from build stage
-COPY --from=base /opt/InteractiveHtmlBom /app/InteractiveHtmlBom
+# Copy binaries and viewer assets from builder
+COPY --from=builder /build/target/release/pastebom-server /app/pastebom-server
+COPY --from=builder /build/target/release/pcb-extract /app/pcb-extract
+COPY --from=builder /build/crates/viewer/dist /app/viewer
 
-# Copy application
-COPY app/ /app/app/
-
-# Environment
-ENV LOG_LEVEL=info
+ENV BIND_ADDR=0.0.0.0:8080
+ENV VIEWER_DIR=/app/viewer
+ENV STORAGE_PATH=/app/data
+ENV RUST_LOG=info
 
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Run with uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["/app/pastebom-server"]
