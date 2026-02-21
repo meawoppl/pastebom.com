@@ -15,7 +15,7 @@ cmd_start() {
     fi
 
     echo "=== Building Docker image ==="
-    docker build -f Dockerfile.rust -t "$IMAGE" .
+    docker build -t "$IMAGE" .
 
     echo "=== Starting container on port $PORT ==="
     docker rm -f "$IMAGE" 2>/dev/null || true
