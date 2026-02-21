@@ -110,6 +110,21 @@
         }
         .history-list a:hover { text-decoration: underline; }
         .history-list .history-meta { color: #666; font-size: 0.8rem; white-space: nowrap; }
+        .upload-options {
+            margin-top: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            color: #888;
+            font-size: 0.9rem;
+        }
+        .upload-options input[type="checkbox"] {
+            accent-color: #4ecca3;
+            width: 16px;
+            height: 16px;
+        }
+        .component-count { color: #888; font-size: 0.85rem; }
     </style>
 </head>
 <body>
@@ -121,15 +136,22 @@
         <p>Drop your PCB file here or click to browse</p>
         <p class="formats">Supports: KiCad (.kicad_pcb), EasyEDA (.json), Eagle (.brd, .fbrd), Altium (.PcbDoc)</p>
     </div>
+    <div class="upload-options">
+        <input type="checkbox" id="secretCheck">
+        <label for="secretCheck">Secret (won't appear in public feed)</label>
+    </div>
 
     <div class="result" id="result"></div>
     <div class="history" id="history"></div>
+    <div class="history" id="recentPublic"></div>
 
     <script>
         const dropzone = document.getElementById('dropzone');
         const fileInput = document.getElementById('fileInput');
         const result = document.getElementById('result');
         const historyEl = document.getElementById('history');
+        const recentEl = document.getElementById('recentPublic');
+        const secretCheck = document.getElementById('secretCheck');
         const STORAGE_KEY = 'pastebom_history';
         const MAX_HISTORY = 20;
 
@@ -164,6 +186,33 @@
 
         renderHistory();
 
+        function timeAgo(dateStr) {
+            const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+            if (seconds < 60) return 'just now';
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return minutes + 'm ago';
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return hours + 'h ago';
+            const days = Math.floor(hours / 24);
+            return days + 'd ago';
+        }
+
+        async function loadRecent() {
+            try {
+                const resp = await fetch('/api/recent');
+                const entries = await resp.json();
+                if (!entries.length) { recentEl.innerHTML = ''; return; }
+                const items = entries.map(e => {
+                    const ago = timeAgo(e.created);
+                    return `<li><a href="/b/${e.id}" target="_blank">${e.filename}</a><span class="component-count">${e.components} components</span><span class="history-meta">${ago}</span></li>`;
+                }).join('');
+                recentEl.innerHTML = `
+                    <h2>Recently Shared</h2>
+                    <ul class="history-list">${items}</ul>`;
+            } catch { recentEl.innerHTML = ''; }
+        }
+        loadRecent();
+
         dropzone.addEventListener('click', () => fileInput.click());
         dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
         dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
@@ -180,11 +229,13 @@
             result.innerHTML = '<span class="spinner"></span>Generating BOM...';
             const formData = new FormData();
             formData.append('file', file);
+            if (secretCheck.checked) formData.append('secret', 'true');
             try {
                 const response = await fetch('/upload', { method: 'POST', body: formData });
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || 'Upload failed');
                 saveToHistory({ url: data.url, filename: file.name });
+                if (!secretCheck.checked) loadRecent();
                 result.innerHTML = `
                     <p>Your PasteBOM is ready:</p>
                     <a href="${data.url}" target="_blank">${data.url}</a>

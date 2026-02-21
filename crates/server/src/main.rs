@@ -3,6 +3,8 @@ mod s3;
 
 use axum::Router;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -21,9 +23,13 @@ async fn main() {
     );
     tracing::info!("Serving viewer assets from {}", viewer_dir.display());
 
+    let recent = routes::load_recent(&s3_client).await;
+    tracing::info!("Loaded {} recent public uploads", recent.len());
+
     let state = AppState {
         s3: s3_client,
         viewer_dir: viewer_dir.clone(),
+        recent: Arc::new(RwLock::new(recent)),
     };
 
     let app = Router::new()
@@ -43,4 +49,5 @@ async fn main() {
 pub struct AppState {
     pub s3: s3::S3Client,
     pub viewer_dir: PathBuf,
+    pub recent: Arc<RwLock<Vec<routes::RecentEntry>>>,
 }
