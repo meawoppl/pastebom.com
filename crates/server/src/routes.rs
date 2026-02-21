@@ -11,11 +11,30 @@ use uuid::Uuid;
 
 use crate::AppState;
 
+const MAX_RECENT: usize = 50;
+const RECENT_KEY: &str = "recent.json";
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RecentEntry {
+    pub id: String,
+    pub filename: String,
+    pub components: usize,
+    pub created: String,
+}
+
+pub async fn load_recent(s3: &crate::s3::S3Client) -> Vec<RecentEntry> {
+    match s3.get_object(RECENT_KEY).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub fn router() -> Router<AppState> {
     const MAX_UPLOAD: usize = 50 * 1024 * 1024;
     Router::new()
         .route("/", get(index))
         .route("/upload", post(upload))
+        .route("/api/recent", get(get_recent))
         .route("/b/{id}", get(get_bom))
         .route("/b/{id}/data", get(get_bom_data))
         .route("/b/{id}/meta", get(get_meta))
@@ -66,6 +85,7 @@ async fn upload(
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let mut file_data: Option<(String, Vec<u8>)> = None;
+    let mut secret = false;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -76,6 +96,9 @@ async fn upload(
                 .await
                 .map_err(|_| error_response(StatusCode::BAD_REQUEST, "Failed to read upload"))?;
             file_data = Some((filename, data.to_vec()));
+        } else if name == "secret" {
+            let val = field.text().await.unwrap_or_default();
+            secret = val == "true";
         }
     }
 
@@ -151,6 +174,24 @@ async fn upload(
         .put_object(&upload_key, data, "application/octet-stream")
         .await;
 
+    if !secret {
+        let entry = RecentEntry {
+            id: id.clone(),
+            filename: filename.clone(),
+            components: component_count,
+            created: chrono::Utc::now().to_rfc3339(),
+        };
+        let mut recent = state.recent.write().await;
+        recent.insert(0, entry);
+        recent.truncate(MAX_RECENT);
+        if let Ok(json) = serde_json::to_vec(&*recent) {
+            let _ = state
+                .s3
+                .put_object(RECENT_KEY, json, "application/json")
+                .await;
+        }
+    }
+
     let base_url =
         std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
     Ok(Json(UploadResponse {
@@ -159,6 +200,11 @@ async fn upload(
         filename,
         components: component_count,
     }))
+}
+
+async fn get_recent(State(state): State<AppState>) -> Json<Vec<RecentEntry>> {
+    let recent = state.recent.read().await;
+    Json(recent.clone())
 }
 
 /// Serve the Yew viewer shell HTML at /b/{id}
