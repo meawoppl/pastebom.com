@@ -8,7 +8,11 @@ use std::collections::HashMap;
 pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
     let text = std::str::from_utf8(data)
         .map_err(|e| ExtractError::ParseError(format!("Invalid UTF-8: {e}")))?;
-    let doc = roxmltree::Document::parse(text)
+    let parse_opts = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..roxmltree::ParsingOptions::default()
+    };
+    let doc = roxmltree::Document::parse_with_options(text, parse_opts)
         .map_err(|e| ExtractError::ParseError(format!("XML parse error: {e}")))?;
 
     let board = doc
