@@ -3,6 +3,7 @@ use crate::error::ExtractError;
 use crate::types::*;
 use crate::ExtractOptions;
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Parse an EasyEDA PCB JSON file into PcbData.
 pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
@@ -102,6 +103,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         Some(LayerData {
             front: track_f,
             back: track_b,
+            inner: HashMap::new(),
         })
     } else {
         None
@@ -114,10 +116,12 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             silkscreen: LayerData {
                 front: silk_f,
                 back: silk_b,
+                inner: HashMap::new(),
             },
             fabrication: LayerData {
                 front: fab_f,
                 back: fab_b,
+                inner: HashMap::new(),
             },
         },
         footprints,
@@ -430,7 +434,7 @@ fn parse_easyeda_component(
         ref_: designator.clone(),
         center,
         bbox: FootprintBBox {
-            pos: [bbox.minx, bbox.miny],
+            pos: center,
             relpos: [bbox.minx - center[0], bbox.miny - center[1]],
             size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
             angle: 0.0,

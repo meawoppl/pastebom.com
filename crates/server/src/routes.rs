@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -9,15 +9,18 @@ use pcb_extract::ExtractOptions;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{html, AppState};
+use crate::AppState;
 
 pub fn router() -> Router<AppState> {
+    const MAX_UPLOAD: usize = 50 * 1024 * 1024;
     Router::new()
         .route("/", get(index))
         .route("/upload", post(upload))
         .route("/b/{id}", get(get_bom))
+        .route("/b/{id}/data", get(get_bom_data))
         .route("/b/{id}/meta", get(get_meta))
         .route("/health", get(health))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD))
 }
 
 async fn index() -> Html<&'static str> {
@@ -79,7 +82,6 @@ async fn upload(
     let (filename, data) =
         file_data.ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "No file uploaded"))?;
 
-    // Validate file size (50 MB limit)
     const MAX_SIZE: usize = 50 * 1024 * 1024;
     if data.len() > MAX_SIZE {
         return Err(error_response(
@@ -88,12 +90,10 @@ async fn upload(
         ));
     }
 
-    // Detect format from filename
     let path = std::path::Path::new(&filename);
     let format = pcb_extract::detect_format(path)
         .ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "Unsupported file format"))?;
 
-    // Extract PCB data
     let file_size = data.len();
     let opts = ExtractOptions {
         include_tracks: true,
@@ -112,23 +112,20 @@ async fn upload(
         }
     };
 
-    // Generate HTML
-    let title = if pcb_data.metadata.title.is_empty() {
-        filename.clone()
-    } else {
-        pcb_data.metadata.title.clone()
-    };
-    let html_content = html::generate_html(&pcb_data, &title)
-        .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "HTML generation failed"))?;
-
-    // Upload to S3
     let id = Uuid::new_v4().to_string();
     let component_count = pcb_data.footprints.len();
 
-    let bom_key = format!("boms/{id}.html");
+    // Store pcbdata as JSON
+    let pcbdata_json = serde_json::to_vec(&pcb_data).map_err(|_| {
+        error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "JSON serialization failed",
+        )
+    })?;
+    let bom_key = format!("boms/{id}.json");
     state
         .s3
-        .put_object(&bom_key, html_content.into_bytes(), "text/html")
+        .put_object(&bom_key, pcbdata_json, "application/json")
         .await
         .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to store BOM"))?;
 
@@ -164,21 +161,43 @@ async fn upload(
     }))
 }
 
+/// Serve the Yew viewer shell HTML at /b/{id}
 async fn get_bom(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let key = format!("boms/{id}.html");
-    let html_bytes = state.s3.get_object(&key).await.map_err(|_| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "BOM not found".to_string(),
-            }),
-        )
-    })?;
-    let html = String::from_utf8_lossy(&html_bytes).into_owned();
+    // Verify the BOM exists
+    let key = format!("boms/{id}.json");
+    let _ = state
+        .s3
+        .get_object(&key)
+        .await
+        .map_err(|_| error_response(StatusCode::NOT_FOUND, "BOM not found"))?;
+
+    // Serve the viewer index.html
+    let index_path = state.viewer_dir.join("index.html");
+    let html = tokio::fs::read_to_string(&index_path)
+        .await
+        .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Viewer not available"))?;
     Ok(Html(html))
+}
+
+/// Serve pcbdata JSON at /b/{id}/data
+async fn get_bom_data(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let key = format!("boms/{id}.json");
+    let json_bytes = state
+        .s3
+        .get_object(&key)
+        .await
+        .map_err(|_| error_response(StatusCode::NOT_FOUND, "BOM not found"))?;
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        json_bytes,
+    ))
 }
 
 async fn get_meta(
@@ -186,22 +205,13 @@ async fn get_meta(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let key = format!("boms/{id}.meta.json");
-    let meta_bytes = state.s3.get_object(&key).await.map_err(|_| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "BOM not found".to_string(),
-            }),
-        )
-    })?;
-    let meta: BomMeta = serde_json::from_slice(&meta_bytes).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Invalid metadata".to_string(),
-            }),
-        )
-    })?;
+    let meta_bytes = state
+        .s3
+        .get_object(&key)
+        .await
+        .map_err(|_| error_response(StatusCode::NOT_FOUND, "BOM not found"))?;
+    let meta: BomMeta = serde_json::from_slice(&meta_bytes)
+        .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Invalid metadata"))?;
     Ok(Json(meta))
 }
 

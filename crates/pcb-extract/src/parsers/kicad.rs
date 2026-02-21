@@ -104,10 +104,12 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             silkscreen: LayerData {
                 front: silk_f,
                 back: silk_b,
+                inner: HashMap::new(),
             },
             fabrication: LayerData {
                 front: fab_f,
                 back: fab_b,
+                inner: HashMap::new(),
             },
         },
         footprints,
@@ -129,10 +131,11 @@ struct KicadLayerMap {
     entries: Vec<(i64, String, String)>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum LayerCategory {
     CopperF,
     CopperB,
+    CopperInner(String),
     SilkF,
     SilkB,
     FabF,
@@ -173,6 +176,7 @@ fn categorize_layer(name: &str, _layer_map: &KicadLayerMap) -> LayerCategory {
         "F.Fab" | "F.Fabrication" => LayerCategory::FabF,
         "B.Fab" | "B.Fabrication" => LayerCategory::FabB,
         "Edge.Cuts" => LayerCategory::EdgeCuts,
+        n if n.ends_with(".Cu") => LayerCategory::CopperInner(n.to_string()),
         _ => LayerCategory::Other,
     }
 }
@@ -530,7 +534,7 @@ fn parse_footprint(
     }
 
     let fp_bbox = FootprintBBox {
-        pos: [bbox.minx, bbox.miny],
+        pos: [fp_x, fp_y],
         relpos: [bbox.minx - fp_x, bbox.miny - fp_y],
         size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
         angle: fp_angle,
@@ -967,6 +971,7 @@ fn parse_fp_text(
 fn parse_tracks(root: &SExpr, layer_map: &KicadLayerMap, nets: &[String]) -> LayerData<Vec<Track>> {
     let mut front = Vec::new();
     let mut back = Vec::new();
+    let mut inner: HashMap<String, Vec<Track>> = HashMap::new();
 
     for child in root.children() {
         match child.tag() {
@@ -996,6 +1001,7 @@ fn parse_tracks(root: &SExpr, layer_map: &KicadLayerMap, nets: &[String]) -> Lay
                 match categorize_layer(&layer, layer_map) {
                     LayerCategory::CopperF => front.push(track),
                     LayerCategory::CopperB => back.push(track),
+                    LayerCategory::CopperInner(name) => inner.entry(name).or_default().push(track),
                     _ => {}
                 }
             }
@@ -1017,15 +1023,22 @@ fn parse_tracks(root: &SExpr, layer_map: &KicadLayerMap, nets: &[String]) -> Lay
                     net: net.clone(),
                     drillsize: Some(drill),
                 };
-                // Vias appear on both layers
+                // Vias appear on all copper layers
                 front.push(via.clone());
-                back.push(Track::Segment {
-                    start: at,
-                    end: at,
-                    width: size,
-                    net,
-                    drillsize: Some(drill),
-                });
+                back.push(via.clone());
+                for layer_tracks in inner.values_mut() {
+                    layer_tracks.push(via.clone());
+                }
+                // Also ensure vias appear on inner layers defined in the board
+                for (_, name, _) in &layer_map.entries {
+                    if name.ends_with(".Cu")
+                        && name != "F.Cu"
+                        && name != "B.Cu"
+                        && !inner.contains_key(name)
+                    {
+                        inner.entry(name.clone()).or_default().push(via.clone());
+                    }
+                }
             }
             Some("arc") => {
                 // Top-level arc tracks (KiCad 7+)
@@ -1062,6 +1075,9 @@ fn parse_tracks(root: &SExpr, layer_map: &KicadLayerMap, nets: &[String]) -> Lay
                     match categorize_layer(&layer, layer_map) {
                         LayerCategory::CopperF => front.push(track),
                         LayerCategory::CopperB => back.push(track),
+                        LayerCategory::CopperInner(name) => {
+                            inner.entry(name).or_default().push(track)
+                        }
                         _ => {}
                     }
                 }
@@ -1070,7 +1086,7 @@ fn parse_tracks(root: &SExpr, layer_map: &KicadLayerMap, nets: &[String]) -> Lay
         }
     }
 
-    LayerData { front, back }
+    LayerData { front, back, inner }
 }
 
 // ─── Zones ───────────────────────────────────────────────────────────
@@ -1078,6 +1094,7 @@ fn parse_tracks(root: &SExpr, layer_map: &KicadLayerMap, nets: &[String]) -> Lay
 fn parse_zones(root: &SExpr, layer_map: &KicadLayerMap, _nets: &[String]) -> LayerData<Vec<Zone>> {
     let mut front = Vec::new();
     let mut back = Vec::new();
+    let mut inner: HashMap<String, Vec<Zone>> = HashMap::new();
 
     for zone in root.find_all("zone") {
         let net_name = zone.value("net_name").unwrap_or("").to_string();
@@ -1115,6 +1132,7 @@ fn parse_zones(root: &SExpr, layer_map: &KicadLayerMap, _nets: &[String]) -> Lay
                     match fp_cat {
                         LayerCategory::CopperF => front.push(z),
                         LayerCategory::CopperB => back.push(z),
+                        LayerCategory::CopperInner(name) => inner.entry(name).or_default().push(z),
                         _ => {}
                     }
                 }
@@ -1122,7 +1140,7 @@ fn parse_zones(root: &SExpr, layer_map: &KicadLayerMap, _nets: &[String]) -> Lay
         }
     }
 
-    LayerData { front, back }
+    LayerData { front, back, inner }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -1225,21 +1243,5 @@ fn compute_edges_bbox(edges: &[Drawing]) -> BBox {
         }
     } else {
         bbox
-    }
-}
-
-// Need Clone for LayerCategory used in zone parsing
-impl Clone for LayerCategory {
-    fn clone(&self) -> Self {
-        match self {
-            Self::CopperF => Self::CopperF,
-            Self::CopperB => Self::CopperB,
-            Self::SilkF => Self::SilkF,
-            Self::SilkB => Self::SilkB,
-            Self::FabF => Self::FabF,
-            Self::FabB => Self::FabB,
-            Self::EdgeCuts => Self::EdgeCuts,
-            Self::Other => Self::Other,
-        }
     }
 }

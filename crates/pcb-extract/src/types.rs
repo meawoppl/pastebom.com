@@ -98,13 +98,15 @@ pub struct Drawings {
     pub fabrication: LayerData<Vec<Drawing>>,
 }
 
-/// Front/Back layer data.
+/// Front/Back/Inner layer data.
 #[derive(Debug, Clone, Serialize)]
 pub struct LayerData<T> {
     #[serde(rename = "F")]
     pub front: T,
     #[serde(rename = "B")]
     pub back: T,
+    #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
+    pub inner: HashMap<String, T>,
 }
 
 // ─── Drawing types ───────────────────────────────────────────────────
