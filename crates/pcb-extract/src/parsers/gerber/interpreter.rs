@@ -6,6 +6,7 @@ use crate::types::Drawing;
 use super::apertures::ApertureTable;
 use super::commands::{ApertureTemplate, GerberCommand, Polarity};
 use super::coord::CoordinateConverter;
+use super::macros::{self, MacroTable};
 
 /// Output from interpreting a single Gerber file.
 #[derive(Debug, Default)]
@@ -35,9 +36,11 @@ struct Interpreter {
     quadrant: QuadrantMode,
     region_active: bool,
     region_points: Vec<[f64; 2]>,
+    region_contours: Vec<Vec<[f64; 2]>>,
     polarity: Polarity,
     converter: CoordinateConverter,
     apertures: ApertureTable,
+    macro_table: MacroTable,
     drawings: Vec<Drawing>,
 }
 
@@ -51,9 +54,11 @@ impl Interpreter {
             quadrant: QuadrantMode::Multi, // Modern default per spec
             region_active: false,
             region_points: Vec::new(),
+            region_contours: Vec::new(),
             polarity: Polarity::Dark,
             converter: CoordinateConverter::default(),
             apertures: ApertureTable::default(),
+            macro_table: MacroTable::default(),
             drawings: Vec::new(),
         }
     }
@@ -90,12 +95,24 @@ impl Interpreter {
             GerberCommand::Polarity(p) => {
                 self.polarity = *p;
             }
+            GerberCommand::MacroDefine { name, body } => {
+                if let Ok(primitives) = macros::parse_macro_body(body) {
+                    self.macro_table.define(
+                        name.clone(),
+                        macros::ApertureMacro {
+                            name: name.clone(),
+                            primitives,
+                        },
+                    );
+                }
+            }
             GerberCommand::RegionBegin => {
                 self.region_active = true;
                 self.region_points.clear();
+                self.region_contours.clear();
             }
             GerberCommand::RegionEnd => {
-                self.flush_region();
+                self.flush_region_end();
                 self.region_active = false;
             }
             GerberCommand::Interpolate { x, y, i, j } => {
@@ -110,9 +127,12 @@ impl Interpreter {
                 self.do_interpolate(old_x, old_y, *i, *j);
             }
             GerberCommand::Move { x, y } => {
-                // In region mode, a D02 closes the current contour
+                // In region mode, a D02 closes the current contour and starts a new one
                 if self.region_active && !self.region_points.is_empty() {
-                    self.flush_region();
+                    let points = std::mem::take(&mut self.region_points);
+                    if points.len() >= 3 {
+                        self.region_contours.push(points);
+                    }
                 }
                 if let Some(nx) = x {
                     self.x = *nx;
@@ -251,6 +271,12 @@ impl Interpreter {
                         width: 0.0,
                     });
                 }
+                ApertureTemplate::Macro { name, params } => {
+                    if let Some(mac) = self.macro_table.get(name) {
+                        let macro_drawings = macros::evaluate_macro(mac, params, px, py);
+                        self.drawings.extend(macro_drawings);
+                    }
+                }
             }
         }
     }
@@ -359,18 +385,28 @@ impl Interpreter {
         points
     }
 
-    fn flush_region(&mut self) {
-        if self.region_points.len() >= 3 && self.polarity == Polarity::Dark {
+    /// Flush all collected region contours as a single multi-ring polygon.
+    /// Called on RegionEnd (G37) or EOF.
+    fn flush_region_end(&mut self) {
+        // Save any in-progress contour
+        if self.region_points.len() >= 3 {
             let points = std::mem::take(&mut self.region_points);
+            self.region_contours.push(points);
+        } else {
+            self.region_points.clear();
+        }
+
+        if !self.region_contours.is_empty() && self.polarity == Polarity::Dark {
+            let contours = std::mem::take(&mut self.region_contours);
             self.drawings.push(Drawing::Polygon {
                 pos: [0.0, 0.0],
                 angle: 0.0,
-                polygons: vec![points],
+                polygons: contours,
                 filled: Some(1),
                 width: 0.0,
             });
         } else {
-            self.region_points.clear();
+            self.region_contours.clear();
         }
     }
 }
@@ -385,7 +421,7 @@ pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, Extrac
 
     // Flush any remaining region
     if interp.region_active {
-        interp.flush_region();
+        interp.flush_region_end();
     }
 
     Ok(GerberLayerOutput {
@@ -677,6 +713,124 @@ mod tests {
                 assert!((end[0] - 25.4).abs() < 1e-4);
             }
             other => panic!("expected Segment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_region_multi_contour() {
+        // A region with two contours (outer boundary + hole) should produce
+        // a single Drawing::Polygon with two rings.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::RegionBegin,
+            // Outer contour: 10x10mm square
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(100000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(100000),
+                y: Some(100000),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(0),
+                y: Some(100000),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(0),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            // D02 starts a new contour (hole): inner 5x5mm square
+            GerberCommand::Move {
+                x: Some(20000),
+                y: Some(20000),
+            },
+            GerberCommand::Interpolate {
+                x: Some(80000),
+                y: Some(20000),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(80000),
+                y: Some(80000),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(20000),
+                y: Some(80000),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(20000),
+                y: Some(20000),
+                i: None,
+                j: None,
+            },
+            GerberCommand::RegionEnd,
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Polygon { polygons, .. } => {
+                // Should have 2 rings (outer + hole) in a single polygon
+                assert_eq!(polygons.len(), 2);
+                assert_eq!(polygons[0].len(), 5); // outer: 4 corners + closing
+                assert_eq!(polygons[1].len(), 5); // hole: 4 corners + closing
+            }
+            other => panic!("expected Polygon, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flash_macro_aperture() {
+        let mut cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            // Define a macro with a single circle primitive
+            GerberCommand::MacroDefine {
+                name: "MYCIRC".to_string(),
+                body: vec!["1,1,$1,0,0".to_string()],
+            },
+            // Define aperture using the macro with param 0.5
+            GerberCommand::ApertureDefine {
+                code: 20,
+                template: ApertureTemplate::Macro {
+                    name: "MYCIRC".to_string(),
+                    params: vec![0.5],
+                },
+            },
+            GerberCommand::SelectAperture(20),
+        ];
+        cmds.push(GerberCommand::Flash {
+            x: Some(10000),
+            y: Some(20000),
+        });
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Circle { start, radius, .. } => {
+                assert!((start[0] - 1.0).abs() < 1e-6);
+                assert!((start[1] - 2.0).abs() < 1e-6);
+                assert!((*radius - 0.25).abs() < 1e-6); // diameter 0.5 / 2
+            }
+            other => panic!("expected Circle, got: {other:?}"),
         }
     }
 }

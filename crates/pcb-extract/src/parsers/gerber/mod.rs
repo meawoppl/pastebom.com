@@ -4,6 +4,7 @@ pub mod coord;
 pub mod interpreter;
 pub mod layers;
 pub mod lexer;
+pub mod macros;
 
 use std::collections::HashMap;
 use std::io::Cursor;
