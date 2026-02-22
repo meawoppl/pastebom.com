@@ -128,7 +128,7 @@
     </style>
 </head>
 <body>
-    <h1>PasteBOM</h1>
+    <h1>PasteBOM <span id="version" style="font-size:0.5em;color:#666"></span></h1>
     <p class="subtitle">Share interactive Bill of Materials and PCB layout viewers.</p>
 
     <div class="upload-zone" id="dropzone">
@@ -212,6 +212,10 @@
             } catch { recentEl.innerHTML = ''; }
         }
         loadRecent();
+
+        fetch('/health').then(r => r.json()).then(d => {
+            document.getElementById('version').textContent = 'v' + d.version;
+        }).catch(() => {});
 
         dropzone.addEventListener('click', () => fileInput.click());
         dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
