@@ -3,4 +3,4 @@ members = ["crates/pcb-extract", "crates/server", "crates/viewer"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "1.7.3"
