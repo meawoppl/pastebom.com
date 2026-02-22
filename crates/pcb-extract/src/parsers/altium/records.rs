@@ -82,10 +82,17 @@ pub struct AltiumFill {
 pub fn parse_components(
     records: &[HashMap<String, String>],
     _wide_strings: &HashMap<u32, String>,
+    units_per_mil: i32,
 ) -> Vec<AltiumComponent> {
     records
         .iter()
-        .filter(|r| r.get("RECORD").map(|v| v.as_str()) == Some("Component"))
+        .filter(|r| {
+            // Some files have RECORD=Component, others have no RECORD field at all
+            // (all records in Components6/Data are components)
+            r.get("RECORD")
+                .map(|v| v.eq_ignore_ascii_case("Component"))
+                .unwrap_or(true)
+        })
         .map(|r| AltiumComponent {
             designator: r
                 .get("SOURCEDESIGNATOR")
@@ -94,8 +101,8 @@ pub fn parse_components(
                 .unwrap_or_default(),
             pattern: r.get("PATTERN").cloned().unwrap_or_default(),
             comment: r.get("COMMENT").cloned().unwrap_or_default(),
-            x: parse_coord(r, "X"),
-            y: parse_coord(r, "Y"),
+            x: parse_coord(r, "X", units_per_mil),
+            y: parse_coord(r, "Y", units_per_mil),
             rotation: r
                 .get("ROTATION")
                 .and_then(|v| v.parse().ok())
@@ -110,10 +117,12 @@ pub fn parse_nets(records: &[HashMap<String, String>]) -> Vec<AltiumNet> {
     let mut nets = vec![AltiumNet {
         name: String::new(),
     }];
-    for r in records
-        .iter()
-        .filter(|r| r.get("RECORD").map(|v| v.as_str()) == Some("Net"))
-    {
+    for r in records.iter().filter(|r| {
+        // Some files have RECORD=Net, others have no RECORD field at all
+        r.get("RECORD")
+            .map(|v| v.eq_ignore_ascii_case("Net"))
+            .unwrap_or(true)
+    }) {
         nets.push(AltiumNet {
             name: r.get("NAME").cloned().unwrap_or_default(),
         });
@@ -121,20 +130,57 @@ pub fn parse_nets(records: &[HashMap<String, String>]) -> Vec<AltiumNet> {
     nets
 }
 
-fn parse_coord(record: &HashMap<String, String>, key: &str) -> i32 {
+fn parse_coord(record: &HashMap<String, String>, key: &str, units_per_mil: i32) -> i32 {
     record
         .get(key)
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(|v| v as i32)
+        .and_then(|v| parse_altium_value(v, units_per_mil))
         .unwrap_or(0)
+}
+
+/// Parse an Altium coordinate/dimension value.
+/// Handles both raw internal units (integer) and "mil" suffix format.
+/// For "mil" suffix: uses units_per_mil to convert (10000 for PCB 6.0, 1000 for older).
+pub fn parse_altium_value(s: &str, units_per_mil: i32) -> Option<i32> {
+    let trimmed = s.trim();
+    if let Some(mil_str) = trimmed.strip_suffix("mil") {
+        mil_str
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| (v * units_per_mil as f64) as i32)
+    } else {
+        trimmed.parse::<f64>().ok().map(|v| v as i32)
+    }
+}
+
+/// Check if text records use "mil" suffix on coordinates (indicates PCB 6.0 format).
+pub fn detect_mil_format(records: &[HashMap<String, String>]) -> bool {
+    records
+        .iter()
+        .any(|r| r.get("X").map(|v| v.ends_with("mil")).unwrap_or(false))
 }
 
 fn parse_layer_id(record: &HashMap<String, String>) -> u8 {
     // Try V7_LAYER first, then LAYER
-    record
+    let val = record
         .get("V7_LAYER")
         .or_else(|| record.get("LAYER"))
-        .and_then(|v| v.parse::<u32>().ok())
+        .map(|v| v.as_str())
+        .unwrap_or("1");
+
+    // Handle string layer names (e.g. "TOP", "BOTTOM")
+    match val.to_uppercase().as_str() {
+        "TOP" => return 1,
+        "BOTTOM" => return 32,
+        "TOPOVERLAY" => return 33,
+        "BOTTOMOVERLAY" => return 34,
+        "MULTILAYER" => return 74,
+        _ => {}
+    }
+
+    // Numeric layer ID
+    val.parse::<u32>()
+        .ok()
         .map(|v| {
             // V7 layer IDs have base 0x01000000
             if v > 0x01000000 {
@@ -295,11 +341,104 @@ pub fn parse_fills(data: &[u8]) -> Vec<AltiumFill> {
         .collect()
 }
 
-pub fn parse_pads(data: &[u8]) -> Vec<AltiumPad> {
-    // Pads have multiple subrecords per pad:
-    // Subrecord 0: pad name (variable-length string)
-    // Subrecord 1: pad geometry
-    // Subrecord 2: optional size-and-shape
+pub fn parse_pads(data: &[u8], use_fine_scale: bool) -> Vec<AltiumPad> {
+    if use_fine_scale {
+        parse_pads_v6(data)
+    } else {
+        parse_pads_legacy(data)
+    }
+}
+
+/// Parse pads from PCB 6.0 format where binary chunks use length-only prefixes
+/// after the initial type+length subrecords.
+fn parse_pads_v6(data: &[u8]) -> Vec<AltiumPad> {
+    let mut pads = Vec::new();
+    let mut offset = 0;
+
+    while offset + 12 < data.len() {
+        // Sub-record A (type+len): pad name
+        if offset + 5 > data.len() {
+            break;
+        }
+        let _sr_type_a = data[offset];
+        offset += 1;
+        let sr_len_a = read_u32_le(data, offset) as usize;
+        offset += 4;
+        if offset + sr_len_a > data.len() {
+            break;
+        }
+        let name = if sr_len_a > 1 {
+            let name_len = data[offset] as usize;
+            String::from_utf8_lossy(&data[offset + 1..offset + 1 + name_len.min(sr_len_a - 1)])
+                .to_string()
+        } else if sr_len_a == 1 {
+            String::from_utf8_lossy(&data[offset..offset + 1]).to_string()
+        } else {
+            String::new()
+        };
+        offset += sr_len_a;
+
+        // Sub-record B (type+len): flags/empty
+        if offset + 5 > data.len() {
+            break;
+        }
+        offset += 1; // type
+        let sr_len_b = read_u32_le(data, offset) as usize;
+        offset += 4;
+        if offset + sr_len_b > data.len() {
+            break;
+        }
+        offset += sr_len_b;
+
+        // Length-prefixed binary chunks (no type byte)
+        let mut geometry: Option<&[u8]> = None;
+        loop {
+            if offset + 4 > data.len() {
+                break;
+            }
+            let chunk_len = read_u32_le(data, offset) as usize;
+            if chunk_len > 100_000 {
+                break;
+            }
+            offset += 4;
+            if offset + chunk_len > data.len() {
+                break;
+            }
+            // The largest chunk (typically ~200 bytes) is the pad geometry
+            if chunk_len >= 60 {
+                geometry = Some(&data[offset..offset + chunk_len]);
+            }
+            offset += chunk_len;
+            // Next pad starts with type byte 0x02
+            if offset < data.len() && data[offset] == 0x02 {
+                break;
+            }
+        }
+
+        if let Some(geom) = geometry {
+            if geom.len() >= 60 {
+                pads.push(AltiumPad {
+                    name,
+                    layer: read_u8(geom, 0),
+                    net_id: read_u16(geom, 3),
+                    component_id: read_u16(geom, 7),
+                    x: read_i32(geom, 13),
+                    y: read_i32(geom, 17),
+                    size_x: read_i32(geom, 21),
+                    size_y: read_i32(geom, 25),
+                    hole_size: read_i32(geom, 45),
+                    shape: read_u8(geom, 49),
+                    rotation: read_f64(geom, 52),
+                });
+            }
+        }
+    }
+
+    pads
+}
+
+/// Parse pads from older Altium format using type+length subrecords throughout.
+fn parse_pads_legacy(data: &[u8]) -> Vec<AltiumPad> {
     let all_subrecords = parse_subrecords(data);
 
     let mut pads = Vec::new();
@@ -324,7 +463,6 @@ pub fn parse_pads(data: &[u8]) -> Vec<AltiumPad> {
         i += 1;
 
         if geom.len() < 70 {
-            // Skip optional subrecord 2 if present
             if i < all_subrecords.len() && all_subrecords[i].1.len() < 33 {
                 i += 1;
             }
@@ -347,8 +485,6 @@ pub fn parse_pads(data: &[u8]) -> Vec<AltiumPad> {
 
         // Skip optional subrecord 2
         if i < all_subrecords.len() {
-            // Heuristic: subrecord 2 is present if the next subrecord
-            // doesn't look like a pad name (i.e., its type tag differs)
             let next_tag = all_subrecords[i].0;
             if next_tag != all_subrecords[0].0 {
                 i += 1;
@@ -359,6 +495,18 @@ pub fn parse_pads(data: &[u8]) -> Vec<AltiumPad> {
     }
 
     pads
+}
+
+fn read_u32_le(data: &[u8], offset: usize) -> u32 {
+    if offset + 4 > data.len() {
+        return 0;
+    }
+    u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
 }
 
 // ─── Text records ───────────────────────────────────────────────────
@@ -376,10 +524,91 @@ pub struct AltiumText {
     pub is_comment: bool,
 }
 
-pub fn parse_texts(data: &[u8]) -> Vec<AltiumText> {
-    // Texts6 stream contains paired subrecords:
-    // Subrecord 0: text string (variable-length)
-    // Subrecord 1: text geometry (binary)
+pub fn parse_texts(data: &[u8], use_fine_scale: bool) -> Vec<AltiumText> {
+    if use_fine_scale {
+        parse_texts_v6(data)
+    } else {
+        parse_texts_legacy(data)
+    }
+}
+
+/// Parse texts from PCB 6.0 format with chunk-based sub-records.
+fn parse_texts_v6(data: &[u8]) -> Vec<AltiumText> {
+    let mut texts = Vec::new();
+    let mut offset = 0;
+
+    while offset + 12 < data.len() {
+        // Sub-record A (type+len): text content
+        if offset + 5 > data.len() {
+            break;
+        }
+        offset += 1; // type
+        let sr_len_a = read_u32_le(data, offset) as usize;
+        offset += 4;
+        if offset + sr_len_a > data.len() {
+            break;
+        }
+        let text_str = String::from_utf8_lossy(&data[offset..offset + sr_len_a])
+            .trim_end_matches('\0')
+            .to_string();
+        offset += sr_len_a;
+
+        // Length-prefixed binary chunks (no type byte)
+        let mut geometry: Option<&[u8]> = None;
+        loop {
+            if offset + 4 > data.len() {
+                break;
+            }
+            let chunk_len = read_u32_le(data, offset) as usize;
+            if chunk_len > 100_000 {
+                break;
+            }
+            offset += 4;
+            if offset + chunk_len > data.len() {
+                break;
+            }
+            if chunk_len >= 35 {
+                geometry = Some(&data[offset..offset + chunk_len]);
+            }
+            offset += chunk_len;
+            // Next text starts with a type byte — check for typical text type bytes
+            if offset < data.len() && (data[offset] == 0x05 || data[offset] == 0x04) {
+                break;
+            }
+        }
+
+        if let Some(geom) = geometry {
+            if geom.len() >= 35 {
+                let layer = read_u8(geom, 0);
+                let component_id = read_u16(geom, 7);
+                let x = read_i32(geom, 13);
+                let y = read_i32(geom, 17);
+                let height = read_i32(geom, 21);
+                let rotation = read_f64(geom, 27);
+
+                let is_designator = text_str == ".Designator";
+                let is_comment = text_str == ".Comment";
+
+                texts.push(AltiumText {
+                    layer,
+                    component_id,
+                    x,
+                    y,
+                    height,
+                    rotation,
+                    text: text_str,
+                    is_designator,
+                    is_comment,
+                });
+            }
+        }
+    }
+
+    texts
+}
+
+/// Parse texts from older Altium format using type+length subrecords.
+fn parse_texts_legacy(data: &[u8]) -> Vec<AltiumText> {
     let all_subrecords = parse_subrecords(data);
 
     let mut texts = Vec::new();
@@ -404,7 +633,6 @@ pub fn parse_texts(data: &[u8]) -> Vec<AltiumText> {
         let height = read_i32(geom, 21);
         let rotation = read_f64(geom, 27);
 
-        // Detect designator/comment from text content
         let is_designator = text_str == ".Designator";
         let is_comment = text_str == ".Comment";
 
