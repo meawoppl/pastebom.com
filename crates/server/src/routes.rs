@@ -1,5 +1,5 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{multipart::MultipartRejection, DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -82,8 +82,10 @@ struct BomMeta {
 
 async fn upload(
     State(state): State<AppState>,
-    mut multipart: Multipart,
+    multipart_result: Result<Multipart, MultipartRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut multipart = multipart_result
+        .map_err(|e| error_response(StatusCode::BAD_REQUEST, &format!("Upload error: {e}")))?;
     let mut file_data: Option<(String, Vec<u8>)> = None;
     let mut secret = false;
 
