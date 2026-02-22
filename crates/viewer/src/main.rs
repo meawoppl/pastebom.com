@@ -99,6 +99,7 @@ fn app() -> Html {
     let board_flipped = use_state(|| false);
     let bom_sidebar_open = use_state(|| true);
     let view_sidebar_open = use_state(|| true);
+    let upload_filename: UseStateHandle<Option<String>> = use_state(|| None);
 
     // Fetch pcbdata on mount
     {
@@ -107,11 +108,24 @@ fn app() -> Html {
         let loading = loading.clone();
         let error = error.clone();
         let storage_prefix_str = storage_prefix_str.clone();
+        let upload_filename = upload_filename.clone();
 
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
                 let window = web_sys::window().unwrap();
                 let pathname = window.location().pathname().unwrap_or_default();
+
+                // Fetch upload metadata (filename) in parallel
+                let meta_url = format!("{}/meta", pathname);
+                if let Ok(meta_resp) = gloo::net::http::Request::get(&meta_url).send().await {
+                    if let Ok(text) = meta_resp.text().await {
+                        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(name) = meta.get("filename").and_then(|v| v.as_str()) {
+                                upload_filename.set(Some(name.to_string()));
+                            }
+                        }
+                    }
+                }
 
                 let data_url = format!("{}/data", pathname);
 
@@ -720,8 +734,17 @@ fn app() -> Html {
                 <div class="sidebar bom-sidebar">
                     <div class="sidebar-header">
                         <div>
-                            <div class="sidebar-title">{&data.metadata.title}</div>
+                            <div class="sidebar-title">{
+                                if let Some(ref name) = *upload_filename {
+                                    name.clone()
+                                } else {
+                                    data.metadata.title.clone()
+                                }
+                            }</div>
                             <div class="sidebar-subtitle">
+                                if upload_filename.is_some() && !data.metadata.title.is_empty() {
+                                    {format!("{} ", &data.metadata.title)}
+                                }
                                 {format!("Rev: {}", &data.metadata.revision)}
                                 if !data.metadata.date.is_empty() {
                                     {format!(" | {}", &data.metadata.date)}

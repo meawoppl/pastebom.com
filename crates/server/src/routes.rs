@@ -118,6 +118,15 @@ async fn upload(
         .ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "Unsupported file format"))?;
 
     let file_size = data.len();
+    let id = Uuid::new_v4().to_string();
+
+    // Always store the original upload first
+    let upload_key = format!("uploads/{id}/{filename}");
+    let _ = state
+        .s3
+        .put_object(&upload_key, data.clone(), "application/octet-stream")
+        .await;
+
     let opts = ExtractOptions {
         include_tracks: true,
         include_nets: true,
@@ -126,8 +135,6 @@ async fn upload(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("Parse error for {filename}: {e}");
-            let fail_name = format!("{}_{}", Uuid::new_v4(), filename);
-            let _ = state.s3.put_failed(&fail_name, data.clone()).await;
             return Err(error_response(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Failed to parse PCB file",
@@ -135,7 +142,6 @@ async fn upload(
         }
     };
 
-    let id = Uuid::new_v4().to_string();
     let component_count = pcb_data.footprints.len();
 
     // Store pcbdata as JSON
@@ -166,13 +172,6 @@ async fn upload(
             .put_object(&meta_key, meta_json, "application/json")
             .await;
     }
-
-    // Store the original upload
-    let upload_key = format!("uploads/{id}/{filename}");
-    let _ = state
-        .s3
-        .put_object(&upload_key, data, "application/octet-stream")
-        .await;
 
     if !secret {
         let entry = RecentEntry {
