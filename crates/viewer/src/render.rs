@@ -805,6 +805,34 @@ pub fn draw_bg_layer(
     let _ = (text_color, settings, font_data);
 }
 
+/// Draw drill holes using destination-out compositing to punch through the canvas.
+/// This creates a see-through effect where the page background shows through.
+fn draw_drills(canvas: &HtmlCanvasElement, pcbdata: &PcbData) {
+    let drills = match pcbdata.drawings.fabrication.inner.get("Drills") {
+        Some(d) => d,
+        None => return,
+    };
+    if drills.is_empty() {
+        return;
+    }
+
+    let ctx = get_ctx(canvas);
+    ctx.save();
+    ctx.set_global_composite_operation("destination-out")
+        .unwrap();
+    ctx.set_fill_style_str("rgba(0,0,0,1)");
+
+    for d in drills {
+        if let Drawing::Circle { start, radius, .. } = d {
+            ctx.begin_path();
+            ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
+            ctx.fill();
+        }
+    }
+
+    ctx.restore();
+}
+
 pub fn draw_tracks(
     canvas: &HtmlCanvasElement,
     layer: &str,
@@ -1206,6 +1234,9 @@ pub fn draw_background(
         settings,
         pcbdata.font_data.as_ref(),
     );
+
+    // Draw drill holes (punch through bg canvas for see-through effect)
+    draw_drills(&layer.bg, pcbdata);
 
     if settings.render_silkscreen {
         draw_bg_layer(
