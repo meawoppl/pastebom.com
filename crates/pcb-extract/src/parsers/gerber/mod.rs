@@ -157,6 +157,9 @@ fn assemble_pcb_data(
     let mut tracks_f: Vec<Track> = Vec::new();
     let mut tracks_b: Vec<Track> = Vec::new();
     let mut tracks_inner: HashMap<String, Vec<Track>> = HashMap::new();
+    let mut pads_f: Vec<Drawing> = Vec::new();
+    let mut pads_b: Vec<Drawing> = Vec::new();
+    let mut pads_inner: HashMap<String, Vec<Drawing>> = HashMap::new();
 
     for (layer_type, output) in layer_outputs {
         match layer_type {
@@ -177,6 +180,8 @@ fn assemble_pcb_data(
                     for d in &output.drawings {
                         if let Some(track) = drawing_to_track(d) {
                             tracks_f.push(track);
+                        } else {
+                            pads_f.push(d.clone());
                         }
                     }
                 }
@@ -186,6 +191,8 @@ fn assemble_pcb_data(
                     for d in &output.drawings {
                         if let Some(track) = drawing_to_track(d) {
                             tracks_b.push(track);
+                        } else {
+                            pads_b.push(d.clone());
                         }
                     }
                 }
@@ -193,9 +200,12 @@ fn assemble_pcb_data(
             GerberLayerType::CopperInner(ref name) => {
                 if opts.include_tracks {
                     let inner_tracks = tracks_inner.entry(name.clone()).or_default();
+                    let inner_pads = pads_inner.entry(name.clone()).or_default();
                     for d in &output.drawings {
                         if let Some(track) = drawing_to_track(d) {
                             inner_tracks.push(track);
+                        } else {
+                            inner_pads.push(d.clone());
                         }
                     }
                 }
@@ -222,6 +232,18 @@ fn assemble_pcb_data(
             front: tracks_f,
             back: tracks_b,
             inner: tracks_inner,
+        })
+    } else {
+        None
+    };
+
+    let copper_pads = if opts.include_tracks
+        && (!pads_f.is_empty() || !pads_b.is_empty() || !pads_inner.is_empty())
+    {
+        Some(LayerData {
+            front: pads_f,
+            back: pads_b,
+            inner: pads_inner,
         })
     } else {
         None
@@ -256,6 +278,7 @@ fn assemble_pcb_data(
         bom: None,
         ibom_version: None,
         tracks,
+        copper_pads,
         zones: None,
         nets: None,
         font_data: None,

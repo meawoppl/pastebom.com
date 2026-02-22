@@ -51,6 +51,8 @@ pub struct PcbData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tracks: Option<LayerData<Vec<Track>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub copper_pads: Option<LayerData<Vec<Drawing>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub zones: Option<LayerData<Vec<Zone>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nets: Option<Vec<String>>,
