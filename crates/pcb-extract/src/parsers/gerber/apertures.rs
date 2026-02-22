@@ -32,6 +32,7 @@ impl ApertureTable {
                 ApertureTemplate::Rectangle { x_size, y_size } => x_size.min(*y_size),
                 ApertureTemplate::Obround { x_size, y_size } => x_size.min(*y_size),
                 ApertureTemplate::Polygon { outer_diameter, .. } => *outer_diameter,
+                ApertureTemplate::Macro { .. } => 0.0, // Macros are flash-only
             },
             None => 0.0,
         }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, Path2d};
+use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, HtmlCanvasElement, Path2d};
 
 use crate::pcbdata::*;
 use crate::state::Settings;
@@ -342,7 +342,7 @@ fn draw_polygon_shape(
         let path = get_polygons_path(polygons);
         if filled.is_none_or(|f| f != 0) {
             ctx.set_fill_style_str(color);
-            ctx.fill_with_path_2d(&path);
+            ctx.fill_with_path_2d_and_winding(&path, CanvasWindingRule::Evenodd);
         } else {
             ctx.set_stroke_style_str(color);
             ctx.set_line_width((1.0 / scalefactor).max(*width));
@@ -393,7 +393,7 @@ fn draw_text(
 
     if let Some(ref polygons) = text.polygons {
         let path = get_polygons_path(polygons);
-        ctx.fill_with_path_2d(&path);
+        ctx.fill_with_path_2d_and_winding(&path, CanvasWindingRule::Evenodd);
         ctx.restore();
         return;
     }
@@ -934,7 +934,7 @@ pub fn draw_zones(
             }
         });
 
-        ctx.fill_with_path_2d(path);
+        ctx.fill_with_path_2d_and_winding(path, CanvasWindingRule::Evenodd);
         if let Some(w) = zone.width {
             if w > 0.0 {
                 ctx.set_line_width(w);
