@@ -22,6 +22,11 @@ pub enum ApertureTemplate {
         num_vertices: u32,
         rotation: f64,
     },
+    /// Reference to a user-defined aperture macro.
+    Macro {
+        name: String,
+        params: Vec<f64>,
+    },
 }
 
 /// Layer polarity from %LP command.
@@ -100,6 +105,8 @@ pub enum GerberCommand {
     Polarity(Polarity),
     /// %TF.FileFunction - Gerber X2 file function attribute
     FileFunction(FileFunction),
+    /// %AM - Aperture macro definition
+    MacroDefine { name: String, body: Vec<String> },
     /// M02 - End of file
     EndOfFile,
 }
@@ -107,19 +114,68 @@ pub enum GerberCommand {
 /// Parse a token stream into a sequence of Gerber commands.
 pub fn parse_commands(tokens: &[GerberToken]) -> Result<Vec<GerberCommand>, ExtractError> {
     let mut commands = Vec::new();
+    let mut macro_name: Option<String> = None;
+    let mut macro_body: Vec<String> = Vec::new();
 
     for token in tokens {
         match token {
             GerberToken::Extended(content) => {
+                // Check if this starts a new macro definition
+                if content.starts_with("AM") && content.len() > 2 {
+                    // Flush any previous macro
+                    if let Some(name) = macro_name.take() {
+                        commands.push(GerberCommand::MacroDefine {
+                            name,
+                            body: std::mem::take(&mut macro_body),
+                        });
+                    }
+                    macro_name = Some(content[2..].to_string());
+                    macro_body.clear();
+                    continue;
+                }
+
+                // If we're inside a macro, collect body lines
+                if macro_name.is_some() {
+                    // Body lines are primitive definitions (start with a digit) or comments
+                    let trimmed = content.trim();
+                    if trimmed.starts_with(|c: char| c.is_ascii_digit()) || trimmed.starts_with('$')
+                    {
+                        macro_body.push(trimmed.to_string());
+                        continue;
+                    }
+                    // Non-body extended token ends the macro
+                    let name = macro_name.take().unwrap();
+                    commands.push(GerberCommand::MacroDefine {
+                        name,
+                        body: std::mem::take(&mut macro_body),
+                    });
+                }
+
                 if let Some(cmd) = parse_extended(content)? {
                     commands.push(cmd);
                 }
             }
             GerberToken::Word(word) => {
+                // A word token ends any open macro definition
+                if let Some(name) = macro_name.take() {
+                    commands.push(GerberCommand::MacroDefine {
+                        name,
+                        body: std::mem::take(&mut macro_body),
+                    });
+                }
+
                 let cmds = parse_word(word)?;
                 commands.extend(cmds);
             }
         }
+    }
+
+    // Flush any remaining macro
+    if let Some(name) = macro_name.take() {
+        commands.push(GerberCommand::MacroDefine {
+            name,
+            body: macro_body,
+        });
     }
 
     Ok(commands)
@@ -287,9 +343,11 @@ fn parse_aperture_template(s: &str) -> Result<ApertureTemplate, ExtractError> {
             })
         }
         _ => {
-            // Unknown template type — likely an aperture macro reference.
-            // Treat as a circle with zero diameter (will be skipped during rendering).
-            Ok(ApertureTemplate::Circle { diameter: 0.0 })
+            // Aperture macro reference: type_char is the macro name, params are passed through
+            Ok(ApertureTemplate::Macro {
+                name: type_char.to_string(),
+                params,
+            })
         }
     }
 }
@@ -726,5 +784,53 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_macro_define() {
+        let cmds = parse("%AMOC8*5,1,8,0,0,1.08239X$1,22.5*%\n");
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            GerberCommand::MacroDefine { name, body } => {
+                assert_eq!(name, "OC8");
+                assert_eq!(body.len(), 1);
+                assert_eq!(body[0], "5,1,8,0,0,1.08239X$1,22.5");
+            }
+            other => panic!("expected MacroDefine, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_macro_ad_reference() {
+        let cmds = parse("%ADD22OC8,0.1*%\n");
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            GerberCommand::ApertureDefine { code, template } => {
+                assert_eq!(*code, 22);
+                match template {
+                    ApertureTemplate::Macro { name, params } => {
+                        assert_eq!(name, "OC8");
+                        assert_eq!(params.len(), 1);
+                        assert!((params[0] - 0.1).abs() < 1e-9);
+                    }
+                    other => panic!("expected Macro template, got: {other:?}"),
+                }
+            }
+            other => panic!("expected ApertureDefine, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_macro_multi_line() {
+        // Macro with multiple primitives
+        let cmds = parse("%AMTEST*1,1,0.5,0,0*21,1,0.3,0.1,0,0,0*%\n");
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            GerberCommand::MacroDefine { name, body } => {
+                assert_eq!(name, "TEST");
+                assert_eq!(body.len(), 2);
+            }
+            other => panic!("expected MacroDefine, got: {other:?}"),
+        }
     }
 }
