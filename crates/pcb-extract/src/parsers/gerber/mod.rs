@@ -1,6 +1,7 @@
 mod apertures;
 pub mod commands;
 pub mod coord;
+pub mod excellon;
 pub mod interpreter;
 pub mod layers;
 pub mod lexer;
@@ -41,7 +42,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             continue;
         }
 
-        // Try to parse as Gerber
+        // Try to parse as Gerber first, then fall back to Excellon drill
         match parse_single_gerber(&filename, &content) {
             Ok((layer_type, output)) => {
                 had_gerber = true;
@@ -50,8 +51,14 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
                 }
             }
             Err(_) => {
-                // Not a valid Gerber file — skip silently
-                continue;
+                // Not a valid Gerber file — try Excellon drill format
+                if let Some(drawings) = excellon::parse_excellon(&content) {
+                    if !drawings.is_empty() {
+                        had_gerber = true;
+                        layer_outputs
+                            .push((GerberLayerType::Drills, GerberLayerOutput { drawings }));
+                    }
+                }
             }
         }
     }
@@ -146,6 +153,7 @@ fn assemble_pcb_data(
     let mut edges: Vec<Drawing> = Vec::new();
     let mut silk_f: Vec<Drawing> = Vec::new();
     let mut silk_b: Vec<Drawing> = Vec::new();
+    let mut drills: Vec<Drawing> = Vec::new();
     let mut tracks_f: Vec<Track> = Vec::new();
     let mut tracks_b: Vec<Track> = Vec::new();
     let mut tracks_inner: HashMap<String, Vec<Track>> = HashMap::new();
@@ -160,6 +168,9 @@ fn assemble_pcb_data(
             }
             GerberLayerType::SilkscreenBottom => {
                 silk_b.extend(output.drawings);
+            }
+            GerberLayerType::Drills => {
+                drills.extend(output.drawings);
             }
             GerberLayerType::CopperTop => {
                 if opts.include_tracks {
@@ -228,7 +239,11 @@ fn assemble_pcb_data(
             fabrication: LayerData {
                 front: Vec::new(),
                 back: Vec::new(),
-                inner: HashMap::new(),
+                inner: if drills.is_empty() {
+                    HashMap::new()
+                } else {
+                    HashMap::from([("Drills".to_string(), drills)])
+                },
             },
         },
         footprints: Vec::new(),
@@ -449,5 +464,67 @@ M02*
         let tracks = pcb.tracks.unwrap();
         assert!(!tracks.inner.is_empty());
         assert!(tracks.inner.contains_key("In2"));
+    }
+
+    #[test]
+    fn test_drill_file_in_zip() {
+        let drill_content = "\
+M48
+METRIC,TZ,000.000
+T01C0.300
+T02C0.800
+%
+T01
+X5.000Y5.000
+X10.000Y10.000
+T02
+X20.000Y20.000
+M30
+";
+        let zip_data = make_test_zip(&[
+            ("board.GKO", OUTLINE_GERBER),
+            ("board.GTL", COPPER_TOP_GERBER),
+            ("drill.xln", drill_content),
+        ]);
+
+        let opts = ExtractOptions {
+            include_tracks: true,
+            include_nets: false,
+        };
+
+        let pcb = parse(&zip_data, &opts).unwrap();
+
+        // Board outline and copper should still work
+        assert_eq!(pcb.edges.len(), 4);
+        let tracks = pcb.tracks.unwrap();
+        assert_eq!(tracks.front.len(), 1);
+
+        // Drill holes should be in fabrication.inner["Drills"]
+        let drills = pcb.drawings.fabrication.inner.get("Drills").unwrap();
+        assert_eq!(drills.len(), 3);
+
+        // First drill: T01 (0.3mm dia = 0.15mm radius)
+        match &drills[0] {
+            Drawing::Circle {
+                start,
+                radius,
+                filled,
+                ..
+            } => {
+                assert!((start[0] - 5.0).abs() < 1e-6);
+                assert!((start[1] - 5.0).abs() < 1e-6);
+                assert!((radius - 0.15).abs() < 1e-6);
+                assert_eq!(*filled, Some(1));
+            }
+            _ => panic!("Expected Circle"),
+        }
+
+        // Third drill: T02 (0.8mm dia = 0.4mm radius)
+        match &drills[2] {
+            Drawing::Circle { radius, .. } => {
+                assert!((radius - 0.4).abs() < 1e-6);
+            }
+            _ => panic!("Expected Circle"),
+        }
     }
 }

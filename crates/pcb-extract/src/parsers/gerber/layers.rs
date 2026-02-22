@@ -11,6 +11,7 @@ pub enum GerberLayerType {
     SolderMaskTop,
     SolderMaskBottom,
     BoardOutline,
+    Drills,
     Unknown,
 }
 
