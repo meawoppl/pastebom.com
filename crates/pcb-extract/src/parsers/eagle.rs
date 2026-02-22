@@ -300,7 +300,7 @@ fn parse_elements(
             if let Some(package) = package {
                 // Through-hole pads
                 for pad in &package.pads {
-                    let (px, py) = rotate_point(pad.x, -pad.y, angle, mirrored);
+                    let (px, py) = rotate_point(pad.x, pad.y, angle, mirrored);
                     let diameter = if pad.diameter > 0.0 {
                         pad.diameter
                     } else {
@@ -308,7 +308,7 @@ fn parse_elements(
                     };
                     fp_pads.push(Pad {
                         layers: vec!["F".to_string(), "B".to_string()],
-                        pos: [x + px, y + py],
+                        pos: [x + px, -(y + py)],
                         size: [diameter, diameter],
                         shape: match pad.shape.as_str() {
                             "square" => "rect".to_string(),
@@ -337,7 +337,7 @@ fn parse_elements(
 
                 // SMD pads
                 for smd in &package.smds {
-                    let (px, py) = rotate_point(smd.x, -smd.y, angle, mirrored);
+                    let (px, py) = rotate_point(smd.x, smd.y, angle, mirrored);
                     let pad_side = if mirrored {
                         mirror_layer(smd.layer)
                     } else {
@@ -350,7 +350,7 @@ fn parse_elements(
                     };
                     fp_pads.push(Pad {
                         layers: vec![pad_side],
-                        pos: [x + px, y + py],
+                        pos: [x + px, -(y + py)],
                         size: [smd.dx, smd.dy],
                         shape: shape.to_string(),
                         pad_type: "smd".to_string(),
@@ -389,13 +389,13 @@ fn parse_elements(
                         EagleLayerCat::SilkB | EagleLayerCat::FabB => "B",
                         _ => continue,
                     };
-                    let (sx, sy) = rotate_point(wire.x1, -wire.y1, angle, mirrored);
-                    let (ex, ey) = rotate_point(wire.x2, -wire.y2, angle, mirrored);
+                    let (sx, sy) = rotate_point(wire.x1, wire.y1, angle, mirrored);
+                    let (ex, ey) = rotate_point(wire.x2, wire.y2, angle, mirrored);
                     fp_drawings.push(FootprintDrawing {
                         layer: draw_side.to_string(),
                         drawing: FootprintDrawingItem::Shape(Drawing::Segment {
-                            start: [x + sx, y + sy],
-                            end: [x + ex, y + ey],
+                            start: [x + sx, -(y + sy)],
+                            end: [x + ex, -(y + ey)],
                             width: wire.width,
                         }),
                     });
@@ -413,11 +413,11 @@ fn parse_elements(
                         EagleLayerCat::SilkB | EagleLayerCat::FabB => "B",
                         _ => continue,
                     };
-                    let (cx, cy) = rotate_point(circle.x, -circle.y, angle, mirrored);
+                    let (cx, cy) = rotate_point(circle.x, circle.y, angle, mirrored);
                     fp_drawings.push(FootprintDrawing {
                         layer: draw_side.to_string(),
                         drawing: FootprintDrawingItem::Shape(Drawing::Circle {
-                            start: [x + cx, y + cy],
+                            start: [x + cx, -(y + cy)],
                             radius: circle.radius,
                             width: circle.width,
                             filled: None,
@@ -437,13 +437,13 @@ fn parse_elements(
                         EagleLayerCat::SilkB | EagleLayerCat::FabB => "B",
                         _ => continue,
                     };
-                    let (sx, sy) = rotate_point(rect.x1, -rect.y1, angle, mirrored);
-                    let (ex, ey) = rotate_point(rect.x2, -rect.y2, angle, mirrored);
+                    let (sx, sy) = rotate_point(rect.x1, rect.y1, angle, mirrored);
+                    let (ex, ey) = rotate_point(rect.x2, rect.y2, angle, mirrored);
                     fp_drawings.push(FootprintDrawing {
                         layer: draw_side.to_string(),
                         drawing: FootprintDrawingItem::Shape(Drawing::Rect {
-                            start: [x + sx, y + sy],
-                            end: [x + ex, y + ey],
+                            start: [x + sx, -(y + sy)],
+                            end: [x + ex, -(y + ey)],
                             width: 0.0,
                         }),
                     });
@@ -465,15 +465,15 @@ fn parse_elements(
             if bbox.minx == f64::INFINITY {
                 bbox = BBox {
                     minx: x - 0.5,
-                    miny: y - 0.5,
+                    miny: -y - 0.5,
                     maxx: x + 0.5,
-                    maxy: y + 0.5,
+                    maxy: -y + 0.5,
                 };
             }
 
             let fp_bbox = FootprintBBox {
-                pos: [x, y],
-                relpos: [bbox.minx - x, bbox.miny - y],
+                pos: [x, -y],
+                relpos: [bbox.minx - x, bbox.miny - (-y)],
                 size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
                 angle,
             };
