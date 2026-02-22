@@ -15,3 +15,6 @@ target/
 
 # WASM build output
 crates/viewer/dist/
+
+# Reference specs (downloaded, not checked in)
+specs/

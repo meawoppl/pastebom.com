@@ -13,6 +13,7 @@ pub enum PcbFormat {
     EasyEda,
     Eagle,
     Altium,
+    Gerber,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -33,6 +34,7 @@ pub fn detect_format(path: &Path) -> Option<PcbFormat> {
         Some("json") => Some(PcbFormat::EasyEda),
         Some("brd") | Some("fbrd") => Some(PcbFormat::Eagle),
         Some("pcbdoc") => Some(PcbFormat::Altium),
+        Some("zip") => Some(PcbFormat::Gerber),
         _ => None,
     }
 }
@@ -62,5 +64,6 @@ pub fn extract_bytes(
         PcbFormat::EasyEda => parsers::easyeda::parse(data, opts),
         PcbFormat::Eagle => parsers::eagle::parse(data, opts),
         PcbFormat::Altium => parsers::altium::parse(data, opts),
+        PcbFormat::Gerber => parsers::gerber::parse(data, opts),
     }
 }
