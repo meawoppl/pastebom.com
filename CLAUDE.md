@@ -99,6 +99,13 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 - When polling background tasks, sleep for at most 60 seconds between checks
 - Prefer `--watch` flags or running commands in background when available
 
+## Versioning
+
+- Version is defined once in the root `Cargo.toml` under `[workspace.package]`
+- All crates inherit it via `version.workspace = true`
+- The server exposes the version via `/health` and the upload page displays it
+- When releasing a new version: bump `version` in root `Cargo.toml` and add a new entry to `CHANGELOG.md`
+
 ## Build Notes
 
 - Viewer requires `wasm32-unknown-unknown` target and `trunk` installed
