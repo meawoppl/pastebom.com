@@ -320,10 +320,10 @@ fn app() -> Html {
     let on_canvas_pointerdown = {
         let viewer_state = viewer_state.clone();
         Callback::from(move |e: PointerEvent| {
-            if e.button() != 0 && e.button() != 1 {
-                return;
-            }
             e.prevent_default();
+            if let Some(canvas) = e.target().and_then(|t| t.dyn_into::<HtmlElement>().ok()) {
+                let _ = canvas.set_pointer_capture(e.pointer_id());
+            }
             if let Some(ref state) = *viewer_state {
                 let mut vs = state.borrow_mut();
                 vs.pointer_states.insert(
@@ -362,23 +362,54 @@ fn app() -> Html {
                         ..
                     } = *vs;
                     let pointer_count = pointer_states.len();
-                    let ptr = pointer_states.get_mut(&e.pointer_id()).unwrap();
-
-                    let dx = e.offset_x() as f64 - ptr.last_x;
-                    let dy = e.offset_y() as f64 - ptr.last_y;
-                    ptr.distance_travelled += dx.abs() + dy.abs();
 
                     let dpr = web_sys::window()
                         .map(|w| w.device_pixel_ratio())
                         .unwrap_or(1.0);
 
-                    if pointer_count == 1 {
+                    if pointer_count == 2 {
+                        // Pinch-to-zoom: compute distance before updating this pointer
+                        let other_id = *pointer_states
+                            .keys()
+                            .find(|&&id| id != e.pointer_id())
+                            .unwrap();
+                        let other = pointer_states.get(&other_id).unwrap();
+                        let cur = pointer_states.get(&e.pointer_id()).unwrap();
+
+                        let old_dist = ((cur.last_x - other.last_x).powi(2)
+                            + (cur.last_y - other.last_y).powi(2))
+                        .sqrt();
+                        let new_dist = ((e.offset_x() as f64 - other.last_x).powi(2)
+                            + (e.offset_y() as f64 - other.last_y).powi(2))
+                        .sqrt();
+
+                        if old_dist > 1.0 && new_dist > 1.0 {
+                            let scale = (new_dist / old_dist).clamp(0.5, 2.0);
+                            let mid_x = (e.offset_x() as f64 + other.last_x) / 2.0;
+                            let mid_y = (e.offset_y() as f64 + other.last_y) / 2.0;
+
+                            canvases.transform.zoom *= scale;
+                            let zoomd = (1.0 - scale) / canvases.transform.zoom;
+                            canvases.transform.panx += dpr * mid_x * zoomd;
+                            canvases.transform.pany += dpr * mid_y * zoomd;
+                        }
+
+                        let ptr = pointer_states.get_mut(&e.pointer_id()).unwrap();
+                        ptr.distance_travelled += 100.0; // prevent click detection
+                        ptr.last_x = e.offset_x() as f64;
+                        ptr.last_y = e.offset_y() as f64;
+                    } else if pointer_count == 1 {
+                        let ptr = pointer_states.get_mut(&e.pointer_id()).unwrap();
+                        let dx = e.offset_x() as f64 - ptr.last_x;
+                        let dy = e.offset_y() as f64 - ptr.last_y;
+                        ptr.distance_travelled += dx.abs() + dy.abs();
+
                         canvases.transform.panx += dpr * dx / canvases.transform.zoom;
                         canvases.transform.pany += dpr * dy / canvases.transform.zoom;
-                    }
 
-                    ptr.last_x = e.offset_x() as f64;
-                    ptr.last_y = e.offset_y() as f64;
+                        ptr.last_x = e.offset_x() as f64;
+                        ptr.last_y = e.offset_y() as f64;
+                    }
                 }
 
                 if settings.redraw_on_drag {
@@ -455,6 +486,16 @@ fn app() -> Html {
                     vs.redraw(data, &settings, &hl, &mf, &hn);
                 }
 
+                vs.pointer_states.remove(&e.pointer_id());
+            }
+        })
+    };
+
+    let on_canvas_pointercancel = {
+        let viewer_state = viewer_state.clone();
+        Callback::from(move |e: PointerEvent| {
+            if let Some(ref state) = *viewer_state {
+                let mut vs = state.borrow_mut();
                 vs.pointer_states.remove(&e.pointer_id());
             }
         })
@@ -719,6 +760,7 @@ fn app() -> Html {
                 onpointerdown={on_canvas_pointerdown}
                 onpointermove={on_canvas_pointermove}
                 onpointerup={on_canvas_pointerup}
+                onpointercancel={on_canvas_pointercancel}
                 oncontextmenu={oncontextmenu}>
                 <canvas id="bg" style="position: absolute; left: 0; top: 0; z-index: 0;"></canvas>
                 <canvas id="fab" style="position: absolute; left: 0; top: 0; z-index: 1;"></canvas>
