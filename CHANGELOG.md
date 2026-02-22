@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.3
+
+- Add Gerber zip file parser (RS-274X copper, silkscreen, board outline)
+- Add aperture macro support with expression evaluator
+- Fix polygon hole rendering (multi-contour regions, evenodd fill rule)
+- Add Excellon drill file parsing with see-through hole rendering
+- Fix Gerber silkscreen/soldermask layer detection for EAGLE CAM output
+- Fix Altium PCB 6.0 format parsing
+- Add pinch-to-zoom on PCB canvas
+- Handle non-JSON error responses from uploads
+
 ## 0.2.0
 
 - Add workspace-level versioning across all crates
