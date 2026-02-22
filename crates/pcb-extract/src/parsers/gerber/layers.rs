@@ -59,7 +59,8 @@ pub fn identify_from_filename(filename: &str) -> GerberLayerType {
             "gtl" => return GerberLayerType::CopperTop,
             "gbl" => return GerberLayerType::CopperBottom,
             "g1" | "g2" | "g3" | "g4" | "g5" | "g6" | "g7" | "g8" => {
-                return GerberLayerType::CopperInner(format!("In{ext}"));
+                let num = &ext[1..]; // strip 'g' prefix
+                return GerberLayerType::CopperInner(format!("In{num}"));
             }
             // Silkscreen
             "gto" => return GerberLayerType::SilkscreenTop,
@@ -143,6 +144,22 @@ pub fn identify_from_filename(filename: &str) -> GerberLayerType {
     }
     if lower.contains("bottom") && lower.contains("copper") {
         return GerberLayerType::CopperBottom;
+    }
+    if lower.contains("silkscreen") || lower.contains("silk") {
+        if lower.contains("top") || lower.contains("front") {
+            return GerberLayerType::SilkscreenTop;
+        }
+        if lower.contains("bottom") || lower.contains("back") {
+            return GerberLayerType::SilkscreenBottom;
+        }
+    }
+    if lower.contains("soldermask") || (lower.contains("solder") && lower.contains("mask")) {
+        if lower.contains("top") || lower.contains("front") {
+            return GerberLayerType::SolderMaskTop;
+        }
+        if lower.contains("bottom") || lower.contains("back") {
+            return GerberLayerType::SolderMaskBottom;
+        }
     }
     if lower.contains("outline") || lower.contains("profile") {
         return GerberLayerType::BoardOutline;
@@ -271,11 +288,11 @@ mod tests {
     fn test_altium_inner_layers() {
         assert_eq!(
             identify_from_filename("board.G1"),
-            GerberLayerType::CopperInner("Ing1".into())
+            GerberLayerType::CopperInner("In1".into())
         );
         assert_eq!(
             identify_from_filename("board.G2"),
-            GerberLayerType::CopperInner("Ing2".into())
+            GerberLayerType::CopperInner("In2".into())
         );
     }
 
@@ -354,6 +371,56 @@ mod tests {
         assert_eq!(
             identify_from_filename("Gerber_TopSilkLayer.GTO"),
             GerberLayerType::SilkscreenTop
+        );
+    }
+
+    // --- Generic naming patterns (EAGLE CAM output style) ---
+
+    #[test]
+    fn test_generic_silkscreen_naming() {
+        assert_eq!(
+            identify_from_filename("silkscreen_top.gbr"),
+            GerberLayerType::SilkscreenTop
+        );
+        assert_eq!(
+            identify_from_filename("silkscreen_bottom.gbr"),
+            GerberLayerType::SilkscreenBottom
+        );
+        assert_eq!(
+            identify_from_filename("GerberFiles/silkscreen_top.gbr"),
+            GerberLayerType::SilkscreenTop
+        );
+    }
+
+    #[test]
+    fn test_generic_soldermask_naming() {
+        assert_eq!(
+            identify_from_filename("soldermask_top.gbr"),
+            GerberLayerType::SolderMaskTop
+        );
+        assert_eq!(
+            identify_from_filename("soldermask_bottom.gbr"),
+            GerberLayerType::SolderMaskBottom
+        );
+    }
+
+    #[test]
+    fn test_generic_copper_naming() {
+        assert_eq!(
+            identify_from_filename("copper_top.gbr"),
+            GerberLayerType::CopperTop
+        );
+        assert_eq!(
+            identify_from_filename("copper_bottom.gbr"),
+            GerberLayerType::CopperBottom
+        );
+    }
+
+    #[test]
+    fn test_generic_profile_naming() {
+        assert_eq!(
+            identify_from_filename("profile.gbr"),
+            GerberLayerType::BoardOutline
         );
     }
 
