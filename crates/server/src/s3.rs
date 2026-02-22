@@ -91,12 +91,6 @@ impl S3Client {
         }
     }
 
-    pub async fn put_failed(&self, filename: &str, body: Vec<u8>) -> Result<(), S3Error> {
-        let path = format!("failed/{filename}");
-        self.put_object(&path, body, "application/octet-stream")
-            .await
-    }
-
     pub async fn get_object(&self, path: &str) -> Result<Vec<u8>, S3Error> {
         match &self.backend {
             StorageBackend::S3 {
