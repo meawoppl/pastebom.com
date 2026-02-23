@@ -241,12 +241,13 @@ impl Interpreter {
                     });
                 }
                 ApertureTemplate::Obround { x_size, y_size } => {
-                    // Approximate obround as a rectangle (close enough for rendering)
-                    let half_x = x_size / 2.0;
-                    let half_y = y_size / 2.0;
-                    self.drawings.push(Drawing::Rect {
-                        start: [px - half_x, py - half_y],
-                        end: [px + half_x, py + half_y],
+                    // Obround (stadium): rectangle with semicircular caps on the shorter ends.
+                    let pts = obround_polygon(px, py, *x_size, *y_size);
+                    self.drawings.push(Drawing::Polygon {
+                        pos: [0.0, 0.0],
+                        angle: 0.0,
+                        polygons: vec![pts],
+                        filled: Some(1),
                         width: 0.0,
                     });
                 }
@@ -411,6 +412,49 @@ impl Interpreter {
     }
 }
 
+/// Build a stadium (obround) polygon for a flash at (cx, cy) with given x/y extents.
+///
+/// An obround aperture is a rectangle with semicircular endcaps on the shorter axis.
+/// We approximate the caps with N arc segments per semicircle.
+fn obround_polygon(cx: f64, cy: f64, x_size: f64, y_size: f64) -> Vec<[f64; 2]> {
+    const SEGS: usize = 16; // segments per semicircle
+    let hx = x_size / 2.0;
+    let hy = y_size / 2.0;
+    let mut pts = Vec::with_capacity(SEGS * 2 + 4);
+
+    if x_size >= y_size {
+        // Caps on left and right ends (X-axis caps)
+        let r = hy;
+        let rect_half = hx - r;
+        // Right cap: angles -PI/2 → +PI/2
+        for k in 0..=SEGS {
+            let a = -PI / 2.0 + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + rect_half + r * a.cos(), cy + r * a.sin()]);
+        }
+        // Left cap: angles +PI/2 → 3*PI/2
+        for k in 0..=SEGS {
+            let a = PI / 2.0 + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx - rect_half + r * a.cos(), cy + r * a.sin()]);
+        }
+    } else {
+        // Caps on top and bottom (Y-axis caps)
+        let r = hx;
+        let rect_half = hy - r;
+        // Top cap: angles 0 → PI
+        for k in 0..=SEGS {
+            let a = PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + r * a.cos(), cy + rect_half + r * a.sin()]);
+        }
+        // Bottom cap: angles PI → 2*PI
+        for k in 0..=SEGS {
+            let a = PI + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + r * a.cos(), cy - rect_half + r * a.sin()]);
+        }
+    }
+
+    pts
+}
+
 /// Interpret a sequence of Gerber commands into drawing primitives.
 pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, ExtractError> {
     let mut interp = Interpreter::new();
@@ -538,6 +582,83 @@ mod tests {
                 assert!((end[1] - 1.15).abs() < 1e-6);
             }
             other => panic!("expected Rect, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flash_obround_wider() {
+        // x_size > y_size: caps on left/right ends
+        let mut cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 12,
+                template: ApertureTemplate::Obround {
+                    x_size: 0.6,
+                    y_size: 0.3,
+                },
+            },
+            GerberCommand::SelectAperture(12),
+            GerberCommand::Flash {
+                x: Some(0),
+                y: Some(0),
+            },
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Polygon {
+                polygons, filled, ..
+            } => {
+                assert_eq!(*filled, Some(1));
+                assert_eq!(polygons.len(), 1);
+                // 2 * (SEGS + 1) points for the two caps
+                assert_eq!(polygons[0].len(), 2 * (16 + 1));
+                // All points must be within the bounding box
+                for pt in &polygons[0] {
+                    assert!(pt[0].abs() <= 0.3 + 1e-9, "x={} out of bounds", pt[0]);
+                    assert!(pt[1].abs() <= 0.15 + 1e-9, "y={} out of bounds", pt[1]);
+                }
+            }
+            other => panic!("expected Polygon, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flash_obround_taller() {
+        // y_size > x_size: caps on top/bottom
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 13,
+                template: ApertureTemplate::Obround {
+                    x_size: 0.2,
+                    y_size: 0.5,
+                },
+            },
+            GerberCommand::SelectAperture(13),
+            GerberCommand::Flash {
+                x: Some(0),
+                y: Some(0),
+            },
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Polygon {
+                polygons, filled, ..
+            } => {
+                assert_eq!(*filled, Some(1));
+                assert_eq!(polygons.len(), 1);
+                for pt in &polygons[0] {
+                    assert!(pt[0].abs() <= 0.1 + 1e-9, "x={} out of bounds", pt[0]);
+                    assert!(pt[1].abs() <= 0.25 + 1e-9, "y={} out of bounds", pt[1]);
+                }
+            }
+            other => panic!("expected Polygon, got: {other:?}"),
         }
     }
 
