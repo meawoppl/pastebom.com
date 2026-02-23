@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use log::warn;
@@ -44,6 +45,10 @@ struct Interpreter {
     apertures: ApertureTable,
     macro_table: MacroTable,
     drawings: Vec<Drawing>,
+    /// When Some((start_idx, code)), we are capturing an aperture block.
+    ab_capture_start: Option<(usize, u32)>,
+    /// Completed aperture block definitions: code → drawings.
+    block_table: HashMap<u32, Vec<Drawing>>,
 }
 
 impl Interpreter {
@@ -62,6 +67,8 @@ impl Interpreter {
             apertures: ApertureTable::default(),
             macro_table: MacroTable::default(),
             drawings: Vec::new(),
+            ab_capture_start: None,
+            block_table: HashMap::new(),
         }
     }
 
@@ -158,6 +165,15 @@ impl Interpreter {
                 }
                 self.do_flash();
             }
+            GerberCommand::ApertureBlockBegin { code } => {
+                self.ab_capture_start = Some((self.drawings.len(), *code));
+            }
+            GerberCommand::ApertureBlockEnd => {
+                if let Some((start, code)) = self.ab_capture_start.take() {
+                    let block: Vec<Drawing> = self.drawings.drain(start..).collect();
+                    self.block_table.insert(code, block);
+                }
+            }
             GerberCommand::EndOfFile | GerberCommand::FileFunction(_) => {}
         }
     }
@@ -223,6 +239,16 @@ impl Interpreter {
         let py = self.converter.to_mm(self.y, false);
 
         let aperture_code = self.aperture;
+
+        // Aperture blocks take priority over standard apertures.
+        if let Some(block) = self.block_table.get(&aperture_code) {
+            let block = block.clone();
+            for d in &block {
+                self.drawings.push(offset_drawing(d, px, py));
+            }
+            return;
+        }
+
         if let Some(ap) = self.apertures.get(aperture_code) {
             match &ap.template {
                 ApertureTemplate::Circle { diameter } => {
@@ -415,6 +441,76 @@ impl Interpreter {
         } else {
             self.region_contours.clear();
         }
+    }
+}
+
+/// Translate all coordinate positions in a drawing by (dx, dy).
+/// Used when replaying aperture block draws at a flash position.
+fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
+    match d {
+        Drawing::Segment { start, end, width } => Drawing::Segment {
+            start: [start[0] + dx, start[1] + dy],
+            end: [end[0] + dx, end[1] + dy],
+            width: *width,
+        },
+        Drawing::Rect { start, end, width } => Drawing::Rect {
+            start: [start[0] + dx, start[1] + dy],
+            end: [end[0] + dx, end[1] + dy],
+            width: *width,
+        },
+        Drawing::Circle {
+            start,
+            radius,
+            width,
+            filled,
+        } => Drawing::Circle {
+            start: [start[0] + dx, start[1] + dy],
+            radius: *radius,
+            width: *width,
+            filled: *filled,
+        },
+        Drawing::Arc {
+            start,
+            radius,
+            startangle,
+            endangle,
+            width,
+        } => Drawing::Arc {
+            start: [start[0] + dx, start[1] + dy],
+            radius: *radius,
+            startangle: *startangle,
+            endangle: *endangle,
+            width: *width,
+        },
+        Drawing::Curve {
+            start,
+            end,
+            cpa,
+            cpb,
+            width,
+        } => Drawing::Curve {
+            start: [start[0] + dx, start[1] + dy],
+            end: [end[0] + dx, end[1] + dy],
+            cpa: [cpa[0] + dx, cpa[1] + dy],
+            cpb: [cpb[0] + dx, cpb[1] + dy],
+            width: *width,
+        },
+        Drawing::Polygon {
+            pos,
+            angle,
+            polygons,
+            filled,
+            width,
+        } => Drawing::Polygon {
+            pos: [pos[0] + dx, pos[1] + dy],
+            angle: *angle,
+            polygons: polygons
+                .iter()
+                .map(|ring| ring.iter().map(|p| [p[0] + dx, p[1] + dy]).collect())
+                .collect(),
+            filled: *filled,
+            width: *width,
+        },
     }
 }
 
@@ -802,6 +898,105 @@ mod tests {
             }
             other => panic!("expected Polygon, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_aperture_block_flash() {
+        // Define a block containing a segment, flash it at two positions.
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::LinearMode,
+            // Define block B10: a 1mm horizontal segment
+            GerberCommand::ApertureBlockBegin { code: 10 },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::ApertureBlockEnd,
+            // Flash B10 at (2, 0) — should place the segment at x+2mm offset
+            GerberCommand::Flash {
+                x: Some(20000),
+                y: Some(0),
+            },
+            // Flash B10 again at (5, 3)
+            GerberCommand::Flash {
+                x: Some(50000),
+                y: Some(30000),
+            },
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        // Two flashes of the block → two segments
+        assert_eq!(output.drawings.len(), 2);
+
+        // First flash at (2.0, 0.0): segment offset by (2.0, 0.0)
+        match &output.drawings[0] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 2.0).abs() < 1e-6, "start.x: {}", start[0]);
+                assert!((start[1]).abs() < 1e-6);
+                assert!((end[0] - 3.0).abs() < 1e-6, "end.x: {}", end[0]);
+                assert!((end[1]).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+
+        // Second flash at (5.0, 3.0): segment offset by (5.0, 3.0)
+        match &output.drawings[1] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 5.0).abs() < 1e-6);
+                assert!((start[1] - 3.0).abs() < 1e-6);
+                assert!((end[0] - 6.0).abs() < 1e-6);
+                assert!((end[1] - 3.0).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_aperture_block_does_not_emit_on_define() {
+        // Drawings captured into a block must not appear in the output
+        // until the block is flashed.
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::LinearMode,
+            GerberCommand::ApertureBlockBegin { code: 10 },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::ApertureBlockEnd,
+            // No flash — block is defined but never used
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        assert!(
+            output.drawings.is_empty(),
+            "block drawings must not appear without a flash"
+        );
     }
 
     #[test]

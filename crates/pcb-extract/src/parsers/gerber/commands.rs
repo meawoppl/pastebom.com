@@ -107,6 +107,11 @@ pub enum GerberCommand {
     FileFunction(FileFunction),
     /// %AM - Aperture macro definition
     MacroDefine { name: String, body: Vec<String> },
+    /// %ABDnn% - Begin aperture block definition.
+    /// All drawing commands until the matching %AB% are captured as the block.
+    ApertureBlockBegin { code: u32 },
+    /// %AB% - End aperture block definition.
+    ApertureBlockEnd,
     /// M02 - End of file
     EndOfFile,
 }
@@ -204,7 +209,10 @@ fn parse_extended(content: &str) -> Result<Option<GerberCommand>, ExtractError> 
     if content.starts_with("TF.FileFunction,") {
         return Ok(Some(parse_file_function(content)?));
     }
-    // Skip other extended commands (AM, SR, AB, TF, TA, TD, etc.)
+    if content.starts_with("AB") {
+        return Ok(Some(parse_aperture_block(content)?));
+    }
+    // Skip other extended commands (AM, SR, TF, TA, TD, etc.)
     Ok(None)
 }
 
@@ -406,6 +414,19 @@ fn parse_board_side(s: Option<&str>) -> BoardSide {
         Some("Bot") | Some("Bottom") => BoardSide::Bottom,
         _ => BoardSide::Top,
     }
+}
+
+/// Parse %AB command.  `ABDnn` opens a block with code nn, bare `AB` closes.
+fn parse_aperture_block(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "AB"
+    if let Some(code_str) = s.strip_prefix('D') {
+        let code: u32 = code_str
+            .parse()
+            .map_err(|_| ExtractError::ParseError(format!("AB: invalid aperture code: {s}")))?;
+        return Ok(GerberCommand::ApertureBlockBegin { code });
+    }
+    // Bare "AB" — end of block
+    Ok(GerberCommand::ApertureBlockEnd)
 }
 
 /// Parse a word command (e.g., "D10", "X100Y200D01", "G01", "M02").
@@ -832,5 +853,17 @@ mod tests {
             }
             other => panic!("expected MacroDefine, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_aperture_block_begin() {
+        let cmds = parse("%ABD10*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ApertureBlockBegin { code: 10 }]);
+    }
+
+    #[test]
+    fn test_aperture_block_end() {
+        let cmds = parse("%AB*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ApertureBlockEnd]);
     }
 }
