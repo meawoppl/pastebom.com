@@ -44,6 +44,13 @@ struct Interpreter {
     apertures: ApertureTable,
     macro_table: MacroTable,
     drawings: Vec<Drawing>,
+    /// Step-and-repeat: index into `drawings` where the current SR block started,
+    /// plus the repeat counts and steps (in mm) for replication on block close.
+    sr_block_start: Option<usize>,
+    sr_x_repeat: u32,
+    sr_y_repeat: u32,
+    sr_x_step: f64,
+    sr_y_step: f64,
 }
 
 impl Interpreter {
@@ -62,6 +69,11 @@ impl Interpreter {
             apertures: ApertureTable::default(),
             macro_table: MacroTable::default(),
             drawings: Vec::new(),
+            sr_block_start: None,
+            sr_x_repeat: 1,
+            sr_y_repeat: 1,
+            sr_x_step: 0.0,
+            sr_y_step: 0.0,
         }
     }
 
@@ -158,8 +170,67 @@ impl Interpreter {
                 }
                 self.do_flash();
             }
+            GerberCommand::StepRepeat {
+                x_repeat,
+                y_repeat,
+                x_step,
+                y_step,
+            } => {
+                // Close any open SR block first, replicating its drawings.
+                self.close_sr_block();
+
+                if *x_repeat > 1 || *y_repeat > 1 {
+                    // Open a new SR block.
+                    // The step values in the file are in file units (mm or inch).
+                    // Since we read them as f64 directly, convert inch→mm if needed.
+                    let step_x_mm = if self.converter.units == super::coord::Units::Inches {
+                        x_step * 25.4
+                    } else {
+                        *x_step
+                    };
+                    let step_y_mm = if self.converter.units == super::coord::Units::Inches {
+                        y_step * 25.4
+                    } else {
+                        *y_step
+                    };
+                    self.sr_block_start = Some(self.drawings.len());
+                    self.sr_x_repeat = *x_repeat;
+                    self.sr_y_repeat = *y_repeat;
+                    self.sr_x_step = step_x_mm;
+                    self.sr_y_step = step_y_mm;
+                }
+                // x_repeat=1, y_repeat=1 was already closed above; nothing left to do.
+            }
             GerberCommand::EndOfFile | GerberCommand::FileFunction(_) => {}
         }
+    }
+
+    /// Close an open step-and-repeat block: replicate block drawings at each grid position.
+    fn close_sr_block(&mut self) {
+        let Some(start) = self.sr_block_start.take() else {
+            return;
+        };
+
+        let block: Vec<Drawing> = self.drawings[start..].to_vec();
+
+        for yi in 0..self.sr_y_repeat {
+            for xi in 0..self.sr_x_repeat {
+                if xi == 0 && yi == 0 {
+                    continue; // original position already drawn
+                }
+                let dx = xi as f64 * self.sr_x_step;
+                let dy = yi as f64 * self.sr_y_step;
+                for d in &block {
+                    self.drawings.push(offset_drawing(d, dx, dy));
+                }
+            }
+        }
+
+        // Reset SR state to defaults.
+        self.sr_x_repeat = 1;
+        self.sr_y_repeat = 1;
+        self.sr_x_step = 0.0;
+        self.sr_y_step = 0.0;
     }
 
     fn do_interpolate(&mut self, old_x: i64, old_y: i64, i: Option<i64>, j: Option<i64>) {
@@ -418,6 +489,77 @@ impl Interpreter {
     }
 }
 
+/// Translate all coordinate points in a Drawing by (dx, dy).
+///
+/// Used when replicating step-and-repeat blocks and aperture blocks.
+pub(crate) fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
+    match d {
+        Drawing::Segment { start, end, width } => Drawing::Segment {
+            start: [start[0] + dx, start[1] + dy],
+            end: [end[0] + dx, end[1] + dy],
+            width: *width,
+        },
+        Drawing::Rect { start, end, width } => Drawing::Rect {
+            start: [start[0] + dx, start[1] + dy],
+            end: [end[0] + dx, end[1] + dy],
+            width: *width,
+        },
+        Drawing::Circle {
+            start,
+            radius,
+            width,
+            filled,
+        } => Drawing::Circle {
+            start: [start[0] + dx, start[1] + dy],
+            radius: *radius,
+            width: *width,
+            filled: *filled,
+        },
+        Drawing::Arc {
+            start,
+            radius,
+            startangle,
+            endangle,
+            width,
+        } => Drawing::Arc {
+            start: [start[0] + dx, start[1] + dy],
+            radius: *radius,
+            startangle: *startangle,
+            endangle: *endangle,
+            width: *width,
+        },
+        Drawing::Curve {
+            start,
+            end,
+            cpa,
+            cpb,
+            width,
+        } => Drawing::Curve {
+            start: [start[0] + dx, start[1] + dy],
+            end: [end[0] + dx, end[1] + dy],
+            cpa: [cpa[0] + dx, cpa[1] + dy],
+            cpb: [cpb[0] + dx, cpb[1] + dy],
+            width: *width,
+        },
+        Drawing::Polygon {
+            pos,
+            angle,
+            polygons,
+            filled,
+            width,
+        } => Drawing::Polygon {
+            pos: *pos,
+            angle: *angle,
+            polygons: polygons
+                .iter()
+                .map(|ring| ring.iter().map(|pt| [pt[0] + dx, pt[1] + dy]).collect())
+                .collect(),
+            filled: *filled,
+            width: *width,
+        },
+    }
+}
+
 /// Interpret a sequence of Gerber commands into drawing primitives.
 pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, ExtractError> {
     let mut interp = Interpreter::new();
@@ -430,6 +572,9 @@ pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, Extrac
     if interp.region_active {
         interp.flush_region_end();
     }
+
+    // Close any unterminated SR block (some files omit the closing %SR%)
+    interp.close_sr_block();
 
     Ok(GerberLayerOutput {
         drawings: interp.drawings,
@@ -839,5 +984,99 @@ mod tests {
             }
             other => panic!("expected Circle, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_step_repeat_2x2() {
+        // Draw one segment inside a 2×2 SR block with 3mm X step and 4mm Y step.
+        // Expected: 4 copies of the segment at (0,0), (3,0), (0,4), (3,4) offsets.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::StepRepeat {
+                x_repeat: 2,
+                y_repeat: 2,
+                x_step: 3.0,
+                y_step: 4.0,
+            },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000), // 1 mm
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            // Close the block
+            GerberCommand::StepRepeat {
+                x_repeat: 1,
+                y_repeat: 1,
+                x_step: 0.0,
+                y_step: 0.0,
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 4, "2×2 SR should produce 4 drawings");
+
+        // Collect all segment starts and ends
+        let mut starts: Vec<[f64; 2]> = output
+            .drawings
+            .iter()
+            .filter_map(|d| {
+                if let Drawing::Segment { start, .. } = d {
+                    Some(*start)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        starts.sort_by(|a, b| {
+            a[0].partial_cmp(&b[0])
+                .unwrap()
+                .then(a[1].partial_cmp(&b[1]).unwrap())
+        });
+
+        let expected = [[0.0, 0.0], [0.0, 4.0], [3.0, 0.0], [3.0, 4.0]];
+        for (got, exp) in starts.iter().zip(expected.iter()) {
+            assert!(
+                (got[0] - exp[0]).abs() < 1e-6,
+                "start x: got {} exp {}",
+                got[0],
+                exp[0]
+            );
+            assert!(
+                (got[1] - exp[1]).abs() < 1e-6,
+                "start y: got {} exp {}",
+                got[1],
+                exp[1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_step_repeat_implicit_close_at_eof() {
+        // SR block not explicitly closed — should be closed at EOF.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::StepRepeat {
+                x_repeat: 3,
+                y_repeat: 1,
+                x_step: 2.0,
+                y_step: 0.0,
+            },
+            GerberCommand::Flash {
+                x: Some(0),
+                y: Some(0),
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(
+            output.drawings.len(),
+            3,
+            "implicit close should replicate 3×1"
+        );
     }
 }

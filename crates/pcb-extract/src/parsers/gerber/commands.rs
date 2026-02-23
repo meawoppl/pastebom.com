@@ -107,6 +107,16 @@ pub enum GerberCommand {
     FileFunction(FileFunction),
     /// %AM - Aperture macro definition
     MacroDefine { name: String, body: Vec<String> },
+    /// %SR - Step-and-repeat block.
+    /// When x_repeat=1 AND y_repeat=1 this closes (or resets) any open SR block.
+    /// Otherwise it opens a new block that will be tiled x_repeat × y_repeat times
+    /// with x_step / y_step spacing (in file units, mm or inch).
+    StepRepeat {
+        x_repeat: u32,
+        y_repeat: u32,
+        x_step: f64,
+        y_step: f64,
+    },
     /// M02 - End of file
     EndOfFile,
 }
@@ -204,7 +214,10 @@ fn parse_extended(content: &str) -> Result<Option<GerberCommand>, ExtractError> 
     if content.starts_with("TF.FileFunction,") {
         return Ok(Some(parse_file_function(content)?));
     }
-    // Skip other extended commands (AM, SR, AB, TF, TA, TD, etc.)
+    if content.starts_with("SR") {
+        return Ok(Some(parse_step_repeat(content)?));
+    }
+    // Skip other extended commands (AM, AB, TF, TA, TD, etc.)
     Ok(None)
 }
 
@@ -406,6 +419,51 @@ fn parse_board_side(s: Option<&str>) -> BoardSide {
         Some("Bot") | Some("Bottom") => BoardSide::Bottom,
         _ => BoardSide::Top,
     }
+}
+
+/// Parse %SR command.  Example: `SRX3Y2I5.0J10.0` or bare `SR` (close/reset).
+fn parse_step_repeat(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "SR"
+    if s.is_empty() {
+        // Bare %SR% — closes the current block (or resets to defaults).
+        return Ok(GerberCommand::StepRepeat {
+            x_repeat: 1,
+            y_repeat: 1,
+            x_step: 0.0,
+            y_step: 0.0,
+        });
+    }
+    // Parse X<n>Y<n>I<f>J<f> — all fields optional, defaults are 1/1/0/0.
+    let x_repeat = parse_sr_uint(s, 'X').unwrap_or(1);
+    let y_repeat = parse_sr_uint(s, 'Y').unwrap_or(1);
+    let x_step = parse_sr_float(s, 'I').unwrap_or(0.0);
+    let y_step = parse_sr_float(s, 'J').unwrap_or(0.0);
+    Ok(GerberCommand::StepRepeat {
+        x_repeat,
+        y_repeat,
+        x_step,
+        y_step,
+    })
+}
+
+/// Extract the unsigned integer after a given key letter in a SR parameter string.
+fn parse_sr_uint(s: &str, key: char) -> Option<u32> {
+    let pos = s.find(key)?;
+    let after = &s[pos + 1..];
+    let end = after
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(after.len());
+    after[..end].parse().ok()
+}
+
+/// Extract the float after a given key letter in a SR parameter string.
+fn parse_sr_float(s: &str, key: char) -> Option<f64> {
+    let pos = s.find(key)?;
+    let after = &s[pos + 1..];
+    let end = after
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(after.len());
+    after[..end].parse().ok()
 }
 
 /// Parse a word command (e.g., "D10", "X100Y200D01", "G01", "M02").
@@ -832,5 +890,30 @@ mod tests {
             }
             other => panic!("expected MacroDefine, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_step_repeat_parse() {
+        let cmds = parse("%SRX3Y2I5.0J10.0*%\n");
+        assert_eq!(
+            cmds,
+            vec![GerberCommand::StepRepeat {
+                x_repeat: 3,
+                y_repeat: 2,
+                x_step: 5.0,
+                y_step: 10.0,
+            }]
+        );
+        // Bare %SR% = close/reset
+        let cmds = parse("%SR*%\n");
+        assert_eq!(
+            cmds,
+            vec![GerberCommand::StepRepeat {
+                x_repeat: 1,
+                y_repeat: 1,
+                x_step: 0.0,
+                y_step: 0.0,
+            }]
+        );
     }
 }
