@@ -837,6 +837,7 @@ pub fn draw_tracks(
     canvas: &HtmlCanvasElement,
     layer: &str,
     default_color: &str,
+    hole_color: &str,
     highlight: bool,
     pcbdata: &PcbData,
     highlighted_net: &Option<String>,
@@ -920,7 +921,7 @@ pub fn draw_tracks(
             ctx.line_to(end[0], end[1]);
             ctx.stroke();
             // Draw hole
-            ctx.set_stroke_style_str("#CCCCCC"); // pad hole color
+            ctx.set_stroke_style_str(hole_color);
             ctx.set_line_width(*ds);
             ctx.line_to(end[0], end[1]);
             ctx.stroke();
@@ -1014,6 +1015,7 @@ pub fn draw_nets(
             canvas,
             layer,
             track_color,
+            &colors.pad_hole,
             highlight,
             pcbdata,
             highlighted_net,
@@ -1028,6 +1030,7 @@ pub fn draw_nets(
                     canvas,
                     name,
                     track_color,
+                    &colors.pad_hole,
                     highlight,
                     pcbdata,
                     highlighted_net,
