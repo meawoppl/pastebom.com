@@ -44,6 +44,12 @@ struct Interpreter {
     apertures: ApertureTable,
     macro_table: MacroTable,
     drawings: Vec<Drawing>,
+    /// Image-level mirroring from %MI: A=mirror-X, B=mirror-Y.
+    mirror_x: bool,
+    mirror_y: bool,
+    /// Image-level scaling from %SF.
+    scale_x: f64,
+    scale_y: f64,
 }
 
 impl Interpreter {
@@ -62,7 +68,25 @@ impl Interpreter {
             apertures: ApertureTable::default(),
             macro_table: MacroTable::default(),
             drawings: Vec::new(),
+            mirror_x: false,
+            mirror_y: false,
+            scale_x: 1.0,
+            scale_y: 1.0,
         }
+    }
+
+    /// Convert a raw X coordinate integer to millimetres, applying mirror/scale.
+    #[inline]
+    fn cx(&self, val: i64) -> f64 {
+        let mm = self.converter.to_mm(val, true);
+        mm * self.scale_x * if self.mirror_x { -1.0 } else { 1.0 }
+    }
+
+    /// Convert a raw Y coordinate integer to millimetres, applying mirror/scale.
+    #[inline]
+    fn cy(&self, val: i64) -> f64 {
+        let mm = self.converter.to_mm(val, false);
+        mm * self.scale_y * if self.mirror_y { -1.0 } else { 1.0 }
     }
 
     fn process(&mut self, cmd: &GerberCommand) {
@@ -96,6 +120,14 @@ impl Interpreter {
             }
             GerberCommand::Polarity(p) => {
                 self.polarity = *p;
+            }
+            GerberCommand::ImageMirror { a, b } => {
+                self.mirror_x = *a;
+                self.mirror_y = *b;
+            }
+            GerberCommand::ImageScale { a, b } => {
+                self.scale_x = *a;
+                self.scale_y = *b;
             }
             GerberCommand::MacroDefine { name, body } => {
                 if let Ok(primitives) = macros::parse_macro_body(body) {
@@ -144,8 +176,8 @@ impl Interpreter {
                 }
                 // In region mode, start a new contour at the new position
                 if self.region_active {
-                    let px = self.converter.to_mm(self.x, true);
-                    let py = self.converter.to_mm(self.y, false);
+                    let px = self.cx(self.x);
+                    let py = self.cy(self.y);
                     self.region_points.push([px, py]);
                 }
             }
@@ -166,17 +198,17 @@ impl Interpreter {
         // Skip clear polarity for now
         if self.polarity == Polarity::Clear {
             if self.region_active {
-                let px = self.converter.to_mm(self.x, true);
-                let py = self.converter.to_mm(self.y, false);
+                let px = self.cx(self.x);
+                let py = self.cy(self.y);
                 self.region_points.push([px, py]);
             }
             return;
         }
 
-        let x1 = self.converter.to_mm(old_x, true);
-        let y1 = self.converter.to_mm(old_y, false);
-        let x2 = self.converter.to_mm(self.x, true);
-        let y2 = self.converter.to_mm(self.y, false);
+        let x1 = self.cx(old_x);
+        let y1 = self.cy(old_y);
+        let x2 = self.cx(self.x);
+        let y2 = self.cy(self.y);
 
         if self.region_active {
             // In region mode, just collect points
@@ -219,8 +251,8 @@ impl Interpreter {
             return;
         }
 
-        let px = self.converter.to_mm(self.x, true);
-        let py = self.converter.to_mm(self.y, false);
+        let px = self.cx(self.x);
+        let py = self.cy(self.y);
 
         let aperture_code = self.aperture;
         if let Some(ap) = self.apertures.get(aperture_code) {
@@ -300,14 +332,14 @@ impl Interpreter {
         let i_val = i.unwrap_or(0);
         let j_val = j.unwrap_or(0);
 
-        let x1 = self.converter.to_mm(old_x, true);
-        let y1 = self.converter.to_mm(old_y, false);
-        let x2 = self.converter.to_mm(self.x, true);
-        let y2 = self.converter.to_mm(self.y, false);
+        let x1 = self.cx(old_x);
+        let y1 = self.cy(old_y);
+        let x2 = self.cx(self.x);
+        let y2 = self.cy(self.y);
 
         // I,J are offsets from start point to center
-        let cx = x1 + self.converter.to_mm(i_val, true);
-        let cy = y1 + self.converter.to_mm(j_val, false);
+        let cx = x1 + self.cx(i_val);
+        let cy = y1 + self.cy(j_val);
 
         let radius = ((x1 - cx).powi(2) + (y1 - cy).powi(2)).sqrt();
         if radius < 1e-9 {
@@ -352,13 +384,13 @@ impl Interpreter {
         let i_val = i.unwrap_or(0);
         let j_val = j.unwrap_or(0);
 
-        let x1 = self.converter.to_mm(old_x, true);
-        let y1 = self.converter.to_mm(old_y, false);
-        let x2 = self.converter.to_mm(self.x, true);
-        let y2 = self.converter.to_mm(self.y, false);
+        let x1 = self.cx(old_x);
+        let y1 = self.cy(old_y);
+        let x2 = self.cx(self.x);
+        let y2 = self.cy(self.y);
 
-        let cx = x1 + self.converter.to_mm(i_val, true);
-        let cy = y1 + self.converter.to_mm(j_val, false);
+        let cx = x1 + self.cx(i_val);
+        let cy = y1 + self.cy(j_val);
 
         let radius = ((x1 - cx).powi(2) + (y1 - cy).powi(2)).sqrt();
         if radius < 1e-9 {
@@ -838,6 +870,68 @@ mod tests {
                 assert!((*radius - 0.25).abs() < 1e-6); // diameter 0.5 / 2
             }
             other => panic!("expected Circle, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_image_mirror_x() {
+        // %MIA1B0% — mirror about Y axis: all X coords negate, Y unchanged.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::ImageMirror { a: true, b: false },
+            GerberCommand::Move {
+                x: Some(10000),
+                y: Some(20000),
+            },
+            GerberCommand::Interpolate {
+                x: Some(30000),
+                y: Some(20000),
+                i: None,
+                j: None,
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - (-1.0)).abs() < 1e-6, "X should be negated");
+                assert!((start[1] - 2.0).abs() < 1e-6);
+                assert!((end[0] - (-3.0)).abs() < 1e-6, "X should be negated");
+                assert!((end[1] - 2.0).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_image_scale() {
+        // %SFA2.0B0.5% — scale X by 2, Y by 0.5.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::ImageScale { a: 2.0, b: 0.5 },
+            GerberCommand::Move {
+                x: Some(10000),
+                y: Some(10000),
+            },
+            GerberCommand::Interpolate {
+                x: Some(20000),
+                y: Some(20000),
+                i: None,
+                j: None,
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 2.0).abs() < 1e-6, "X scaled by 2");
+                assert!((start[1] - 0.5).abs() < 1e-6, "Y scaled by 0.5");
+                assert!((end[0] - 4.0).abs() < 1e-6, "X scaled by 2");
+                assert!((end[1] - 1.0).abs() < 1e-6, "Y scaled by 0.5");
+            }
+            other => panic!("expected Segment, got: {other:?}"),
         }
     }
 }
