@@ -272,14 +272,10 @@ fn parse_coord_value(
         let total_digits = (format.integer + format.decimal) as usize;
         let mut padded = digits;
         match zero_sup {
-            ZeroSuppression::Trailing => {
-                // Trailing zeros suppressed: pad with zeros on the right
-                while padded.len() < total_digits {
-                    padded.push('0');
-                }
-            }
-            ZeroSuppression::Leading => {
-                // Leading zeros suppressed: pad with zeros on the left
+            ZeroSuppression::Trailing | ZeroSuppression::Leading => {
+                // Both modes pad on the left. Eagle (and most real-world tools) declare TZ
+                // but omit leading zeros too, so the coordinate digits are always right-aligned
+                // against the decimal point — pad left to restore.
                 while padded.len() < total_digits {
                     padded.insert(0, '0');
                 }
@@ -392,17 +388,12 @@ M30
         assert_eq!(drawings.len(), 1);
         match &drawings[0] {
             Drawing::Circle { start, .. } => {
-                // TZ (trailing zeros suppressed): 14478 with 000.000 format
-                // = pad right to 6 digits: 144780 → 144.780mm
-                // Wait, that's not right. With 000.000 format:
-                // integer=3, decimal=3, total=6 digits
-                // TZ means trailing zeros are suppressed (omitted from right)
-                // So "14478" padded on right to 6: "144780" → 144.780
-                // But the test data shows X14.478 = 14.478mm
-                // That means when there IS a decimal point, it's used directly
-                // When there's no decimal: 14478 with TZ → pad right → 144780 → 144.780
-                // This test is verifying the no-decimal-point case works
-                assert!((start[0] - 144.780).abs() < 1e-3);
+                // TZ (trailing zeros suppressed): Eagle and most real-world tools
+                // omit leading zeros even in TZ mode, so digits are right-aligned
+                // against the decimal point. Pad left to 6 digits:
+                // "14478" → "014478" → 14.478mm
+                assert!((start[0] - 14.478).abs() < 1e-3);
+                assert!((start[1] - 10.541).abs() < 1e-3);
             }
             _ => panic!("Expected Circle"),
         }
@@ -507,6 +498,44 @@ M30
         // T03 hits should have 0.5mm radius
         match &drawings[3] {
             Drawing::Circle { radius, .. } => assert!((radius - 0.5).abs() < 1e-6),
+            _ => panic!("Expected Circle"),
+        }
+    }
+
+    #[test]
+    fn test_eagle_tz_leading_zeros_dropped() {
+        // Eagle generates METRIC,TZ files but drops leading zeros, so "4572" means
+        // 4.572mm (not 457.200mm). Verify small coordinates decode correctly.
+        let content = "\
+M48
+;GenerationSoftware,Autodesk,EAGLE,9.7.0*%
+FMAT,2
+ICI,OFF
+METRIC,TZ,000.000
+T1C4.300
+%
+G90
+M71
+T1
+X4572Y4572
+X135128Y58928
+M30
+";
+        let drawings = parse_excellon(content).unwrap();
+        assert_eq!(drawings.len(), 2);
+        match &drawings[0] {
+            Drawing::Circle { start, radius, .. } => {
+                assert!((start[0] - 4.572).abs() < 1e-3, "x={}", start[0]);
+                assert!((start[1] - 4.572).abs() < 1e-3, "y={}", start[1]);
+                assert!((radius - 2.15).abs() < 1e-3);
+            }
+            _ => panic!("Expected Circle"),
+        }
+        match &drawings[1] {
+            Drawing::Circle { start, .. } => {
+                assert!((start[0] - 135.128).abs() < 1e-3, "x={}", start[0]);
+                assert!((start[1] - 58.928).abs() < 1e-3, "y={}", start[1]);
+            }
             _ => panic!("Expected Circle"),
         }
     }

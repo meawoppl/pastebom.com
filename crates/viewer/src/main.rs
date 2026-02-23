@@ -805,7 +805,7 @@ fn app() -> Html {
                         <button class="sidebar-close" onclick={{
                             let s = bom_sidebar_open.clone();
                             Callback::from(move |_: MouseEvent| s.set(false))
-                        }}>{"×"}</button>
+                        }}>{"‹"}</button>
                     </div>
                     <div class="sidebar-controls">
                         <div class="button-container">
@@ -905,7 +905,7 @@ fn app() -> Html {
                 <button class="sidebar-tab left-tab" onclick={{
                     let s = bom_sidebar_open.clone();
                     Callback::from(move |_: MouseEvent| s.set(true))
-                }}>{"BOM"}</button>
+                }}>{"›"}</button>
             }
 
             // ─── View sidebar (right) ──────────────────────────
@@ -916,7 +916,7 @@ fn app() -> Html {
                         <button class="sidebar-close" onclick={{
                             let s = view_sidebar_open.clone();
                             Callback::from(move |_: MouseEvent| s.set(false))
-                        }}>{"×"}</button>
+                        }}>{"›"}</button>
                     </div>
                     <div class="sidebar-settings">
                         // ─── Layer color key ──────────────────────────
@@ -1024,7 +1024,7 @@ fn app() -> Html {
                 <button class="sidebar-tab right-tab" onclick={{
                     let s = view_sidebar_open.clone();
                     Callback::from(move |_: MouseEvent| s.set(true))
-                }}>{"View"}</button>
+                }}>{"‹"}</button>
             }
         </div>
     }
