@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use log::warn;
@@ -48,7 +49,8 @@ struct Interpreter {
     macro_table: MacroTable,
     drawings: Vec<Drawing>,
     clear_drawings: Vec<Drawing>,
-    /// Step-and-repeat block start index (into self.drawings).
+    /// Step-and-repeat: index into `drawings` where the current SR block started,
+    /// plus the repeat counts and steps (in mm) for replication on block close.
     sr_block_start: Option<usize>,
     sr_x_repeat: u32,
     sr_y_repeat: u32,
@@ -60,6 +62,10 @@ struct Interpreter {
     /// Image-level scaling from %SF.
     scale_x: f64,
     scale_y: f64,
+    /// When Some((start_idx, code)), we are capturing an aperture block.
+    ab_capture_start: Option<(usize, u32)>,
+    /// Completed aperture block definitions: code → drawings.
+    block_table: HashMap<u32, Vec<Drawing>>,
 }
 
 impl Interpreter {
@@ -88,6 +94,8 @@ impl Interpreter {
             mirror_y: false,
             scale_x: 1.0,
             scale_y: 1.0,
+            ab_capture_start: None,
+            block_table: HashMap::new(),
         }
     }
 
@@ -246,6 +254,15 @@ impl Interpreter {
                 }
                 // x_repeat=1, y_repeat=1 was already closed above; nothing left to do.
             }
+            GerberCommand::ApertureBlockBegin { code } => {
+                self.ab_capture_start = Some((self.drawings.len(), *code));
+            }
+            GerberCommand::ApertureBlockEnd => {
+                if let Some((start, code)) = self.ab_capture_start.take() {
+                    let block: Vec<Drawing> = self.drawings.drain(start..).collect();
+                    self.block_table.insert(code, block);
+                }
+            }
             GerberCommand::EndOfFile | GerberCommand::FileFunction(_) => {}
         }
     }
@@ -325,6 +342,16 @@ impl Interpreter {
         let py = self.cy(self.y);
 
         let aperture_code = self.aperture;
+
+        // Aperture blocks take priority over standard apertures.
+        if let Some(block) = self.block_table.get(&aperture_code) {
+            let block = block.clone();
+            for d in &block {
+                self.push_drawing(offset_drawing(d, px, py));
+            }
+            return;
+        }
+
         if let Some(ap) = self.apertures.get(aperture_code) {
             match &ap.template {
                 ApertureTemplate::Circle { diameter } => {
@@ -524,52 +551,9 @@ impl Interpreter {
     }
 }
 
-/// Build a stadium (obround) polygon for a flash at (cx, cy) with given x/y extents.
-///
-/// An obround aperture is a rectangle with semicircular endcaps on the shorter axis.
-/// We approximate the caps with N arc segments per semicircle.
-fn obround_polygon(cx: f64, cy: f64, x_size: f64, y_size: f64) -> Vec<[f64; 2]> {
-    const SEGS: usize = 16; // segments per semicircle
-    let hx = x_size / 2.0;
-    let hy = y_size / 2.0;
-    let mut pts = Vec::with_capacity(SEGS * 2 + 4);
-
-    if x_size >= y_size {
-        // Caps on left and right ends (X-axis caps)
-        let r = hy;
-        let rect_half = hx - r;
-        // Right cap: angles -PI/2 → +PI/2
-        for k in 0..=SEGS {
-            let a = -PI / 2.0 + PI * (k as f64) / (SEGS as f64);
-            pts.push([cx + rect_half + r * a.cos(), cy + r * a.sin()]);
-        }
-        // Left cap: angles +PI/2 → 3*PI/2
-        for k in 0..=SEGS {
-            let a = PI / 2.0 + PI * (k as f64) / (SEGS as f64);
-            pts.push([cx - rect_half + r * a.cos(), cy + r * a.sin()]);
-        }
-    } else {
-        // Caps on top and bottom (Y-axis caps)
-        let r = hx;
-        let rect_half = hy - r;
-        // Top cap: angles 0 → PI
-        for k in 0..=SEGS {
-            let a = PI * (k as f64) / (SEGS as f64);
-            pts.push([cx + r * a.cos(), cy + rect_half + r * a.sin()]);
-        }
-        // Bottom cap: angles PI → 2*PI
-        for k in 0..=SEGS {
-            let a = PI + PI * (k as f64) / (SEGS as f64);
-            pts.push([cx + r * a.cos(), cy - rect_half + r * a.sin()]);
-        }
-    }
-
-    pts
-}
-
 /// Translate all coordinate points in a Drawing by (dx, dy).
 ///
-/// Used when replicating step-and-repeat blocks.
+/// Used when replicating step-and-repeat blocks and aperture blocks.
 pub(crate) fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
     match d {
         Drawing::Segment { start, end, width } => Drawing::Segment {
@@ -638,6 +622,49 @@ pub(crate) fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
     }
 }
 
+/// Build a stadium (obround) polygon for a flash at (cx, cy) with given x/y extents.
+///
+/// An obround aperture is a rectangle with semicircular endcaps on the shorter axis.
+/// We approximate the caps with N arc segments per semicircle.
+fn obround_polygon(cx: f64, cy: f64, x_size: f64, y_size: f64) -> Vec<[f64; 2]> {
+    const SEGS: usize = 16; // segments per semicircle
+    let hx = x_size / 2.0;
+    let hy = y_size / 2.0;
+    let mut pts = Vec::with_capacity(SEGS * 2 + 4);
+
+    if x_size >= y_size {
+        // Caps on left and right ends (X-axis caps)
+        let r = hy;
+        let rect_half = hx - r;
+        // Right cap: angles -PI/2 → +PI/2
+        for k in 0..=SEGS {
+            let a = -PI / 2.0 + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + rect_half + r * a.cos(), cy + r * a.sin()]);
+        }
+        // Left cap: angles +PI/2 → 3*PI/2
+        for k in 0..=SEGS {
+            let a = PI / 2.0 + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx - rect_half + r * a.cos(), cy + r * a.sin()]);
+        }
+    } else {
+        // Caps on top and bottom (Y-axis caps)
+        let r = hx;
+        let rect_half = hy - r;
+        // Top cap: angles 0 → PI
+        for k in 0..=SEGS {
+            let a = PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + r * a.cos(), cy + rect_half + r * a.sin()]);
+        }
+        // Bottom cap: angles PI → 2*PI
+        for k in 0..=SEGS {
+            let a = PI + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + r * a.cos(), cy - rect_half + r * a.sin()]);
+        }
+    }
+
+    pts
+}
+
 /// Interpret a sequence of Gerber commands into drawing primitives.
 pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, ExtractError> {
     let mut interp = Interpreter::new();
@@ -651,7 +678,7 @@ pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, Extrac
         interp.flush_region_end();
     }
 
-    // Close any open step-and-repeat block
+    // Close any unterminated SR block (some files omit the closing %SR%)
     interp.close_sr_block();
 
     Ok(GerberLayerOutput {
@@ -1112,6 +1139,105 @@ mod tests {
     }
 
     #[test]
+    fn test_aperture_block_flash() {
+        // Define a block containing a segment, flash it at two positions.
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::LinearMode,
+            // Define block B10: a 1mm horizontal segment
+            GerberCommand::ApertureBlockBegin { code: 10 },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::ApertureBlockEnd,
+            // Flash B10 at (2, 0) — should place the segment at x+2mm offset
+            GerberCommand::Flash {
+                x: Some(20000),
+                y: Some(0),
+            },
+            // Flash B10 again at (5, 3)
+            GerberCommand::Flash {
+                x: Some(50000),
+                y: Some(30000),
+            },
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        // Two flashes of the block → two segments
+        assert_eq!(output.drawings.len(), 2);
+
+        // First flash at (2.0, 0.0): segment offset by (2.0, 0.0)
+        match &output.drawings[0] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 2.0).abs() < 1e-6, "start.x: {}", start[0]);
+                assert!((start[1]).abs() < 1e-6);
+                assert!((end[0] - 3.0).abs() < 1e-6, "end.x: {}", end[0]);
+                assert!((end[1]).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+
+        // Second flash at (5.0, 3.0): segment offset by (5.0, 3.0)
+        match &output.drawings[1] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 5.0).abs() < 1e-6);
+                assert!((start[1] - 3.0).abs() < 1e-6);
+                assert!((end[0] - 6.0).abs() < 1e-6);
+                assert!((end[1] - 3.0).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_aperture_block_does_not_emit_on_define() {
+        // Drawings captured into a block must not appear in the output
+        // until the block is flashed.
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::LinearMode,
+            GerberCommand::ApertureBlockBegin { code: 10 },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::ApertureBlockEnd,
+            // No flash — block is defined but never used
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        assert!(
+            output.drawings.is_empty(),
+            "block drawings must not appear without a flash"
+        );
+    }
+
+    #[test]
     fn test_flash_macro_aperture() {
         let mut cmds = vec![
             GerberCommand::FormatSpec(CoordinateFormat::default()),
@@ -1228,20 +1354,27 @@ mod tests {
 
     #[test]
     fn test_step_repeat_2x2() {
-        // A 2×2 SR block should produce 4 copies of the original drawing.
+        // Draw one segment inside a 2×2 SR block with 3mm X step and 4mm Y step.
+        // Expected: 4 copies of the segment at (0,0), (3,0), (0,4), (3,4) offsets.
         let mut cmds = setup_commands();
         cmds.extend([
             GerberCommand::StepRepeat {
                 x_repeat: 2,
                 y_repeat: 2,
-                x_step: 5.0,
-                y_step: 5.0,
+                x_step: 3.0,
+                y_step: 4.0,
             },
-            GerberCommand::Flash {
+            GerberCommand::Move {
                 x: Some(0),
                 y: Some(0),
             },
-            // Closing SR with repeat=1,1 triggers replication
+            GerberCommand::Interpolate {
+                x: Some(10000), // 1 mm
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            // Close the block
             GerberCommand::StepRepeat {
                 x_repeat: 1,
                 y_repeat: 1,
@@ -1251,31 +1384,46 @@ mod tests {
         ]);
 
         let output = interpret(&cmds).unwrap();
-        // 4 circles: (0,0), (5,0), (0,5), (5,5)
-        assert_eq!(output.drawings.len(), 4);
-        let centers: Vec<[f64; 2]> = output
+        assert_eq!(output.drawings.len(), 4, "2×2 SR should produce 4 drawings");
+
+        // Collect all segment starts and ends
+        let mut starts: Vec<[f64; 2]> = output
             .drawings
             .iter()
-            .map(|d| match d {
-                Drawing::Circle { start, .. } => *start,
-                other => panic!("expected Circle, got: {other:?}"),
+            .filter_map(|d| {
+                if let Drawing::Segment { start, .. } = d {
+                    Some(*start)
+                } else {
+                    None
+                }
             })
             .collect();
-        assert!(centers.contains(&[0.0, 0.0]));
-        assert!(centers
-            .iter()
-            .any(|c| (c[0] - 5.0).abs() < 1e-6 && c[1].abs() < 1e-6));
-        assert!(centers
-            .iter()
-            .any(|c| c[0].abs() < 1e-6 && (c[1] - 5.0).abs() < 1e-6));
-        assert!(centers
-            .iter()
-            .any(|c| (c[0] - 5.0).abs() < 1e-6 && (c[1] - 5.0).abs() < 1e-6));
+        starts.sort_by(|a, b| {
+            a[0].partial_cmp(&b[0])
+                .unwrap()
+                .then(a[1].partial_cmp(&b[1]).unwrap())
+        });
+
+        let expected = [[0.0, 0.0], [0.0, 4.0], [3.0, 0.0], [3.0, 4.0]];
+        for (got, exp) in starts.iter().zip(expected.iter()) {
+            assert!(
+                (got[0] - exp[0]).abs() < 1e-6,
+                "start x: got {} exp {}",
+                got[0],
+                exp[0]
+            );
+            assert!(
+                (got[1] - exp[1]).abs() < 1e-6,
+                "start y: got {} exp {}",
+                got[1],
+                exp[1]
+            );
+        }
     }
 
     #[test]
     fn test_step_repeat_implicit_close_at_eof() {
-        // An SR block not explicitly closed should be replicated at EOF.
+        // SR block not explicitly closed — should be closed at EOF.
         let mut cmds = setup_commands();
         cmds.extend([
             GerberCommand::StepRepeat {
@@ -1291,8 +1439,11 @@ mod tests {
         ]);
 
         let output = interpret(&cmds).unwrap();
-        // 3 circles at x = 0, 2, 4
-        assert_eq!(output.drawings.len(), 3);
+        assert_eq!(
+            output.drawings.len(),
+            3,
+            "implicit close should replicate 3×1"
+        );
     }
 
     #[test]
