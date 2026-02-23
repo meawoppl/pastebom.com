@@ -117,6 +117,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         bom,
         ibom_version: None,
         tracks,
+        copper_pads: None,
         zones,
         nets: net_names,
         font_data: None,

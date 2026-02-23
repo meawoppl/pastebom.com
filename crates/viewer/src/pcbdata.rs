@@ -16,6 +16,8 @@ pub struct PcbData {
     #[serde(default)]
     pub tracks: Option<LayerData<Vec<Track>>>,
     #[serde(default)]
+    pub copper_pads: Option<LayerData<Vec<Drawing>>>,
+    #[serde(default)]
     pub zones: Option<LayerData<Vec<Zone>>>,
     #[serde(default)]
     pub nets: Option<Vec<String>>,

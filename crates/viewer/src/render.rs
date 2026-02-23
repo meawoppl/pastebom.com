@@ -833,6 +833,71 @@ fn draw_drills(canvas: &HtmlCanvasElement, pcbdata: &PcbData) {
     ctx.restore();
 }
 
+/// Apply Gerber clear-polarity shapes using destination-out compositing.
+/// Clear-polarity geometry punches transparent holes through the layer.
+fn apply_gerber_clear(canvas: &HtmlCanvasElement, drawings: &[Drawing], scalefactor: f64) {
+    if drawings.is_empty() {
+        return;
+    }
+    let ctx = get_ctx(canvas);
+    ctx.save();
+    ctx.set_global_composite_operation("destination-out")
+        .unwrap();
+    let black = "rgba(0,0,0,1)";
+    for d in drawings {
+        match d {
+            Drawing::Polygon { .. } => draw_polygon_shape(&ctx, scalefactor, d, black),
+            _ => draw_edge(&ctx, scalefactor, d, black),
+        }
+    }
+    ctx.restore();
+}
+
+/// Draw a single copper pad shape, filling rects/circles/polygons.
+fn draw_copper_pad_shape(
+    ctx: &CanvasRenderingContext2d,
+    scalefactor: f64,
+    drawing: &Drawing,
+    color: &str,
+) {
+    ctx.set_fill_style_str(color);
+    ctx.set_stroke_style_str(color);
+    match drawing {
+        Drawing::Circle { start, radius, .. } => {
+            ctx.begin_path();
+            ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
+            ctx.close_path();
+            ctx.fill();
+        }
+        Drawing::Rect { start, end, .. } => {
+            ctx.fill_rect(start[0], start[1], end[0] - start[0], end[1] - start[1]);
+        }
+        Drawing::Polygon { .. } => {
+            draw_polygon_shape(ctx, scalefactor, drawing, color);
+        }
+        _ => {
+            draw_edge(ctx, scalefactor, drawing, color);
+        }
+    }
+}
+
+fn draw_copper_pads(
+    canvas: &HtmlCanvasElement,
+    layer: &str,
+    color: &str,
+    scalefactor: f64,
+    pcbdata: &PcbData,
+) {
+    let pads = match pcbdata.copper_pads.as_ref().and_then(|p| p.get(layer)) {
+        Some(p) => p,
+        None => return,
+    };
+    let ctx = get_ctx(canvas);
+    for d in pads {
+        draw_copper_pad_shape(&ctx, scalefactor, d, color);
+    }
+}
+
 pub fn draw_tracks(
     canvas: &HtmlCanvasElement,
     layer: &str,
@@ -1192,6 +1257,20 @@ pub fn draw_background(
         highlighted_net,
         zone_cache,
     );
+    if settings.render_tracks {
+        let opp_color = if opposite == "F" {
+            &colors.track_front
+        } else {
+            &colors.track_back
+        };
+        draw_copper_pads(
+            &layer.bg,
+            opposite,
+            opp_color,
+            layer.transform.s * layer.transform.zoom,
+            pcbdata,
+        );
+    }
     draw_footprints(
         &layer.bg,
         opposite,
@@ -1217,6 +1296,36 @@ pub fn draw_background(
         highlighted_net,
         zone_cache,
     );
+    if settings.render_tracks {
+        let primary_color = if layer.layer == "F" {
+            &colors.track_front
+        } else {
+            &colors.track_back
+        };
+        draw_copper_pads(
+            &layer.bg,
+            &layer.layer,
+            primary_color,
+            layer.transform.s * layer.transform.zoom,
+            pcbdata,
+        );
+        // Inner copper layer pads at reduced opacity
+        if let Some(ref copper_pads) = pcbdata.copper_pads {
+            let ctx = get_ctx(&layer.bg);
+            ctx.save();
+            ctx.set_global_alpha(0.25);
+            for name in copper_pads.inner_layer_names() {
+                draw_copper_pads(
+                    &layer.bg,
+                    name,
+                    primary_color,
+                    layer.transform.s * layer.transform.zoom,
+                    pcbdata,
+                );
+            }
+            ctx.restore();
+        }
+    }
     draw_footprints(
         &layer.bg,
         &layer.layer,
@@ -1253,6 +1362,14 @@ pub fn draw_background(
             &colors.silk_text,
             settings,
         );
+        let clear_key = format!("{}_Clear", layer.layer);
+        if let Some(clears) = pcbdata.drawings.silkscreen.inner.get(&clear_key) {
+            apply_gerber_clear(
+                &layer.silk,
+                clears,
+                layer.transform.s * layer.transform.zoom,
+            );
+        }
     }
     if settings.render_fabrication {
         draw_bg_layer(

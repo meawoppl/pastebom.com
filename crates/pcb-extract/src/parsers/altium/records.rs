@@ -100,7 +100,12 @@ pub fn parse_components(
                 .cloned()
                 .unwrap_or_default(),
             pattern: r.get("PATTERN").cloned().unwrap_or_default(),
-            comment: r.get("COMMENT").cloned().unwrap_or_default(),
+            comment: r
+                .get("COMMENT")
+                .filter(|v| !v.is_empty())
+                .or_else(|| r.get("SOURCEDESCRIPTION"))
+                .cloned()
+                .unwrap_or_default(),
             x: parse_coord(r, "X", units_per_mil),
             y: parse_coord(r, "Y", units_per_mil),
             rotation: r
@@ -605,6 +610,69 @@ fn parse_texts_v6(data: &[u8]) -> Vec<AltiumText> {
     }
 
     texts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_record(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        let mut r = HashMap::new();
+        for (k, v) in pairs {
+            r.insert(k.to_string(), v.to_string());
+        }
+        r
+    }
+
+    #[test]
+    fn test_comment_used_when_present() {
+        let record = make_record(&[
+            ("SOURCEDESIGNATOR", "R1"),
+            ("PATTERN", "0402"),
+            ("COMMENT", "10k"),
+            ("SOURCEDESCRIPTION", "Thick Film Resistors - SMD 10 kOhm 1%"),
+            ("LAYER", "TOP"),
+            ("X", "0"),
+            ("Y", "0"),
+            ("ROTATION", "0"),
+        ]);
+        let components = parse_components(&[record], &HashMap::new(), 10000);
+        assert_eq!(components[0].comment, "10k");
+    }
+
+    #[test]
+    fn test_sourcedescription_fallback_when_comment_absent() {
+        let record = make_record(&[
+            ("SOURCEDESIGNATOR", "R1"),
+            ("PATTERN", "0402"),
+            ("SOURCEDESCRIPTION", "Thick Film Resistors - SMD 10 kOhm 1%"),
+            ("LAYER", "TOP"),
+            ("X", "0"),
+            ("Y", "0"),
+            ("ROTATION", "0"),
+        ]);
+        let components = parse_components(&[record], &HashMap::new(), 10000);
+        assert_eq!(
+            components[0].comment,
+            "Thick Film Resistors - SMD 10 kOhm 1%"
+        );
+    }
+
+    #[test]
+    fn test_empty_comment_falls_back_to_sourcedescription() {
+        let record = make_record(&[
+            ("SOURCEDESIGNATOR", "C1"),
+            ("PATTERN", "0402"),
+            ("COMMENT", ""),
+            ("SOURCEDESCRIPTION", "Generic Capacitor, 100nF"),
+            ("LAYER", "TOP"),
+            ("X", "0"),
+            ("Y", "0"),
+            ("ROTATION", "0"),
+        ]);
+        let components = parse_components(&[record], &HashMap::new(), 10000);
+        assert_eq!(components[0].comment, "Generic Capacitor, 100nF");
+    }
 }
 
 /// Parse texts from older Altium format using type+length subrecords.

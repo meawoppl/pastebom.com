@@ -368,13 +368,18 @@ fn app() -> Html {
                         .unwrap_or(1.0);
 
                     if pointer_count == 2 {
-                        // Pinch-to-zoom: compute distance before updating this pointer
+                        // Pinch-to-zoom + simultaneous pan by centroid movement
                         let other_id = *pointer_states
                             .keys()
                             .find(|&&id| id != e.pointer_id())
                             .unwrap();
                         let other = pointer_states.get(&other_id).unwrap();
                         let cur = pointer_states.get(&e.pointer_id()).unwrap();
+
+                        let old_mid_x = (cur.last_x + other.last_x) / 2.0;
+                        let old_mid_y = (cur.last_y + other.last_y) / 2.0;
+                        let new_mid_x = (e.offset_x() as f64 + other.last_x) / 2.0;
+                        let new_mid_y = (e.offset_y() as f64 + other.last_y) / 2.0;
 
                         let old_dist = ((cur.last_x - other.last_x).powi(2)
                             + (cur.last_y - other.last_y).powi(2))
@@ -383,15 +388,19 @@ fn app() -> Html {
                             + (e.offset_y() as f64 - other.last_y).powi(2))
                         .sqrt();
 
+                        // Pan by centroid movement (before zoom so units are consistent)
+                        canvases.transform.panx +=
+                            dpr * (new_mid_x - old_mid_x) / canvases.transform.zoom;
+                        canvases.transform.pany +=
+                            dpr * (new_mid_y - old_mid_y) / canvases.transform.zoom;
+
+                        // Zoom around new centroid
                         if old_dist > 1.0 && new_dist > 1.0 {
                             let scale = (new_dist / old_dist).clamp(0.5, 2.0);
-                            let mid_x = (e.offset_x() as f64 + other.last_x) / 2.0;
-                            let mid_y = (e.offset_y() as f64 + other.last_y) / 2.0;
-
                             canvases.transform.zoom *= scale;
                             let zoomd = (1.0 - scale) / canvases.transform.zoom;
-                            canvases.transform.panx += dpr * mid_x * zoomd;
-                            canvases.transform.pany += dpr * mid_y * zoomd;
+                            canvases.transform.panx += dpr * new_mid_x * zoomd;
+                            canvases.transform.pany += dpr * new_mid_y * zoomd;
                         }
 
                         let ptr = pointer_states.get_mut(&e.pointer_id()).unwrap();
@@ -796,7 +805,7 @@ fn app() -> Html {
                         <button class="sidebar-close" onclick={{
                             let s = bom_sidebar_open.clone();
                             Callback::from(move |_: MouseEvent| s.set(false))
-                        }}>{"×"}</button>
+                        }}>{"‹"}</button>
                     </div>
                     <div class="sidebar-controls">
                         <div class="button-container">
@@ -896,7 +905,7 @@ fn app() -> Html {
                 <button class="sidebar-tab left-tab" onclick={{
                     let s = bom_sidebar_open.clone();
                     Callback::from(move |_: MouseEvent| s.set(true))
-                }}>{"BOM"}</button>
+                }}>{"›"}</button>
             }
 
             // ─── View sidebar (right) ──────────────────────────
@@ -907,7 +916,7 @@ fn app() -> Html {
                         <button class="sidebar-close" onclick={{
                             let s = view_sidebar_open.clone();
                             Callback::from(move |_: MouseEvent| s.set(false))
-                        }}>{"×"}</button>
+                        }}>{"›"}</button>
                     </div>
                     <div class="sidebar-settings">
                         // ─── Layer color key ──────────────────────────
@@ -1015,7 +1024,7 @@ fn app() -> Html {
                 <button class="sidebar-tab right-tab" onclick={{
                     let s = view_sidebar_open.clone();
                     Callback::from(move |_: MouseEvent| s.set(true))
-                }}>{"View"}</button>
+                }}>{"‹"}</button>
             }
         </div>
     }

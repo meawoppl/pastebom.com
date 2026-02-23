@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use log::warn;
+
 use super::commands::ApertureTemplate;
 
 /// An aperture in the aperture table.
@@ -34,7 +36,10 @@ impl ApertureTable {
                 ApertureTemplate::Polygon { outer_diameter, .. } => *outer_diameter,
                 ApertureTemplate::Macro { .. } => 0.0, // Macros are flash-only
             },
-            None => 0.0,
+            None => {
+                warn!("Gerber: D01 with undefined aperture D{code}, using zero width");
+                0.0
+            }
         }
     }
 }
@@ -83,5 +88,13 @@ mod tests {
     fn test_stroke_width_missing() {
         let table = ApertureTable::default();
         assert!((table.stroke_width(99)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_get_undefined_aperture() {
+        let table = ApertureTable::default();
+        // Missing apertures return None from get and 0.0 from stroke_width
+        assert!(table.get(42).is_none());
+        assert!((table.stroke_width(42)).abs() < 1e-9);
     }
 }

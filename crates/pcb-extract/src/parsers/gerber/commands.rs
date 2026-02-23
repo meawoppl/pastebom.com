@@ -107,6 +107,27 @@ pub enum GerberCommand {
     FileFunction(FileFunction),
     /// %AM - Aperture macro definition
     MacroDefine { name: String, body: Vec<String> },
+    /// %SR - Step-and-repeat block.
+    /// When x_repeat=1 AND y_repeat=1 this closes (or resets) any open SR block.
+    /// Otherwise it opens a new block that will be tiled x_repeat × y_repeat times
+    /// with x_step / y_step spacing (in file units, mm or inch).
+    StepRepeat {
+        x_repeat: u32,
+        y_repeat: u32,
+        x_step: f64,
+        y_step: f64,
+    },
+    /// %MI - Image mirroring (deprecated but still in legacy files)
+    /// A=true mirrors about the Y-axis (flips X), B=true mirrors about the X-axis (flips Y).
+    ImageMirror { a: bool, b: bool },
+    /// %SF - Image scaling (deprecated but still in legacy files)
+    /// a scales the X axis, b scales the Y axis.
+    ImageScale { a: f64, b: f64 },
+    /// %ABDnn% - Begin aperture block definition.
+    /// All drawing commands until the matching %AB% are captured as the block.
+    ApertureBlockBegin { code: u32 },
+    /// %AB% - End aperture block definition.
+    ApertureBlockEnd,
     /// M02 - End of file
     EndOfFile,
 }
@@ -204,7 +225,19 @@ fn parse_extended(content: &str) -> Result<Option<GerberCommand>, ExtractError> 
     if content.starts_with("TF.FileFunction,") {
         return Ok(Some(parse_file_function(content)?));
     }
-    // Skip other extended commands (AM, SR, AB, TF, TA, TD, etc.)
+    if content.starts_with("SR") {
+        return Ok(Some(parse_step_repeat(content)?));
+    }
+    if content.starts_with("MI") {
+        return Ok(Some(parse_image_mirror(content)?));
+    }
+    if content.starts_with("SF") {
+        return Ok(Some(parse_image_scale(content)?));
+    }
+    if content.starts_with("AB") {
+        return Ok(Some(parse_aperture_block(content)?));
+    }
+    // Skip other extended commands (AM, TF, TA, TD, etc.)
     Ok(None)
 }
 
@@ -406,6 +439,98 @@ fn parse_board_side(s: Option<&str>) -> BoardSide {
         Some("Bot") | Some("Bottom") => BoardSide::Bottom,
         _ => BoardSide::Top,
     }
+}
+
+/// Parse %SR command.  Example: `SRX3Y2I5.0J10.0` or bare `SR` (close/reset).
+fn parse_step_repeat(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "SR"
+    if s.is_empty() {
+        // Bare %SR% — closes the current block (or resets to defaults).
+        return Ok(GerberCommand::StepRepeat {
+            x_repeat: 1,
+            y_repeat: 1,
+            x_step: 0.0,
+            y_step: 0.0,
+        });
+    }
+    // Parse X<n>Y<n>I<f>J<f> — all fields optional, defaults are 1/1/0/0.
+    let x_repeat = parse_sr_uint(s, 'X').unwrap_or(1);
+    let y_repeat = parse_sr_uint(s, 'Y').unwrap_or(1);
+    let x_step = parse_sr_float(s, 'I').unwrap_or(0.0);
+    let y_step = parse_sr_float(s, 'J').unwrap_or(0.0);
+    Ok(GerberCommand::StepRepeat {
+        x_repeat,
+        y_repeat,
+        x_step,
+        y_step,
+    })
+}
+
+/// Extract the unsigned integer after a given key letter in a SR parameter string.
+fn parse_sr_uint(s: &str, key: char) -> Option<u32> {
+    let pos = s.find(key)?;
+    let after = &s[pos + 1..];
+    let end = after
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(after.len());
+    after[..end].parse().ok()
+}
+
+/// Extract the float after a given key letter in a SR parameter string.
+fn parse_sr_float(s: &str, key: char) -> Option<f64> {
+    let pos = s.find(key)?;
+    let after = &s[pos + 1..];
+    let end = after
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(after.len());
+    after[..end].parse().ok()
+}
+
+/// Parse %MI command.  Example: `MIA1B0` (mirror X only).
+fn parse_image_mirror(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "MI"
+    let a = s
+        .find('A')
+        .and_then(|p| s[p + 1..].chars().next())
+        .map(|c| c == '1')
+        .unwrap_or(false);
+    let b = s
+        .find('B')
+        .and_then(|p| s[p + 1..].chars().next())
+        .map(|c| c == '1')
+        .unwrap_or(false);
+    Ok(GerberCommand::ImageMirror { a, b })
+}
+
+/// Parse %SF command.  Example: `SFA1.5B2.0`.
+fn parse_image_scale(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "SF"
+    let a = parse_ab_float(s, 'A').unwrap_or(1.0);
+    let b = parse_ab_float(s, 'B').unwrap_or(1.0);
+    Ok(GerberCommand::ImageScale { a, b })
+}
+
+/// Extract the float value after a given letter key in a "A<val>B<val>" string.
+fn parse_ab_float(s: &str, key: char) -> Option<f64> {
+    let pos = s.find(key)?;
+    let after = &s[pos + 1..];
+    let end = after
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(after.len());
+    after[..end].parse().ok()
+}
+
+/// Parse %AB command.  `ABDnn` opens a block with code nn, bare `AB` closes.
+fn parse_aperture_block(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "AB"
+    if let Some(code_str) = s.strip_prefix('D') {
+        let code: u32 = code_str
+            .parse()
+            .map_err(|_| ExtractError::ParseError(format!("AB: invalid aperture code: {s}")))?;
+        return Ok(GerberCommand::ApertureBlockBegin { code });
+    }
+    // Bare "AB" — end of block
+    Ok(GerberCommand::ApertureBlockEnd)
 }
 
 /// Parse a word command (e.g., "D10", "X100Y200D01", "G01", "M02").
@@ -832,5 +957,71 @@ mod tests {
             }
             other => panic!("expected MacroDefine, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_step_repeat_parse() {
+        let cmds = parse("%SRX3Y2I5.0J10.0*%\n");
+        assert_eq!(
+            cmds,
+            vec![GerberCommand::StepRepeat {
+                x_repeat: 3,
+                y_repeat: 2,
+                x_step: 5.0,
+                y_step: 10.0,
+            }]
+        );
+        // Bare %SR% = close/reset
+        let cmds = parse("%SR*%\n");
+        assert_eq!(
+            cmds,
+            vec![GerberCommand::StepRepeat {
+                x_repeat: 1,
+                y_repeat: 1,
+                x_step: 0.0,
+                y_step: 0.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_image_mirror() {
+        let cmds = parse("%MIA1B0*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ImageMirror { a: true, b: false }]);
+        let cmds = parse("%MIA0B1*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ImageMirror { a: false, b: true }]);
+        let cmds = parse("%MIA0B0*%\n");
+        assert_eq!(
+            cmds,
+            vec![GerberCommand::ImageMirror { a: false, b: false }]
+        );
+    }
+
+    #[test]
+    fn test_image_scale() {
+        let cmds = parse("%SFA2.0B1.5*%\n");
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            GerberCommand::ImageScale { a, b } => {
+                assert!((*a - 2.0).abs() < 1e-9);
+                assert!((*b - 1.5).abs() < 1e-9);
+            }
+            other => panic!("expected ImageScale, got: {other:?}"),
+        }
+        // Default scale (no-op)
+        let cmds = parse("%SFA1.0B1.0*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ImageScale { a: 1.0, b: 1.0 }]);
+    }
+
+    #[test]
+    fn test_aperture_block_begin() {
+        let cmds = parse("%ABD10*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ApertureBlockBegin { code: 10 }]);
+    }
+
+    #[test]
+    fn test_aperture_block_end() {
+        let cmds = parse("%AB*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ApertureBlockEnd]);
     }
 }

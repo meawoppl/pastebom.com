@@ -55,8 +55,13 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
                 if let Some(drawings) = excellon::parse_excellon(&content) {
                     if !drawings.is_empty() {
                         had_gerber = true;
-                        layer_outputs
-                            .push((GerberLayerType::Drills, GerberLayerOutput { drawings }));
+                        layer_outputs.push((
+                            GerberLayerType::Drills,
+                            GerberLayerOutput {
+                                drawings,
+                                ..Default::default()
+                            },
+                        ));
                     }
                 }
             }
@@ -153,10 +158,15 @@ fn assemble_pcb_data(
     let mut edges: Vec<Drawing> = Vec::new();
     let mut silk_f: Vec<Drawing> = Vec::new();
     let mut silk_b: Vec<Drawing> = Vec::new();
+    let mut silk_f_clear: Vec<Drawing> = Vec::new();
+    let mut silk_b_clear: Vec<Drawing> = Vec::new();
     let mut drills: Vec<Drawing> = Vec::new();
     let mut tracks_f: Vec<Track> = Vec::new();
     let mut tracks_b: Vec<Track> = Vec::new();
     let mut tracks_inner: HashMap<String, Vec<Track>> = HashMap::new();
+    let mut pads_f: Vec<Drawing> = Vec::new();
+    let mut pads_b: Vec<Drawing> = Vec::new();
+    let mut pads_inner: HashMap<String, Vec<Drawing>> = HashMap::new();
 
     for (layer_type, output) in layer_outputs {
         match layer_type {
@@ -165,9 +175,11 @@ fn assemble_pcb_data(
             }
             GerberLayerType::SilkscreenTop => {
                 silk_f.extend(output.drawings);
+                silk_f_clear.extend(output.clear_drawings);
             }
             GerberLayerType::SilkscreenBottom => {
                 silk_b.extend(output.drawings);
+                silk_b_clear.extend(output.clear_drawings);
             }
             GerberLayerType::Drills => {
                 drills.extend(output.drawings);
@@ -177,6 +189,8 @@ fn assemble_pcb_data(
                     for d in &output.drawings {
                         if let Some(track) = drawing_to_track(d) {
                             tracks_f.push(track);
+                        } else {
+                            pads_f.push(d.clone());
                         }
                     }
                 }
@@ -186,6 +200,8 @@ fn assemble_pcb_data(
                     for d in &output.drawings {
                         if let Some(track) = drawing_to_track(d) {
                             tracks_b.push(track);
+                        } else {
+                            pads_b.push(d.clone());
                         }
                     }
                 }
@@ -193,9 +209,12 @@ fn assemble_pcb_data(
             GerberLayerType::CopperInner(ref name) => {
                 if opts.include_tracks {
                     let inner_tracks = tracks_inner.entry(name.clone()).or_default();
+                    let inner_pads = pads_inner.entry(name.clone()).or_default();
                     for d in &output.drawings {
                         if let Some(track) = drawing_to_track(d) {
                             inner_tracks.push(track);
+                        } else {
+                            inner_pads.push(d.clone());
                         }
                     }
                 }
@@ -227,6 +246,18 @@ fn assemble_pcb_data(
         None
     };
 
+    let copper_pads = if opts.include_tracks
+        && (!pads_f.is_empty() || !pads_b.is_empty() || !pads_inner.is_empty())
+    {
+        Some(LayerData {
+            front: pads_f,
+            back: pads_b,
+            inner: pads_inner,
+        })
+    } else {
+        None
+    };
+
     Ok(PcbData {
         edges_bbox: bbox,
         edges,
@@ -234,7 +265,16 @@ fn assemble_pcb_data(
             silkscreen: LayerData {
                 front: silk_f,
                 back: silk_b,
-                inner: HashMap::new(),
+                inner: {
+                    let mut m = HashMap::new();
+                    if !silk_f_clear.is_empty() {
+                        m.insert("F_Clear".to_string(), silk_f_clear);
+                    }
+                    if !silk_b_clear.is_empty() {
+                        m.insert("B_Clear".to_string(), silk_b_clear);
+                    }
+                    m
+                },
             },
             fabrication: LayerData {
                 front: Vec::new(),
@@ -256,6 +296,7 @@ fn assemble_pcb_data(
         bom: None,
         ibom_version: None,
         tracks,
+        copper_pads,
         zones: None,
         nets: None,
         font_data: None,
@@ -464,6 +505,41 @@ M02*
         let tracks = pcb.tracks.unwrap();
         assert!(!tracks.inner.is_empty());
         assert!(tracks.inner.contains_key("In2"));
+    }
+
+    #[test]
+    fn test_clear_polarity_silk() {
+        // A silkscreen layer with a clear-polarity segment should store it in
+        // silkscreen.inner["F_Clear"], not in silkscreen.front.
+        let silk_with_clear = "\
+%FSLAX24Y24*%
+%MOMM*%
+%TF.FileFunction,Legend,Top*%
+%ADD10C,0.100*%
+G01*
+D10*
+%LPD*%
+X0Y0D02*
+X10000Y0D01*
+%LPC*%
+X20000Y0D02*
+X30000Y0D01*
+M02*
+";
+        let zip_data = make_test_zip(&[("board.GTO", silk_with_clear)]);
+        let opts = ExtractOptions::default();
+        let pcb = parse(&zip_data, &opts).unwrap();
+
+        // Dark drawings go to front
+        assert_eq!(pcb.drawings.silkscreen.front.len(), 1);
+        // Clear drawings go to F_Clear inner key
+        let clears = pcb
+            .drawings
+            .silkscreen
+            .inner
+            .get("F_Clear")
+            .expect("F_Clear key should exist");
+        assert_eq!(clears.len(), 1);
     }
 
     #[test]
