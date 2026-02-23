@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use log::warn;
@@ -57,6 +58,10 @@ struct Interpreter {
     /// Image-level scaling from %SF.
     scale_x: f64,
     scale_y: f64,
+    /// When Some((start_idx, code)), we are capturing an aperture block.
+    ab_capture_start: Option<(usize, u32)>,
+    /// Completed aperture block definitions: code → drawings.
+    block_table: HashMap<u32, Vec<Drawing>>,
 }
 
 impl Interpreter {
@@ -84,6 +89,8 @@ impl Interpreter {
             mirror_y: false,
             scale_x: 1.0,
             scale_y: 1.0,
+            ab_capture_start: None,
+            block_table: HashMap::new(),
         }
     }
 
@@ -233,6 +240,15 @@ impl Interpreter {
                 }
                 // x_repeat=1, y_repeat=1 was already closed above; nothing left to do.
             }
+            GerberCommand::ApertureBlockBegin { code } => {
+                self.ab_capture_start = Some((self.drawings.len(), *code));
+            }
+            GerberCommand::ApertureBlockEnd => {
+                if let Some((start, code)) = self.ab_capture_start.take() {
+                    let block: Vec<Drawing> = self.drawings.drain(start..).collect();
+                    self.block_table.insert(code, block);
+                }
+            }
             GerberCommand::EndOfFile | GerberCommand::FileFunction(_) => {}
         }
     }
@@ -326,6 +342,16 @@ impl Interpreter {
         let py = self.cy(self.y);
 
         let aperture_code = self.aperture;
+
+        // Aperture blocks take priority over standard apertures.
+        if let Some(block) = self.block_table.get(&aperture_code) {
+            let block = block.clone();
+            for d in &block {
+                self.drawings.push(offset_drawing(d, px, py));
+            }
+            return;
+        }
+
         if let Some(ap) = self.apertures.get(aperture_code) {
             match &ap.template {
                 ApertureTemplate::Circle { diameter } => {
@@ -772,7 +798,7 @@ mod tests {
     #[test]
     fn test_flash_obround_wider() {
         // x_size > y_size: caps on left/right ends
-        let mut cmds = vec![
+        let cmds = vec![
             GerberCommand::FormatSpec(CoordinateFormat::default()),
             GerberCommand::Units(Units::Millimeters),
             GerberCommand::ApertureDefine {
@@ -1100,6 +1126,105 @@ mod tests {
             }
             other => panic!("expected Polygon, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_aperture_block_flash() {
+        // Define a block containing a segment, flash it at two positions.
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::LinearMode,
+            // Define block B10: a 1mm horizontal segment
+            GerberCommand::ApertureBlockBegin { code: 10 },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::ApertureBlockEnd,
+            // Flash B10 at (2, 0) — should place the segment at x+2mm offset
+            GerberCommand::Flash {
+                x: Some(20000),
+                y: Some(0),
+            },
+            // Flash B10 again at (5, 3)
+            GerberCommand::Flash {
+                x: Some(50000),
+                y: Some(30000),
+            },
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        // Two flashes of the block → two segments
+        assert_eq!(output.drawings.len(), 2);
+
+        // First flash at (2.0, 0.0): segment offset by (2.0, 0.0)
+        match &output.drawings[0] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 2.0).abs() < 1e-6, "start.x: {}", start[0]);
+                assert!((start[1]).abs() < 1e-6);
+                assert!((end[0] - 3.0).abs() < 1e-6, "end.x: {}", end[0]);
+                assert!((end[1]).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+
+        // Second flash at (5.0, 3.0): segment offset by (5.0, 3.0)
+        match &output.drawings[1] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 5.0).abs() < 1e-6);
+                assert!((start[1] - 3.0).abs() < 1e-6);
+                assert!((end[0] - 6.0).abs() < 1e-6);
+                assert!((end[1] - 3.0).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_aperture_block_does_not_emit_on_define() {
+        // Drawings captured into a block must not appear in the output
+        // until the block is flashed.
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::LinearMode,
+            GerberCommand::ApertureBlockBegin { code: 10 },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::ApertureBlockEnd,
+            // No flash — block is defined but never used
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        assert!(
+            output.drawings.is_empty(),
+            "block drawings must not appear without a flash"
+        );
     }
 
     #[test]
