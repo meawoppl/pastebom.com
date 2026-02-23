@@ -638,8 +638,10 @@ pub fn evaluate_macro(
                 gap_thickness,
                 rotation,
             } => {
-                // Approximate thermal as a ring with 4 gaps.
-                // Draw 4 arc segments of the ring.
+                // Thermal: a ring (annulus) with four 90° gap cuts at the rotation angle.
+                // Render each of the four solid arc segments as a Drawing::Arc whose
+                // stroke width equals the ring thickness — this gives perfectly smooth
+                // curves with zero polygon approximation error.
                 let cx = center_x.eval(params);
                 let cy = center_y.eval(params);
                 let od = outer_diameter.eval(params);
@@ -656,48 +658,27 @@ pub fn evaluate_macro(
                     continue;
                 }
 
-                // The gap half-angle at the mid radius
-                let gap_half_angle = (gap / (2.0 * mid_r)).asin();
+                // Half-angle subtended by the gap at the mid-radius.
+                // Clamp argument to [-1, 1] to guard against numerical overshoot.
+                let gap_half_angle = ((gap / (2.0 * mid_r)).clamp(-1.0, 1.0)).asin();
                 let rot_rad = rot.to_radians();
 
-                // Draw 4 arcs, one per quadrant, each avoiding the gap
-                for quadrant in 0..4 {
+                // Emit one Drawing::Arc per quadrant, each trimmed by the gap.
+                for quadrant in 0..4u32 {
                     let base = rot_rad + (quadrant as f64) * PI / 2.0;
-                    let arc_start = base + gap_half_angle;
-                    let arc_end = base + PI / 2.0 - gap_half_angle;
+                    let arc_start_rad = base + gap_half_angle;
+                    let arc_end_rad = base + PI / 2.0 - gap_half_angle;
 
-                    if arc_end <= arc_start {
+                    if arc_end_rad <= arc_start_rad {
                         continue;
                     }
 
-                    // Approximate arc segment as a polygon strip
-                    let n_pts = 16;
-                    let mut pts = Vec::with_capacity(n_pts * 2 + 2);
-                    // Outer arc
-                    for k in 0..=n_pts {
-                        let t = k as f64 / n_pts as f64;
-                        let a = arc_start + t * (arc_end - arc_start);
-                        pts.push([
-                            flash_x + cx + outer_r * a.cos(),
-                            flash_y + cy + outer_r * a.sin(),
-                        ]);
-                    }
-                    // Inner arc (reverse)
-                    for k in (0..=n_pts).rev() {
-                        let t = k as f64 / n_pts as f64;
-                        let a = arc_start + t * (arc_end - arc_start);
-                        pts.push([
-                            flash_x + cx + inner_r * a.cos(),
-                            flash_y + cy + inner_r * a.sin(),
-                        ]);
-                    }
-
-                    drawings.push(Drawing::Polygon {
-                        pos: [0.0, 0.0],
-                        angle: 0.0,
-                        polygons: vec![pts],
-                        filled: Some(1),
-                        width: 0.0,
+                    drawings.push(Drawing::Arc {
+                        start: [flash_x + cx, flash_y + cy],
+                        radius: mid_r,
+                        startangle: arc_start_rad.to_degrees(),
+                        endangle: arc_end_rad.to_degrees(),
+                        width: ring_width,
                     });
                 }
             }
@@ -869,5 +850,48 @@ mod tests {
         let (x, y) = rotate_point(1.0, 0.0, 90.0);
         assert!(x.abs() < 1e-9);
         assert!((y - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_evaluate_thermal_macro() {
+        // Thermal: outer_d=2.0, inner_d=1.0, gap=0.2, rotation=0
+        // ring_width = 0.5, mid_r = 0.75
+        // gap_half_angle = asin(0.1 / 0.75) ≈ 7.66°
+        // Each quadrant arc spans from (0 + 7.66°) to (90 - 7.66°) ≈ 74.7°
+        // Four such arcs should be emitted as Drawing::Arc
+        let mac = ApertureMacro {
+            name: "THERMAL".to_string(),
+            primitives: vec![MacroPrimitive::Thermal {
+                center_x: Expr::Literal(0.0),
+                center_y: Expr::Literal(0.0),
+                outer_diameter: Expr::Literal(2.0),
+                inner_diameter: Expr::Literal(1.0),
+                gap_thickness: Expr::Literal(0.2),
+                rotation: Expr::Literal(0.0),
+            }],
+        };
+        let drawings = evaluate_macro(&mac, &[], 0.0, 0.0);
+        assert_eq!(drawings.len(), 4, "expected 4 arc segments for thermal");
+        for d in &drawings {
+            match d {
+                Drawing::Arc {
+                    start,
+                    radius,
+                    width,
+                    startangle,
+                    endangle,
+                } => {
+                    assert!((*radius - 0.75).abs() < 1e-6, "mid-radius should be 0.75");
+                    assert!((*width - 0.5).abs() < 1e-6, "ring width should be 0.5");
+                    assert!(start[0].abs() < 1e-9);
+                    assert!(start[1].abs() < 1e-9);
+                    assert!(*endangle > *startangle, "arc should sweep forward");
+                    let span = endangle - startangle;
+                    assert!(span < 90.0, "each quadrant arc must be < 90°");
+                    assert!(span > 0.0, "arc span must be positive");
+                }
+                other => panic!("expected Drawing::Arc for thermal, got: {other:?}"),
+            }
+        }
     }
 }
