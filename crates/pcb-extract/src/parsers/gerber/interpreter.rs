@@ -315,12 +315,13 @@ impl Interpreter {
                     });
                 }
                 ApertureTemplate::Obround { x_size, y_size } => {
-                    // Approximate obround as a rectangle (close enough for rendering)
-                    let half_x = x_size / 2.0;
-                    let half_y = y_size / 2.0;
-                    self.drawings.push(Drawing::Rect {
-                        start: [px - half_x, py - half_y],
-                        end: [px + half_x, py + half_y],
+                    // Obround (stadium): rectangle with semicircular caps on the shorter ends.
+                    let pts = obround_polygon(px, py, *x_size, *y_size);
+                    self.drawings.push(Drawing::Polygon {
+                        pos: [0.0, 0.0],
+                        angle: 0.0,
+                        polygons: vec![pts],
+                        filled: Some(1),
                         width: 0.0,
                     });
                 }
@@ -451,7 +452,7 @@ impl Interpreter {
         }
 
         let sweep = (end_angle - start_angle).abs();
-        let num_segments = ((sweep / (PI / 18.0)).ceil() as usize).max(2); // ~10 deg per segment
+        let num_segments = ((sweep / (PI / 90.0)).ceil() as usize).max(2); // ~2 deg per segment
 
         let mut points = Vec::with_capacity(num_segments + 1);
         for k in 0..=num_segments {
@@ -558,6 +559,49 @@ pub(crate) fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
             width: *width,
         },
     }
+}
+
+/// Build a stadium (obround) polygon for a flash at (cx, cy) with given x/y extents.
+///
+/// An obround aperture is a rectangle with semicircular endcaps on the shorter axis.
+/// We approximate the caps with N arc segments per semicircle.
+fn obround_polygon(cx: f64, cy: f64, x_size: f64, y_size: f64) -> Vec<[f64; 2]> {
+    const SEGS: usize = 16; // segments per semicircle
+    let hx = x_size / 2.0;
+    let hy = y_size / 2.0;
+    let mut pts = Vec::with_capacity(SEGS * 2 + 4);
+
+    if x_size >= y_size {
+        // Caps on left and right ends (X-axis caps)
+        let r = hy;
+        let rect_half = hx - r;
+        // Right cap: angles -PI/2 → +PI/2
+        for k in 0..=SEGS {
+            let a = -PI / 2.0 + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + rect_half + r * a.cos(), cy + r * a.sin()]);
+        }
+        // Left cap: angles +PI/2 → 3*PI/2
+        for k in 0..=SEGS {
+            let a = PI / 2.0 + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx - rect_half + r * a.cos(), cy + r * a.sin()]);
+        }
+    } else {
+        // Caps on top and bottom (Y-axis caps)
+        let r = hx;
+        let rect_half = hy - r;
+        // Top cap: angles 0 → PI
+        for k in 0..=SEGS {
+            let a = PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + r * a.cos(), cy + rect_half + r * a.sin()]);
+        }
+        // Bottom cap: angles PI → 2*PI
+        for k in 0..=SEGS {
+            let a = PI + PI * (k as f64) / (SEGS as f64);
+            pts.push([cx + r * a.cos(), cy - rect_half + r * a.sin()]);
+        }
+    }
+
+    pts
 }
 
 /// Interpret a sequence of Gerber commands into drawing primitives.
@@ -690,6 +734,83 @@ mod tests {
                 assert!((end[1] - 1.15).abs() < 1e-6);
             }
             other => panic!("expected Rect, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flash_obround_wider() {
+        // x_size > y_size: caps on left/right ends
+        let mut cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 12,
+                template: ApertureTemplate::Obround {
+                    x_size: 0.6,
+                    y_size: 0.3,
+                },
+            },
+            GerberCommand::SelectAperture(12),
+            GerberCommand::Flash {
+                x: Some(0),
+                y: Some(0),
+            },
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Polygon {
+                polygons, filled, ..
+            } => {
+                assert_eq!(*filled, Some(1));
+                assert_eq!(polygons.len(), 1);
+                // 2 * (SEGS + 1) points for the two caps
+                assert_eq!(polygons[0].len(), 2 * (16 + 1));
+                // All points must be within the bounding box
+                for pt in &polygons[0] {
+                    assert!(pt[0].abs() <= 0.3 + 1e-9, "x={} out of bounds", pt[0]);
+                    assert!(pt[1].abs() <= 0.15 + 1e-9, "y={} out of bounds", pt[1]);
+                }
+            }
+            other => panic!("expected Polygon, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_flash_obround_taller() {
+        // y_size > x_size: caps on top/bottom
+        let cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat::default()),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 13,
+                template: ApertureTemplate::Obround {
+                    x_size: 0.2,
+                    y_size: 0.5,
+                },
+            },
+            GerberCommand::SelectAperture(13),
+            GerberCommand::Flash {
+                x: Some(0),
+                y: Some(0),
+            },
+        ];
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Polygon {
+                polygons, filled, ..
+            } => {
+                assert_eq!(*filled, Some(1));
+                assert_eq!(polygons.len(), 1);
+                for pt in &polygons[0] {
+                    assert!(pt[0].abs() <= 0.1 + 1e-9, "x={} out of bounds", pt[0]);
+                    assert!(pt[1].abs() <= 0.25 + 1e-9, "y={} out of bounds", pt[1]);
+                }
+            }
+            other => panic!("expected Polygon, got: {other:?}"),
         }
     }
 
@@ -983,6 +1104,84 @@ mod tests {
                 assert!((*radius - 0.25).abs() < 1e-6); // diameter 0.5 / 2
             }
             other => panic!("expected Circle, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_region_arc_approximation() {
+        // A region containing a 90° CCW arc should produce many polygon points
+        // (≥45 for 2° precision) so the curve looks smooth at any zoom level.
+        let mut cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat {
+                x_integer: 2,
+                x_decimal: 4,
+                y_integer: 2,
+                y_decimal: 4,
+            }),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::MultiQuadrant,
+            GerberCommand::CounterClockwiseArcMode,
+            GerberCommand::RegionBegin,
+            // Start at (1,0), arc CCW 90° to (0,1) with center at (0,0): I=-1, J=0
+            GerberCommand::Move {
+                x: Some(10000),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(0),
+                y: Some(10000),
+                i: Some(-10000),
+                j: Some(0),
+            },
+            // Close with two segments back to start
+            GerberCommand::Interpolate {
+                x: Some(0),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::RegionEnd,
+        ];
+        cmds.insert(5, GerberCommand::LinearMode);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Polygon {
+                polygons, filled, ..
+            } => {
+                assert_eq!(*filled, Some(1));
+                assert_eq!(polygons.len(), 1);
+                // 90° arc at 2°/seg = 45 segments = 46 points, plus the 2 straight segments
+                // Total must be well above the old 9-segment minimum
+                assert!(
+                    polygons[0].len() >= 48,
+                    "expected ≥48 polygon points for smooth 90° arc, got {}",
+                    polygons[0].len()
+                );
+                // All arc points should be within 1mm radius of origin
+                for pt in &polygons[0] {
+                    let r = (pt[0].powi(2) + pt[1].powi(2)).sqrt();
+                    assert!(
+                        r <= 1.0 + 1e-6,
+                        "point ({},{}) outside arc radius",
+                        pt[0],
+                        pt[1]
+                    );
+                }
+            }
+            other => panic!("expected Polygon, got: {other:?}"),
         }
     }
 
