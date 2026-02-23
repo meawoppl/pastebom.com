@@ -107,6 +107,12 @@ pub enum GerberCommand {
     FileFunction(FileFunction),
     /// %AM - Aperture macro definition
     MacroDefine { name: String, body: Vec<String> },
+    /// %MI - Image mirroring (deprecated but still in legacy files)
+    /// A=true mirrors about the Y-axis (flips X), B=true mirrors about the X-axis (flips Y).
+    ImageMirror { a: bool, b: bool },
+    /// %SF - Image scaling (deprecated but still in legacy files)
+    /// a scales the X axis, b scales the Y axis.
+    ImageScale { a: f64, b: f64 },
     /// M02 - End of file
     EndOfFile,
 }
@@ -203,6 +209,12 @@ fn parse_extended(content: &str) -> Result<Option<GerberCommand>, ExtractError> 
     }
     if content.starts_with("TF.FileFunction,") {
         return Ok(Some(parse_file_function(content)?));
+    }
+    if content.starts_with("MI") {
+        return Ok(Some(parse_image_mirror(content)?));
+    }
+    if content.starts_with("SF") {
+        return Ok(Some(parse_image_scale(content)?));
     }
     // Skip other extended commands (AM, SR, AB, TF, TA, TD, etc.)
     Ok(None)
@@ -406,6 +418,40 @@ fn parse_board_side(s: Option<&str>) -> BoardSide {
         Some("Bot") | Some("Bottom") => BoardSide::Bottom,
         _ => BoardSide::Top,
     }
+}
+
+/// Parse %MI command.  Example: `MIA1B0` (mirror X only).
+fn parse_image_mirror(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "MI"
+    let a = s
+        .find('A')
+        .and_then(|p| s[p + 1..].chars().next())
+        .map(|c| c == '1')
+        .unwrap_or(false);
+    let b = s
+        .find('B')
+        .and_then(|p| s[p + 1..].chars().next())
+        .map(|c| c == '1')
+        .unwrap_or(false);
+    Ok(GerberCommand::ImageMirror { a, b })
+}
+
+/// Parse %SF command.  Example: `SFA1.5B2.0`.
+fn parse_image_scale(content: &str) -> Result<GerberCommand, ExtractError> {
+    let s = &content[2..]; // skip "SF"
+    let a = parse_ab_float(s, 'A').unwrap_or(1.0);
+    let b = parse_ab_float(s, 'B').unwrap_or(1.0);
+    Ok(GerberCommand::ImageScale { a, b })
+}
+
+/// Extract the float value after a given letter key in a "A<val>B<val>" string.
+fn parse_ab_float(s: &str, key: char) -> Option<f64> {
+    let pos = s.find(key)?;
+    let after = &s[pos + 1..];
+    let end = after
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(after.len());
+    after[..end].parse().ok()
 }
 
 /// Parse a word command (e.g., "D10", "X100Y200D01", "G01", "M02").
@@ -832,5 +878,34 @@ mod tests {
             }
             other => panic!("expected MacroDefine, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_image_mirror() {
+        let cmds = parse("%MIA1B0*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ImageMirror { a: true, b: false }]);
+        let cmds = parse("%MIA0B1*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ImageMirror { a: false, b: true }]);
+        let cmds = parse("%MIA0B0*%\n");
+        assert_eq!(
+            cmds,
+            vec![GerberCommand::ImageMirror { a: false, b: false }]
+        );
+    }
+
+    #[test]
+    fn test_image_scale() {
+        let cmds = parse("%SFA2.0B1.5*%\n");
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            GerberCommand::ImageScale { a, b } => {
+                assert!((*a - 2.0).abs() < 1e-9);
+                assert!((*b - 1.5).abs() < 1e-9);
+            }
+            other => panic!("expected ImageScale, got: {other:?}"),
+        }
+        // Default scale (no-op)
+        let cmds = parse("%SFA1.0B1.0*%\n");
+        assert_eq!(cmds, vec![GerberCommand::ImageScale { a: 1.0, b: 1.0 }]);
     }
 }
