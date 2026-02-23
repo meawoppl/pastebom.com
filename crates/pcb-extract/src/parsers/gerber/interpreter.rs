@@ -381,7 +381,7 @@ impl Interpreter {
         }
 
         let sweep = (end_angle - start_angle).abs();
-        let num_segments = ((sweep / (PI / 18.0)).ceil() as usize).max(2); // ~10 deg per segment
+        let num_segments = ((sweep / (PI / 90.0)).ceil() as usize).max(2); // ~2 deg per segment
 
         let mut points = Vec::with_capacity(num_segments + 1);
         for k in 0..=num_segments {
@@ -959,6 +959,84 @@ mod tests {
                 assert!((*radius - 0.25).abs() < 1e-6); // diameter 0.5 / 2
             }
             other => panic!("expected Circle, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_region_arc_approximation() {
+        // A region containing a 90° CCW arc should produce many polygon points
+        // (≥45 for 2° precision) so the curve looks smooth at any zoom level.
+        let mut cmds = vec![
+            GerberCommand::FormatSpec(CoordinateFormat {
+                x_integer: 2,
+                x_decimal: 4,
+                y_integer: 2,
+                y_decimal: 4,
+            }),
+            GerberCommand::Units(Units::Millimeters),
+            GerberCommand::ApertureDefine {
+                code: 10,
+                template: ApertureTemplate::Circle { diameter: 0.1 },
+            },
+            GerberCommand::SelectAperture(10),
+            GerberCommand::MultiQuadrant,
+            GerberCommand::CounterClockwiseArcMode,
+            GerberCommand::RegionBegin,
+            // Start at (1,0), arc CCW 90° to (0,1) with center at (0,0): I=-1, J=0
+            GerberCommand::Move {
+                x: Some(10000),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(0),
+                y: Some(10000),
+                i: Some(-10000),
+                j: Some(0),
+            },
+            // Close with two segments back to start
+            GerberCommand::Interpolate {
+                x: Some(0),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000),
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            GerberCommand::RegionEnd,
+        ];
+        cmds.insert(5, GerberCommand::LinearMode);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Polygon {
+                polygons, filled, ..
+            } => {
+                assert_eq!(*filled, Some(1));
+                assert_eq!(polygons.len(), 1);
+                // 90° arc at 2°/seg = 45 segments = 46 points, plus the 2 straight segments
+                // Total must be well above the old 9-segment minimum
+                assert!(
+                    polygons[0].len() >= 48,
+                    "expected ≥48 polygon points for smooth 90° arc, got {}",
+                    polygons[0].len()
+                );
+                // All arc points should be within 1mm radius of origin
+                for pt in &polygons[0] {
+                    let r = (pt[0].powi(2) + pt[1].powi(2)).sqrt();
+                    assert!(
+                        r <= 1.0 + 1e-6,
+                        "point ({},{}) outside arc radius",
+                        pt[0],
+                        pt[1]
+                    );
+                }
+            }
+            other => panic!("expected Polygon, got: {other:?}"),
         }
     }
 }
