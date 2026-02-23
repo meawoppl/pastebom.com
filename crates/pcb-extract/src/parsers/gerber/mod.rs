@@ -55,8 +55,13 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
                 if let Some(drawings) = excellon::parse_excellon(&content) {
                     if !drawings.is_empty() {
                         had_gerber = true;
-                        layer_outputs
-                            .push((GerberLayerType::Drills, GerberLayerOutput { drawings }));
+                        layer_outputs.push((
+                            GerberLayerType::Drills,
+                            GerberLayerOutput {
+                                drawings,
+                                ..Default::default()
+                            },
+                        ));
                     }
                 }
             }
@@ -153,6 +158,8 @@ fn assemble_pcb_data(
     let mut edges: Vec<Drawing> = Vec::new();
     let mut silk_f: Vec<Drawing> = Vec::new();
     let mut silk_b: Vec<Drawing> = Vec::new();
+    let mut silk_f_clear: Vec<Drawing> = Vec::new();
+    let mut silk_b_clear: Vec<Drawing> = Vec::new();
     let mut drills: Vec<Drawing> = Vec::new();
     let mut tracks_f: Vec<Track> = Vec::new();
     let mut tracks_b: Vec<Track> = Vec::new();
@@ -168,9 +175,11 @@ fn assemble_pcb_data(
             }
             GerberLayerType::SilkscreenTop => {
                 silk_f.extend(output.drawings);
+                silk_f_clear.extend(output.clear_drawings);
             }
             GerberLayerType::SilkscreenBottom => {
                 silk_b.extend(output.drawings);
+                silk_b_clear.extend(output.clear_drawings);
             }
             GerberLayerType::Drills => {
                 drills.extend(output.drawings);
@@ -256,7 +265,16 @@ fn assemble_pcb_data(
             silkscreen: LayerData {
                 front: silk_f,
                 back: silk_b,
-                inner: HashMap::new(),
+                inner: {
+                    let mut m = HashMap::new();
+                    if !silk_f_clear.is_empty() {
+                        m.insert("F_Clear".to_string(), silk_f_clear);
+                    }
+                    if !silk_b_clear.is_empty() {
+                        m.insert("B_Clear".to_string(), silk_b_clear);
+                    }
+                    m
+                },
             },
             fabrication: LayerData {
                 front: Vec::new(),
@@ -487,6 +505,41 @@ M02*
         let tracks = pcb.tracks.unwrap();
         assert!(!tracks.inner.is_empty());
         assert!(tracks.inner.contains_key("In2"));
+    }
+
+    #[test]
+    fn test_clear_polarity_silk() {
+        // A silkscreen layer with a clear-polarity segment should store it in
+        // silkscreen.inner["F_Clear"], not in silkscreen.front.
+        let silk_with_clear = "\
+%FSLAX24Y24*%
+%MOMM*%
+%TF.FileFunction,Legend,Top*%
+%ADD10C,0.100*%
+G01*
+D10*
+%LPD*%
+X0Y0D02*
+X10000Y0D01*
+%LPC*%
+X20000Y0D02*
+X30000Y0D01*
+M02*
+";
+        let zip_data = make_test_zip(&[("board.GTO", silk_with_clear)]);
+        let opts = ExtractOptions::default();
+        let pcb = parse(&zip_data, &opts).unwrap();
+
+        // Dark drawings go to front
+        assert_eq!(pcb.drawings.silkscreen.front.len(), 1);
+        // Clear drawings go to F_Clear inner key
+        let clears = pcb
+            .drawings
+            .silkscreen
+            .inner
+            .get("F_Clear")
+            .expect("F_Clear key should exist");
+        assert_eq!(clears.len(), 1);
     }
 
     #[test]

@@ -14,6 +14,9 @@ use super::macros::{self, MacroTable};
 #[derive(Debug, Default)]
 pub struct GerberLayerOutput {
     pub drawings: Vec<Drawing>,
+    /// Shapes drawn with %LPC% (clear polarity). These should be composited
+    /// as destination-out over the dark drawings to punch holes.
+    pub clear_drawings: Vec<Drawing>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +47,7 @@ struct Interpreter {
     apertures: ApertureTable,
     macro_table: MacroTable,
     drawings: Vec<Drawing>,
+    clear_drawings: Vec<Drawing>,
 }
 
 impl Interpreter {
@@ -62,6 +66,16 @@ impl Interpreter {
             apertures: ApertureTable::default(),
             macro_table: MacroTable::default(),
             drawings: Vec::new(),
+            clear_drawings: Vec::new(),
+        }
+    }
+
+    /// Push a drawing to the appropriate list based on current polarity.
+    fn push_drawing(&mut self, d: Drawing) {
+        if self.polarity == Polarity::Clear {
+            self.clear_drawings.push(d);
+        } else {
+            self.drawings.push(d);
         }
     }
 
@@ -163,16 +177,6 @@ impl Interpreter {
     }
 
     fn do_interpolate(&mut self, old_x: i64, old_y: i64, i: Option<i64>, j: Option<i64>) {
-        // Skip clear polarity for now
-        if self.polarity == Polarity::Clear {
-            if self.region_active {
-                let px = self.converter.to_mm(self.x, true);
-                let py = self.converter.to_mm(self.y, false);
-                self.region_points.push([px, py]);
-            }
-            return;
-        }
-
         let x1 = self.converter.to_mm(old_x, true);
         let y1 = self.converter.to_mm(old_y, false);
         let x2 = self.converter.to_mm(self.x, true);
@@ -200,7 +204,7 @@ impl Interpreter {
 
         match self.interpolation {
             InterpolationMode::Linear => {
-                self.drawings.push(Drawing::Segment {
+                self.push_drawing(Drawing::Segment {
                     start: [x1, y1],
                     end: [x2, y2],
                     width,
@@ -208,17 +212,13 @@ impl Interpreter {
             }
             InterpolationMode::ClockwiseArc | InterpolationMode::CounterClockwiseArc => {
                 if let Some(arc) = self.compute_arc_drawing(old_x, old_y, i, j, width) {
-                    self.drawings.push(arc);
+                    self.push_drawing(arc);
                 }
             }
         }
     }
 
     fn do_flash(&mut self) {
-        if self.polarity == Polarity::Clear {
-            return;
-        }
-
         let px = self.converter.to_mm(self.x, true);
         let py = self.converter.to_mm(self.y, false);
 
@@ -227,7 +227,7 @@ impl Interpreter {
             match &ap.template {
                 ApertureTemplate::Circle { diameter } => {
                     let r = diameter / 2.0;
-                    self.drawings.push(Drawing::Circle {
+                    self.push_drawing(Drawing::Circle {
                         start: [px, py],
                         radius: r,
                         width: 0.0,
@@ -237,7 +237,7 @@ impl Interpreter {
                 ApertureTemplate::Rectangle { x_size, y_size } => {
                     let half_x = x_size / 2.0;
                     let half_y = y_size / 2.0;
-                    self.drawings.push(Drawing::Rect {
+                    self.push_drawing(Drawing::Rect {
                         start: [px - half_x, py - half_y],
                         end: [px + half_x, py + half_y],
                         width: 0.0,
@@ -247,7 +247,7 @@ impl Interpreter {
                     // Approximate obround as a rectangle (close enough for rendering)
                     let half_x = x_size / 2.0;
                     let half_y = y_size / 2.0;
-                    self.drawings.push(Drawing::Rect {
+                    self.push_drawing(Drawing::Rect {
                         start: [px - half_x, py - half_y],
                         end: [px + half_x, py + half_y],
                         width: 0.0,
@@ -266,7 +266,7 @@ impl Interpreter {
                         let angle = rot_rad + 2.0 * PI * (k as f64) / (n as f64);
                         points.push([px + r * angle.cos(), py + r * angle.sin()]);
                     }
-                    self.drawings.push(Drawing::Polygon {
+                    self.push_drawing(Drawing::Polygon {
                         pos: [px, py],
                         angle: 0.0,
                         polygons: vec![points],
@@ -277,7 +277,10 @@ impl Interpreter {
                 ApertureTemplate::Macro { name, params } => {
                     if let Some(mac) = self.macro_table.get(name) {
                         let macro_drawings = macros::evaluate_macro(mac, params, px, py);
-                        self.drawings.extend(macro_drawings);
+                        // Macro drawings respect current polarity
+                        for d in macro_drawings {
+                            self.push_drawing(d);
+                        }
                     } else {
                         warn!("Gerber: D03 flash with undefined macro aperture '{name}'");
                     }
@@ -403,9 +406,9 @@ impl Interpreter {
             self.region_points.clear();
         }
 
-        if !self.region_contours.is_empty() && self.polarity == Polarity::Dark {
+        if !self.region_contours.is_empty() {
             let contours = std::mem::take(&mut self.region_contours);
-            self.drawings.push(Drawing::Polygon {
+            self.push_drawing(Drawing::Polygon {
                 pos: [0.0, 0.0],
                 angle: 0.0,
                 polygons: contours,
@@ -433,6 +436,7 @@ pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, Extrac
 
     Ok(GerberLayerOutput {
         drawings: interp.drawings,
+        clear_drawings: interp.clear_drawings,
     })
 }
 
@@ -629,7 +633,9 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_polarity_skipped() {
+    fn test_clear_polarity_collected() {
+        // Clear-polarity geometry must not appear in dark drawings but must be
+        // captured in clear_drawings for destination-out compositing.
         let mut cmds = setup_commands();
         cmds.extend([
             GerberCommand::Polarity(Polarity::Clear),
@@ -650,7 +656,11 @@ mod tests {
         ]);
 
         let output = interpret(&cmds).unwrap();
-        assert!(output.drawings.is_empty());
+        assert!(output.drawings.is_empty(), "dark drawings must be empty");
+        // 1 segment (D01) + 1 circle flash (D03)
+        assert_eq!(output.clear_drawings.len(), 2);
+        assert!(matches!(output.clear_drawings[0], Drawing::Segment { .. }));
+        assert!(matches!(output.clear_drawings[1], Drawing::Circle { .. }));
     }
 
     #[test]
