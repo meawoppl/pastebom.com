@@ -1,5 +1,7 @@
 use std::f64::consts::PI;
 
+use log::warn;
+
 use crate::error::ExtractError;
 use crate::types::Drawing;
 
@@ -220,7 +222,8 @@ impl Interpreter {
         let px = self.converter.to_mm(self.x, true);
         let py = self.converter.to_mm(self.y, false);
 
-        if let Some(ap) = self.apertures.get(self.aperture) {
+        let aperture_code = self.aperture;
+        if let Some(ap) = self.apertures.get(aperture_code) {
             match &ap.template {
                 ApertureTemplate::Circle { diameter } => {
                     let r = diameter / 2.0;
@@ -275,9 +278,13 @@ impl Interpreter {
                     if let Some(mac) = self.macro_table.get(name) {
                         let macro_drawings = macros::evaluate_macro(mac, params, px, py);
                         self.drawings.extend(macro_drawings);
+                    } else {
+                        warn!("Gerber: D03 flash with undefined macro aperture '{name}'");
                     }
                 }
             }
+        } else {
+            warn!("Gerber: D03 flash with undefined aperture D{aperture_code}");
         }
     }
 
