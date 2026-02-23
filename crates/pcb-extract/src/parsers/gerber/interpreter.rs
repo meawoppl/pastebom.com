@@ -45,6 +45,19 @@ struct Interpreter {
     apertures: ApertureTable,
     macro_table: MacroTable,
     drawings: Vec<Drawing>,
+    /// Step-and-repeat: index into `drawings` where the current SR block started,
+    /// plus the repeat counts and steps (in mm) for replication on block close.
+    sr_block_start: Option<usize>,
+    sr_x_repeat: u32,
+    sr_y_repeat: u32,
+    sr_x_step: f64,
+    sr_y_step: f64,
+    /// Image-level mirroring from %MI: A=mirror-X, B=mirror-Y.
+    mirror_x: bool,
+    mirror_y: bool,
+    /// Image-level scaling from %SF.
+    scale_x: f64,
+    scale_y: f64,
     /// When Some((start_idx, code)), we are capturing an aperture block.
     ab_capture_start: Option<(usize, u32)>,
     /// Completed aperture block definitions: code → drawings.
@@ -67,9 +80,32 @@ impl Interpreter {
             apertures: ApertureTable::default(),
             macro_table: MacroTable::default(),
             drawings: Vec::new(),
+            sr_block_start: None,
+            sr_x_repeat: 1,
+            sr_y_repeat: 1,
+            sr_x_step: 0.0,
+            sr_y_step: 0.0,
+            mirror_x: false,
+            mirror_y: false,
+            scale_x: 1.0,
+            scale_y: 1.0,
             ab_capture_start: None,
             block_table: HashMap::new(),
         }
+    }
+
+    /// Convert a raw X coordinate integer to millimetres, applying mirror/scale.
+    #[inline]
+    fn cx(&self, val: i64) -> f64 {
+        let mm = self.converter.to_mm(val, true);
+        mm * self.scale_x * if self.mirror_x { -1.0 } else { 1.0 }
+    }
+
+    /// Convert a raw Y coordinate integer to millimetres, applying mirror/scale.
+    #[inline]
+    fn cy(&self, val: i64) -> f64 {
+        let mm = self.converter.to_mm(val, false);
+        mm * self.scale_y * if self.mirror_y { -1.0 } else { 1.0 }
     }
 
     fn process(&mut self, cmd: &GerberCommand) {
@@ -103,6 +139,14 @@ impl Interpreter {
             }
             GerberCommand::Polarity(p) => {
                 self.polarity = *p;
+            }
+            GerberCommand::ImageMirror { a, b } => {
+                self.mirror_x = *a;
+                self.mirror_y = *b;
+            }
+            GerberCommand::ImageScale { a, b } => {
+                self.scale_x = *a;
+                self.scale_y = *b;
             }
             GerberCommand::MacroDefine { name, body } => {
                 if let Ok(primitives) = macros::parse_macro_body(body) {
@@ -151,8 +195,8 @@ impl Interpreter {
                 }
                 // In region mode, start a new contour at the new position
                 if self.region_active {
-                    let px = self.converter.to_mm(self.x, true);
-                    let py = self.converter.to_mm(self.y, false);
+                    let px = self.cx(self.x);
+                    let py = self.cy(self.y);
                     self.region_points.push([px, py]);
                 }
             }
@@ -164,6 +208,37 @@ impl Interpreter {
                     self.y = *ny;
                 }
                 self.do_flash();
+            }
+            GerberCommand::StepRepeat {
+                x_repeat,
+                y_repeat,
+                x_step,
+                y_step,
+            } => {
+                // Close any open SR block first, replicating its drawings.
+                self.close_sr_block();
+
+                if *x_repeat > 1 || *y_repeat > 1 {
+                    // Open a new SR block.
+                    // The step values in the file are in file units (mm or inch).
+                    // Since we read them as f64 directly, convert inch→mm if needed.
+                    let step_x_mm = if self.converter.units == super::coord::Units::Inches {
+                        x_step * 25.4
+                    } else {
+                        *x_step
+                    };
+                    let step_y_mm = if self.converter.units == super::coord::Units::Inches {
+                        y_step * 25.4
+                    } else {
+                        *y_step
+                    };
+                    self.sr_block_start = Some(self.drawings.len());
+                    self.sr_x_repeat = *x_repeat;
+                    self.sr_y_repeat = *y_repeat;
+                    self.sr_x_step = step_x_mm;
+                    self.sr_y_step = step_y_mm;
+                }
+                // x_repeat=1, y_repeat=1 was already closed above; nothing left to do.
             }
             GerberCommand::ApertureBlockBegin { code } => {
                 self.ab_capture_start = Some((self.drawings.len(), *code));
@@ -178,21 +253,49 @@ impl Interpreter {
         }
     }
 
+    /// Close an open step-and-repeat block: replicate block drawings at each grid position.
+    fn close_sr_block(&mut self) {
+        let Some(start) = self.sr_block_start.take() else {
+            return;
+        };
+
+        let block: Vec<Drawing> = self.drawings[start..].to_vec();
+
+        for yi in 0..self.sr_y_repeat {
+            for xi in 0..self.sr_x_repeat {
+                if xi == 0 && yi == 0 {
+                    continue; // original position already drawn
+                }
+                let dx = xi as f64 * self.sr_x_step;
+                let dy = yi as f64 * self.sr_y_step;
+                for d in &block {
+                    self.drawings.push(offset_drawing(d, dx, dy));
+                }
+            }
+        }
+
+        // Reset SR state to defaults.
+        self.sr_x_repeat = 1;
+        self.sr_y_repeat = 1;
+        self.sr_x_step = 0.0;
+        self.sr_y_step = 0.0;
+    }
+
     fn do_interpolate(&mut self, old_x: i64, old_y: i64, i: Option<i64>, j: Option<i64>) {
         // Skip clear polarity for now
         if self.polarity == Polarity::Clear {
             if self.region_active {
-                let px = self.converter.to_mm(self.x, true);
-                let py = self.converter.to_mm(self.y, false);
+                let px = self.cx(self.x);
+                let py = self.cy(self.y);
                 self.region_points.push([px, py]);
             }
             return;
         }
 
-        let x1 = self.converter.to_mm(old_x, true);
-        let y1 = self.converter.to_mm(old_y, false);
-        let x2 = self.converter.to_mm(self.x, true);
-        let y2 = self.converter.to_mm(self.y, false);
+        let x1 = self.cx(old_x);
+        let y1 = self.cy(old_y);
+        let x2 = self.cx(self.x);
+        let y2 = self.cy(self.y);
 
         if self.region_active {
             // In region mode, just collect points
@@ -235,8 +338,8 @@ impl Interpreter {
             return;
         }
 
-        let px = self.converter.to_mm(self.x, true);
-        let py = self.converter.to_mm(self.y, false);
+        let px = self.cx(self.x);
+        let py = self.cy(self.y);
 
         let aperture_code = self.aperture;
 
@@ -327,14 +430,14 @@ impl Interpreter {
         let i_val = i.unwrap_or(0);
         let j_val = j.unwrap_or(0);
 
-        let x1 = self.converter.to_mm(old_x, true);
-        let y1 = self.converter.to_mm(old_y, false);
-        let x2 = self.converter.to_mm(self.x, true);
-        let y2 = self.converter.to_mm(self.y, false);
+        let x1 = self.cx(old_x);
+        let y1 = self.cy(old_y);
+        let x2 = self.cx(self.x);
+        let y2 = self.cy(self.y);
 
         // I,J are offsets from start point to center
-        let cx = x1 + self.converter.to_mm(i_val, true);
-        let cy = y1 + self.converter.to_mm(j_val, false);
+        let cx = x1 + self.cx(i_val);
+        let cy = y1 + self.cy(j_val);
 
         let radius = ((x1 - cx).powi(2) + (y1 - cy).powi(2)).sqrt();
         if radius < 1e-9 {
@@ -379,13 +482,13 @@ impl Interpreter {
         let i_val = i.unwrap_or(0);
         let j_val = j.unwrap_or(0);
 
-        let x1 = self.converter.to_mm(old_x, true);
-        let y1 = self.converter.to_mm(old_y, false);
-        let x2 = self.converter.to_mm(self.x, true);
-        let y2 = self.converter.to_mm(self.y, false);
+        let x1 = self.cx(old_x);
+        let y1 = self.cy(old_y);
+        let x2 = self.cx(self.x);
+        let y2 = self.cy(self.y);
 
-        let cx = x1 + self.converter.to_mm(i_val, true);
-        let cy = y1 + self.converter.to_mm(j_val, false);
+        let cx = x1 + self.cx(i_val);
+        let cy = y1 + self.cy(j_val);
 
         let radius = ((x1 - cx).powi(2) + (y1 - cy).powi(2)).sqrt();
         if radius < 1e-9 {
@@ -445,9 +548,10 @@ impl Interpreter {
     }
 }
 
-/// Translate all coordinate positions in a drawing by (dx, dy).
-/// Used when replaying aperture block draws at a flash position.
-fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
+/// Translate all coordinate points in a Drawing by (dx, dy).
+///
+/// Used when replicating step-and-repeat blocks and aperture blocks.
+pub(crate) fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
     match d {
         Drawing::Segment { start, end, width } => Drawing::Segment {
             start: [start[0] + dx, start[1] + dy],
@@ -503,11 +607,11 @@ fn offset_drawing(d: &Drawing, dx: f64, dy: f64) -> Drawing {
             filled,
             width,
         } => Drawing::Polygon {
-            pos: [pos[0] + dx, pos[1] + dy],
+            pos: *pos,
             angle: *angle,
             polygons: polygons
                 .iter()
-                .map(|ring| ring.iter().map(|p| [p[0] + dx, p[1] + dy]).collect())
+                .map(|ring| ring.iter().map(|pt| [pt[0] + dx, pt[1] + dy]).collect())
                 .collect(),
             filled: *filled,
             width: *width,
@@ -570,6 +674,9 @@ pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, Extrac
     if interp.region_active {
         interp.flush_region_end();
     }
+
+    // Close any unterminated SR block (some files omit the closing %SR%)
+    interp.close_sr_block();
 
     Ok(GerberLayerOutput {
         drawings: interp.drawings,
@@ -691,7 +798,7 @@ mod tests {
     #[test]
     fn test_flash_obround_wider() {
         // x_size > y_size: caps on left/right ends
-        let mut cmds = vec![
+        let cmds = vec![
             GerberCommand::FormatSpec(CoordinateFormat::default()),
             GerberCommand::Units(Units::Millimeters),
             GerberCommand::ApertureDefine {
@@ -1232,6 +1339,162 @@ mod tests {
                 }
             }
             other => panic!("expected Polygon, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_step_repeat_2x2() {
+        // Draw one segment inside a 2×2 SR block with 3mm X step and 4mm Y step.
+        // Expected: 4 copies of the segment at (0,0), (3,0), (0,4), (3,4) offsets.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::StepRepeat {
+                x_repeat: 2,
+                y_repeat: 2,
+                x_step: 3.0,
+                y_step: 4.0,
+            },
+            GerberCommand::Move {
+                x: Some(0),
+                y: Some(0),
+            },
+            GerberCommand::Interpolate {
+                x: Some(10000), // 1 mm
+                y: Some(0),
+                i: None,
+                j: None,
+            },
+            // Close the block
+            GerberCommand::StepRepeat {
+                x_repeat: 1,
+                y_repeat: 1,
+                x_step: 0.0,
+                y_step: 0.0,
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 4, "2×2 SR should produce 4 drawings");
+
+        // Collect all segment starts and ends
+        let mut starts: Vec<[f64; 2]> = output
+            .drawings
+            .iter()
+            .filter_map(|d| {
+                if let Drawing::Segment { start, .. } = d {
+                    Some(*start)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        starts.sort_by(|a, b| {
+            a[0].partial_cmp(&b[0])
+                .unwrap()
+                .then(a[1].partial_cmp(&b[1]).unwrap())
+        });
+
+        let expected = [[0.0, 0.0], [0.0, 4.0], [3.0, 0.0], [3.0, 4.0]];
+        for (got, exp) in starts.iter().zip(expected.iter()) {
+            assert!(
+                (got[0] - exp[0]).abs() < 1e-6,
+                "start x: got {} exp {}",
+                got[0],
+                exp[0]
+            );
+            assert!(
+                (got[1] - exp[1]).abs() < 1e-6,
+                "start y: got {} exp {}",
+                got[1],
+                exp[1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_step_repeat_implicit_close_at_eof() {
+        // SR block not explicitly closed — should be closed at EOF.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::StepRepeat {
+                x_repeat: 3,
+                y_repeat: 1,
+                x_step: 2.0,
+                y_step: 0.0,
+            },
+            GerberCommand::Flash {
+                x: Some(0),
+                y: Some(0),
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(
+            output.drawings.len(),
+            3,
+            "implicit close should replicate 3×1"
+        );
+    }
+
+    #[test]
+    fn test_image_mirror_x() {
+        // %MIA1B0% — mirror about Y axis: all X coords negate, Y unchanged.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::ImageMirror { a: true, b: false },
+            GerberCommand::Move {
+                x: Some(10000),
+                y: Some(20000),
+            },
+            GerberCommand::Interpolate {
+                x: Some(30000),
+                y: Some(20000),
+                i: None,
+                j: None,
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - (-1.0)).abs() < 1e-6, "X should be negated");
+                assert!((start[1] - 2.0).abs() < 1e-6);
+                assert!((end[0] - (-3.0)).abs() < 1e-6, "X should be negated");
+                assert!((end[1] - 2.0).abs() < 1e-6);
+            }
+            other => panic!("expected Segment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_image_scale() {
+        // %SFA2.0B0.5% — scale X by 2, Y by 0.5.
+        let mut cmds = setup_commands();
+        cmds.extend([
+            GerberCommand::ImageScale { a: 2.0, b: 0.5 },
+            GerberCommand::Move {
+                x: Some(10000),
+                y: Some(10000),
+            },
+            GerberCommand::Interpolate {
+                x: Some(20000),
+                y: Some(20000),
+                i: None,
+                j: None,
+            },
+        ]);
+
+        let output = interpret(&cmds).unwrap();
+        assert_eq!(output.drawings.len(), 1);
+        match &output.drawings[0] {
+            Drawing::Segment { start, end, .. } => {
+                assert!((start[0] - 2.0).abs() < 1e-6, "X scaled by 2");
+                assert!((start[1] - 0.5).abs() < 1e-6, "Y scaled by 0.5");
+                assert!((end[0] - 4.0).abs() < 1e-6, "X scaled by 2");
+                assert!((end[1] - 1.0).abs() < 1e-6, "Y scaled by 0.5");
+            }
+            other => panic!("expected Segment, got: {other:?}"),
         }
     }
 }
