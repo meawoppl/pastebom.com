@@ -14,6 +14,7 @@ pub enum PcbFormat {
     Eagle,
     Altium,
     Gerber,
+    Gdsii,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -35,6 +36,7 @@ pub fn detect_format(path: &Path) -> Option<PcbFormat> {
         Some("brd") | Some("fbrd") => Some(PcbFormat::Eagle),
         Some("pcbdoc") => Some(PcbFormat::Altium),
         Some("zip") => Some(PcbFormat::Gerber),
+        Some("gds") | Some("gds2") => Some(PcbFormat::Gdsii),
         _ => None,
     }
 }
@@ -65,5 +67,6 @@ pub fn extract_bytes(
         PcbFormat::Eagle => parsers::eagle::parse(data, opts),
         PcbFormat::Altium => parsers::altium::parse(data, opts),
         PcbFormat::Gerber => parsers::gerber::parse(data, opts),
+        PcbFormat::Gdsii => parsers::gdsii::parse(data, opts),
     }
 }
