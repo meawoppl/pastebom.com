@@ -781,8 +781,12 @@ fn app() -> Html {
             <button class="flip-btn" onclick={on_flip}>{layer_label}</button>
 
             // ─── BOM sidebar (left) ────────────────────────────
-            if *bom_sidebar_open {
-                <div class="sidebar bom-sidebar">
+                <div class={classes!("sidebar", "bom-sidebar", (!*bom_sidebar_open).then_some("sidebar-closed"))}>
+                    <button class="pull-tab pull-tab-left" onclick={{
+                        let s = bom_sidebar_open.clone();
+                        let open = *bom_sidebar_open;
+                        Callback::from(move |_: MouseEvent| s.set(!open))
+                    }}>{if *bom_sidebar_open { "\u{2039}" } else { "\u{203a}" }}</button>
                     <div class="sidebar-header">
                         <div>
                             <div class="sidebar-title">{
@@ -802,10 +806,6 @@ fn app() -> Html {
                                 }
                             </div>
                         </div>
-                        <button class="sidebar-close" onclick={{
-                            let s = bom_sidebar_open.clone();
-                            Callback::from(move |_: MouseEvent| s.set(false))
-                        }}>{"‹"}</button>
                     </div>
                     <div class="sidebar-controls">
                         <div class="button-container">
@@ -901,22 +901,16 @@ fn app() -> Html {
                         </table>
                     </div>
                 </div>
-            } else {
-                <button class="sidebar-tab left-tab" onclick={{
-                    let s = bom_sidebar_open.clone();
-                    Callback::from(move |_: MouseEvent| s.set(true))
-                }}>{"›"}</button>
-            }
 
             // ─── View sidebar (right) ──────────────────────────
-            if *view_sidebar_open {
-                <div class="sidebar view-sidebar">
+                <div class={classes!("sidebar", "view-sidebar", (!*view_sidebar_open).then_some("sidebar-closed"))}>
+                    <button class="pull-tab pull-tab-right" onclick={{
+                        let s = view_sidebar_open.clone();
+                        let open = *view_sidebar_open;
+                        Callback::from(move |_: MouseEvent| s.set(!open))
+                    }}>{if *view_sidebar_open { "\u{203a}" } else { "\u{2039}" }}</button>
                     <div class="sidebar-header">
                         <span class="sidebar-title">{"View"}</span>
-                        <button class="sidebar-close" onclick={{
-                            let s = view_sidebar_open.clone();
-                            Callback::from(move |_: MouseEvent| s.set(false))
-                        }}>{"›"}</button>
                     </div>
                     <div class="sidebar-settings">
                         // ─── Layer color key ──────────────────────────
@@ -1020,12 +1014,6 @@ fn app() -> Html {
                         </label>
                     </div>
                 </div>
-            } else {
-                <button class="sidebar-tab right-tab" onclick={{
-                    let s = view_sidebar_open.clone();
-                    Callback::from(move |_: MouseEvent| s.set(true))
-                }}>{"‹"}</button>
-            }
         </div>
     }
 }
