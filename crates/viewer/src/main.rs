@@ -1014,6 +1014,9 @@ fn app() -> Html {
                         </label>
                     </div>
                 </div>
+
+            // ─── Version badge ───────────────────────────────────
+            <span class="version-badge">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
         </div>
     }
 }
