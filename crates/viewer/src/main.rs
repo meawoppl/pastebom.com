@@ -444,6 +444,7 @@ fn app() -> Html {
         let highlighted_net = highlighted_net.clone();
         let marked_footprints = marked_footprints.clone();
         let current_row = current_row.clone();
+        let filter = filter.clone();
 
         Callback::from(move |e: PointerEvent| {
             if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
@@ -489,6 +490,23 @@ fn app() -> Html {
                     if highlighted_net.is_none() {
                         let fps = bbox_hit_scan(&layer_str, board_pt[0], board_pt[1], data);
                         if !fps.is_empty() {
+                            // Find matching BOM row for the clicked component
+                            let bom_entries =
+                                get_bom_entries(data, &settings, &filter.to_lowercase());
+                            let row_id = fps.first().and_then(|&fp_idx| {
+                                bom_entries.iter().enumerate().find_map(|(i, entry)| {
+                                    if let BomEntry::Component { refs, .. } = entry {
+                                        if refs.iter().any(|r| r.1 == fp_idx) {
+                                            Some(format!("bomrow{}", i + 1))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                            current_row.set(row_id);
                             highlighted_footprints.set(fps);
                             highlighted_net.set(None);
                         }
@@ -532,6 +550,23 @@ fn app() -> Html {
                 let hn = (*highlighted_net).clone();
                 let mf = (*marked_footprints).clone();
                 vs.redraw_highlights(data, &settings, &hl, &mf, &hn);
+            }
+            || ()
+        });
+    }
+
+    // Scroll BOM table to the current row when it changes
+    {
+        let row = (*current_row).clone();
+        use_effect_with(row, move |row| {
+            if let Some(id) = row {
+                if let Some(window) = web_sys::window() {
+                    if let Some(doc) = window.document() {
+                        if let Some(el) = doc.get_element_by_id(id) {
+                            el.scroll_into_view_with_bool(false);
+                        }
+                    }
+                }
             }
             || ()
         });
