@@ -1026,6 +1026,9 @@ fn app() -> Html {
                     Callback::from(move |_: MouseEvent| s.set(true))
                 }}>{"‹"}</button>
             }
+
+            // ─── Version badge ───────────────────────────────────
+            <span class="version-badge">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
         </div>
     }
 }
