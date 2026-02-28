@@ -621,6 +621,26 @@ fn app() -> Html {
         })
     };
 
+    let toggle_layer = {
+        let settings = settings.clone();
+        let storage_prefix_str = storage_prefix_str.clone();
+        let redraw_trigger = redraw_trigger.clone();
+        Callback::from(move |layer_name: String| {
+            let mut s = (*settings).clone();
+            if s.hidden_layers.contains(&layer_name) {
+                s.hidden_layers.remove(&layer_name);
+            } else {
+                s.hidden_layers.insert(layer_name);
+            }
+            let layers_vec: Vec<&String> = s.hidden_layers.iter().collect();
+            if let Ok(json) = serde_json::to_string(&layers_vec) {
+                write_storage("hiddenLayers", &json, &storage_prefix_str);
+            }
+            settings.set(s);
+            redraw_trigger.set(*redraw_trigger + 1);
+        })
+    };
+
     let set_bom_mode = {
         let settings = settings.clone();
         let storage_prefix_str = storage_prefix_str.clone();
@@ -751,6 +771,11 @@ fn app() -> Html {
 
     let has_nets = data.nets.is_some();
     let has_tracks = data.tracks.is_some();
+    let inner_layer_names: Vec<String> = data
+        .tracks
+        .as_ref()
+        .map(|t| t.inner_layer_names().into_iter().cloned().collect())
+        .unwrap_or_default();
 
     let bom_entries = get_bom_entries(&data, &settings, &filter);
 
@@ -935,6 +960,14 @@ fn app() -> Html {
                                     <span class="layer-swatch" style={format!("background: var(--zone-color-{});", if *board_flipped { "back" } else { "front" })}></span>
                                     <span>{format!("{}.Cu (zones)", layer_prefix)}</span>
                                 </div>
+                                {for inner_layer_names.iter().map(|name| {
+                                    html! {
+                                        <div class="layer-key-item">
+                                            <span class="layer-swatch" style={format!("background: var(--track-color-{}); opacity: 0.25;", if *board_flipped { "back" } else { "front" })}></span>
+                                            <span>{name.clone()}</span>
+                                        </div>
+                                    }
+                                })}
                             }
                             <div class="layer-key-item">
                                 <span class="layer-swatch" style="background: var(--silkscreen-edge-color);"></span>
@@ -971,6 +1004,16 @@ fn app() -> Html {
                             <SettingCheckbox label="Zones" checked={settings.render_zones}
                                 on_change={{let ts = toggle_setting.clone(); let v = settings.render_zones; Callback::from(move |_| ts.emit(("zones".into(), !v)))}}
                                 is_top={false} />
+                            {for inner_layer_names.iter().map(|name| {
+                                let tl = toggle_layer.clone();
+                                let n = name.clone();
+                                let visible = !settings.hidden_layers.contains(name);
+                                html! {
+                                    <SettingCheckbox label={name.clone()} checked={visible}
+                                        on_change={Callback::from(move |_| tl.emit(n.clone()))}
+                                        is_top={false} />
+                                }
+                            })}
                         }
                         <SettingCheckbox label="Pads" checked={settings.render_pads}
                             on_change={{let ts = toggle_setting.clone(); let v = settings.render_pads; Callback::from(move |_| ts.emit(("pads".into(), !v)))}}
