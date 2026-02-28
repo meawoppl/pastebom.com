@@ -19,6 +19,8 @@ pub struct RecentEntry {
     pub id: String,
     pub filename: String,
     pub components: usize,
+    #[serde(default)]
+    pub file_size: usize,
     pub created: String,
 }
 
@@ -180,6 +182,7 @@ async fn upload(
             id: id.clone(),
             filename: filename.clone(),
             components: component_count,
+            file_size,
             created: chrono::Utc::now().to_rfc3339(),
         };
         let mut recent = state.recent.write().await;

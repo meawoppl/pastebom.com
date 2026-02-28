@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, Path2d};
+use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, HtmlCanvasElement, Path2d};
 
 use crate::pcbdata::*;
 use crate::state::Settings;
@@ -342,7 +342,7 @@ fn draw_polygon_shape(
         let path = get_polygons_path(polygons);
         if filled.is_none_or(|f| f != 0) {
             ctx.set_fill_style_str(color);
-            ctx.fill_with_path_2d(&path);
+            ctx.fill_with_path_2d_and_winding(&path, CanvasWindingRule::Evenodd);
         } else {
             ctx.set_stroke_style_str(color);
             ctx.set_line_width((1.0 / scalefactor).max(*width));
@@ -393,7 +393,7 @@ fn draw_text(
 
     if let Some(ref polygons) = text.polygons {
         let path = get_polygons_path(polygons);
-        ctx.fill_with_path_2d(&path);
+        ctx.fill_with_path_2d_and_winding(&path, CanvasWindingRule::Evenodd);
         ctx.restore();
         return;
     }
@@ -805,10 +805,104 @@ pub fn draw_bg_layer(
     let _ = (text_color, settings, font_data);
 }
 
+/// Draw drill holes using destination-out compositing to punch through the canvas.
+/// This creates a see-through effect where the page background shows through.
+fn draw_drills(canvas: &HtmlCanvasElement, pcbdata: &PcbData) {
+    let drills = match pcbdata.drawings.fabrication.inner.get("Drills") {
+        Some(d) => d,
+        None => return,
+    };
+    if drills.is_empty() {
+        return;
+    }
+
+    let ctx = get_ctx(canvas);
+    ctx.save();
+    ctx.set_global_composite_operation("destination-out")
+        .unwrap();
+    ctx.set_fill_style_str("rgba(0,0,0,1)");
+
+    for d in drills {
+        if let Drawing::Circle { start, radius, .. } = d {
+            ctx.begin_path();
+            ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
+            ctx.fill();
+        }
+    }
+
+    ctx.restore();
+}
+
+/// Apply Gerber clear-polarity shapes using destination-out compositing.
+/// Clear-polarity geometry punches transparent holes through the layer.
+fn apply_gerber_clear(canvas: &HtmlCanvasElement, drawings: &[Drawing], scalefactor: f64) {
+    if drawings.is_empty() {
+        return;
+    }
+    let ctx = get_ctx(canvas);
+    ctx.save();
+    ctx.set_global_composite_operation("destination-out")
+        .unwrap();
+    let black = "rgba(0,0,0,1)";
+    for d in drawings {
+        match d {
+            Drawing::Polygon { .. } => draw_polygon_shape(&ctx, scalefactor, d, black),
+            _ => draw_edge(&ctx, scalefactor, d, black),
+        }
+    }
+    ctx.restore();
+}
+
+/// Draw a single copper pad shape, filling rects/circles/polygons.
+fn draw_copper_pad_shape(
+    ctx: &CanvasRenderingContext2d,
+    scalefactor: f64,
+    drawing: &Drawing,
+    color: &str,
+) {
+    ctx.set_fill_style_str(color);
+    ctx.set_stroke_style_str(color);
+    match drawing {
+        Drawing::Circle { start, radius, .. } => {
+            ctx.begin_path();
+            ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
+            ctx.close_path();
+            ctx.fill();
+        }
+        Drawing::Rect { start, end, .. } => {
+            ctx.fill_rect(start[0], start[1], end[0] - start[0], end[1] - start[1]);
+        }
+        Drawing::Polygon { .. } => {
+            draw_polygon_shape(ctx, scalefactor, drawing, color);
+        }
+        _ => {
+            draw_edge(ctx, scalefactor, drawing, color);
+        }
+    }
+}
+
+fn draw_copper_pads(
+    canvas: &HtmlCanvasElement,
+    layer: &str,
+    color: &str,
+    scalefactor: f64,
+    pcbdata: &PcbData,
+) {
+    let pads = match pcbdata.copper_pads.as_ref().and_then(|p| p.get(layer)) {
+        Some(p) => p,
+        None => return,
+    };
+    let ctx = get_ctx(canvas);
+    for d in pads {
+        draw_copper_pad_shape(&ctx, scalefactor, d, color);
+    }
+}
+
 pub fn draw_tracks(
     canvas: &HtmlCanvasElement,
     layer: &str,
     default_color: &str,
+    hole_color: &str,
     highlight: bool,
     pcbdata: &PcbData,
     highlighted_net: &Option<String>,
@@ -892,7 +986,7 @@ pub fn draw_tracks(
             ctx.line_to(end[0], end[1]);
             ctx.stroke();
             // Draw hole
-            ctx.set_stroke_style_str("#CCCCCC"); // pad hole color
+            ctx.set_stroke_style_str(hole_color);
             ctx.set_line_width(*ds);
             ctx.line_to(end[0], end[1]);
             ctx.stroke();
@@ -934,7 +1028,7 @@ pub fn draw_zones(
             }
         });
 
-        ctx.fill_with_path_2d(path);
+        ctx.fill_with_path_2d_and_winding(path, CanvasWindingRule::Evenodd);
         if let Some(w) = zone.width {
             if w > 0.0 {
                 ctx.set_line_width(w);
@@ -986,6 +1080,7 @@ pub fn draw_nets(
             canvas,
             layer,
             track_color,
+            &colors.pad_hole,
             highlight,
             pcbdata,
             highlighted_net,
@@ -1000,6 +1095,7 @@ pub fn draw_nets(
                     canvas,
                     name,
                     track_color,
+                    &colors.pad_hole,
                     highlight,
                     pcbdata,
                     highlighted_net,
@@ -1161,6 +1257,20 @@ pub fn draw_background(
         highlighted_net,
         zone_cache,
     );
+    if settings.render_tracks {
+        let opp_color = if opposite == "F" {
+            &colors.track_front
+        } else {
+            &colors.track_back
+        };
+        draw_copper_pads(
+            &layer.bg,
+            opposite,
+            opp_color,
+            layer.transform.s * layer.transform.zoom,
+            pcbdata,
+        );
+    }
     draw_footprints(
         &layer.bg,
         opposite,
@@ -1186,6 +1296,36 @@ pub fn draw_background(
         highlighted_net,
         zone_cache,
     );
+    if settings.render_tracks {
+        let primary_color = if layer.layer == "F" {
+            &colors.track_front
+        } else {
+            &colors.track_back
+        };
+        draw_copper_pads(
+            &layer.bg,
+            &layer.layer,
+            primary_color,
+            layer.transform.s * layer.transform.zoom,
+            pcbdata,
+        );
+        // Inner copper layer pads at reduced opacity
+        if let Some(ref copper_pads) = pcbdata.copper_pads {
+            let ctx = get_ctx(&layer.bg);
+            ctx.save();
+            ctx.set_global_alpha(0.25);
+            for name in copper_pads.inner_layer_names() {
+                draw_copper_pads(
+                    &layer.bg,
+                    name,
+                    primary_color,
+                    layer.transform.s * layer.transform.zoom,
+                    pcbdata,
+                );
+            }
+            ctx.restore();
+        }
+    }
     draw_footprints(
         &layer.bg,
         &layer.layer,
@@ -1207,6 +1347,9 @@ pub fn draw_background(
         pcbdata.font_data.as_ref(),
     );
 
+    // Draw drill holes (punch through bg canvas for see-through effect)
+    draw_drills(&layer.bg, pcbdata);
+
     if settings.render_silkscreen {
         draw_bg_layer(
             &layer.silk,
@@ -1219,6 +1362,14 @@ pub fn draw_background(
             &colors.silk_text,
             settings,
         );
+        let clear_key = format!("{}_Clear", layer.layer);
+        if let Some(clears) = pcbdata.drawings.silkscreen.inner.get(&clear_key) {
+            apply_gerber_clear(
+                &layer.silk,
+                clears,
+                layer.transform.s * layer.transform.zoom,
+            );
+        }
     }
     if settings.render_fabrication {
         draw_bg_layer(

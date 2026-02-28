@@ -33,6 +33,7 @@ body {
 .dark.topmostdiv {
   --pcb-edge-color: #eee;
   --pad-color: #808080;
+  --pad-hole-color: #1e2428;
   --pin1-outline-color: #ffa800;
   --pin1-outline-color-highlight: #ccff00;
   --track-color-front: #993333;
@@ -49,7 +50,7 @@ body {
   height: 100vh;
   overflow: hidden;
   background-color: white;
-  transition: background-color 0.3s;
+  transition: background-color 0.65s, color 0.65s;
 }
 
 /* ─── Fullscreen Canvas ─────────────────────────────────────────── */
@@ -88,7 +89,7 @@ body {
   color: #222;
   text-transform: uppercase;
   letter-spacing: 1px;
-  transition: background-color 0.15s;
+  transition: background 0.65s, color 0.65s, border-color 0.65s;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
 }
 
@@ -126,6 +127,7 @@ body {
 .sidebar .sidebar-table-container,
 .sidebar .sidebar-settings {
   background: rgba(255, 255, 255, 0.75);
+  transition: background 0.65s, border-color 0.65s, color 0.65s;
 }
 
 .dark .sidebar,
@@ -196,12 +198,13 @@ body {
 }
 
 .sidebar-close {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
   border: none;
   background: none;
-  font-size: 20px;
+  font-size: 22px;
+  line-height: 1;
   cursor: pointer;
   border-radius: 4px;
   color: inherit;
@@ -294,20 +297,20 @@ body {
   z-index: 10;
   top: 50%;
   transform: translateY(-50%);
-  writing-mode: vertical-rl;
-  padding: 16px 10px;
+  padding: 14px 12px;
   background: rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(0, 0, 0, 0.1);
   cursor: pointer;
   font-weight: bold;
-  font-size: 13px;
+  font-size: 22px;
+  line-height: 1;
   color: #222;
   height: auto;
   width: auto;
   text-align: center;
-  transition: background-color 0.15s;
+  transition: background 0.65s, color 0.65s, border-color 0.65s;
   border-radius: 10px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
 }

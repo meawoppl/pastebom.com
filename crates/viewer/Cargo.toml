@@ -37,4 +37,5 @@ features = [
     "EventTarget",
     "Performance",
     "Location",
+    "CanvasWindingRule",
 ]

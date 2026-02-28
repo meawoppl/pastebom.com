@@ -21,9 +21,15 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     let board_records = read_text_records(&mut cfb, "/Board6/Data")?;
     let layer_map = layers::build_layer_map(&board_records);
 
-    // 3. Parse components
+    // 3. Parse components (detect format from text records)
     let comp_records = read_text_records(&mut cfb, "/Components6/Data")?;
-    let components = records::parse_components(&comp_records, &wide_strings);
+
+    // Detect PCB 6.0 format: text coords have "mil" suffix, finer binary scale
+    let use_fine_scale =
+        records::detect_mil_format(&comp_records) || records::detect_mil_format(&board_records);
+    let units_per_mil: i32 = if use_fine_scale { 10000 } else { 1000 };
+
+    let components = records::parse_components(&comp_records, &wide_strings, units_per_mil);
 
     // 4. Parse nets
     let net_records = read_text_records(&mut cfb, "/Nets6/Data")?;
@@ -31,7 +37,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
 
     // 5. Parse geometry objects
     let pads = read_binary_stream(&mut cfb, "/Pads6/Data")
-        .map(|data| records::parse_pads(&data))
+        .map(|data| records::parse_pads(&data, use_fine_scale))
         .unwrap_or_default();
 
     let tracks = read_binary_stream(&mut cfb, "/Tracks6/Data")
@@ -51,8 +57,14 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         .unwrap_or_default();
 
     let texts = read_binary_stream(&mut cfb, "/Texts6/Data")
-        .map(|data| records::parse_texts(&data))
+        .map(|data| records::parse_texts(&data, use_fine_scale))
         .unwrap_or_default();
+
+    let scale = if use_fine_scale {
+        SCALE_FINE
+    } else {
+        SCALE_COARSE
+    };
 
     // 6. Build footprints from components + child objects
     let footprints = build_footprints(
@@ -64,6 +76,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         &texts,
         &nets,
         &layer_map,
+        scale,
     );
 
     // 6b. Build Component structs for BOM generation
@@ -95,16 +108,18 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     ));
 
     // 7. Board edges
-    let edges = extract_board_edges(&board_records);
+    let edges = extract_board_edges(&board_records, units_per_mil, scale);
     let edges_bbox = compute_edges_bbox(&edges);
 
     // 8. Categorize board-level drawings (silkscreen, fabrication)
-    let drawings = categorize_drawings(&tracks, &arcs, &fills, &layer_map);
+    let drawings = categorize_drawings(&tracks, &arcs, &fills, &layer_map, scale);
 
     // 9. Tracks and zones
     let (track_data, zone_data) = if opts.include_tracks {
         (
-            Some(build_track_data(&tracks, &arcs, &vias, &nets, &layer_map)),
+            Some(build_track_data(
+                &tracks, &arcs, &vias, &nets, &layer_map, scale,
+            )),
             Some(LayerData {
                 front: Vec::new(),
                 back: Vec::new(),
@@ -130,6 +145,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         bom,
         ibom_version: None,
         tracks: track_data,
+        copper_pads: None,
         zones: zone_data,
         nets: net_names,
         font_data: None,
@@ -246,37 +262,62 @@ fn parse_text_record_stream(data: &[u8]) -> Vec<HashMap<String, String>> {
 
 // ─── Coordinate conversion ───────────────────────────────────────────
 
-fn altium_to_mm(units: i32) -> f64 {
-    units as f64 * 0.0000254
+/// mm per internal unit. PCB 6.0 files use 10x finer resolution.
+const SCALE_COARSE: f64 = 0.0000254; // 1 unit = 0.001 mil
+const SCALE_FINE: f64 = 0.00000254; // 1 unit = 0.0001 mil
+
+fn altium_to_mm(units: i32, scale: f64) -> f64 {
+    units as f64 * scale
 }
 
-fn convert_point(x: i32, y: i32) -> [f64; 2] {
-    [altium_to_mm(x), -altium_to_mm(y)]
+fn convert_point(x: i32, y: i32, scale: f64) -> [f64; 2] {
+    [altium_to_mm(x, scale), -altium_to_mm(y, scale)]
 }
 
 // ─── Board edges ─────────────────────────────────────────────────────
 
-fn extract_board_edges(board_records: &[HashMap<String, String>]) -> Vec<Drawing> {
+fn extract_board_edges(
+    board_records: &[HashMap<String, String>],
+    units_per_mil: i32,
+    scale: f64,
+) -> Vec<Drawing> {
     let mut edges = Vec::new();
 
     for record in board_records {
-        if record.get("KIND").map(|v| v.as_str()) != Some("0") {
+        // Accept records with KIND=0 (region outline) or the main board record
+        // which has KIND=Protel_Advanced_PCB or RECORD=Board
+        let kind = record.get("KIND").map(|v| v.as_str()).unwrap_or("");
+        let is_outline = kind == "0";
+        let is_board =
+            kind.contains("Protel") || record.get("RECORD").map(|v| v.as_str()) == Some("Board");
+
+        if !is_outline && !is_board {
             continue;
         }
+
+        // Determine vertex count: use VCOUNT if present, otherwise count VX* keys
         let vcount: usize = record
             .get("VCOUNT")
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+            .unwrap_or_else(|| {
+                (0..)
+                    .take_while(|i| record.contains_key(&format!("VX{i}")))
+                    .count()
+            });
+
+        if vcount < 2 {
+            continue;
+        }
 
         for i in 0..vcount {
-            let x0 = parse_altium_coord(record, &format!("VX{i}"));
-            let y0 = parse_altium_coord(record, &format!("VY{i}"));
+            let x0 = parse_altium_coord(record, &format!("VX{i}"), units_per_mil);
+            let y0 = parse_altium_coord(record, &format!("VY{i}"), units_per_mil);
             let next = (i + 1) % vcount;
-            let x1 = parse_altium_coord(record, &format!("VX{next}"));
-            let y1 = parse_altium_coord(record, &format!("VY{next}"));
+            let x1 = parse_altium_coord(record, &format!("VX{next}"), units_per_mil);
+            let y1 = parse_altium_coord(record, &format!("VY{next}"), units_per_mil);
 
-            let start = convert_point(x0, y0);
-            let end = convert_point(x1, y1);
+            let start = convert_point(x0, y0, scale);
+            let end = convert_point(x1, y1, scale);
 
             // Check for arc segment (SA = start angle, EA = end angle, CX/CY = center)
             let sa_key = format!("SA{i}");
@@ -284,20 +325,20 @@ fn extract_board_edges(board_records: &[HashMap<String, String>]) -> Vec<Drawing
             let cx_key = format!("CX{i}");
             let cy_key = format!("CY{i}");
 
-            let has_arc = record.contains_key(&sa_key);
+            let sa: f64 = record
+                .get(&sa_key)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.0);
+            let ea: f64 = record
+                .get(&ea_key)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.0);
+            let has_arc = (ea - sa).abs() > 0.001;
 
             if has_arc {
-                let sa: f64 = record
-                    .get(&sa_key)
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0.0);
-                let ea: f64 = record
-                    .get(&ea_key)
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(360.0);
-                let cx = parse_altium_coord(record, &cx_key);
-                let cy = parse_altium_coord(record, &cy_key);
-                let center = convert_point(cx, cy);
+                let cx = parse_altium_coord(record, &cx_key, units_per_mil);
+                let cy = parse_altium_coord(record, &cy_key, units_per_mil);
+                let center = convert_point(cx, cy, scale);
 
                 // Compute radius from center to start point
                 let dx = start[0] - center[0];
@@ -323,11 +364,10 @@ fn extract_board_edges(board_records: &[HashMap<String, String>]) -> Vec<Drawing
     edges
 }
 
-fn parse_altium_coord(record: &HashMap<String, String>, key: &str) -> i32 {
+fn parse_altium_coord(record: &HashMap<String, String>, key: &str, units_per_mil: i32) -> i32 {
     record
         .get(key)
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(|v| v as i32)
+        .and_then(|v| records::parse_altium_value(v, units_per_mil))
         .unwrap_or(0)
 }
 
@@ -343,40 +383,41 @@ fn build_footprints(
     texts: &[records::AltiumText],
     nets: &[records::AltiumNet],
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> Vec<Footprint> {
     components
         .iter()
         .enumerate()
         .map(|(idx, comp)| {
             let comp_id = idx as u16;
-            let center = convert_point(comp.x, comp.y);
+            let center = convert_point(comp.x, comp.y, scale);
 
             // Collect pads belonging to this component
             let fp_pads: Vec<Pad> = pads
                 .iter()
                 .filter(|p| p.component_id == comp_id)
-                .map(|p| convert_pad(p, comp, nets, layer_map))
+                .map(|p| convert_pad(p, comp, nets, layer_map, scale))
                 .collect();
 
             // Collect drawings
             let mut fp_drawings = Vec::new();
             for t in tracks.iter().filter(|t| t.component_id == comp_id) {
-                if let Some(d) = convert_track_drawing(t, layer_map) {
+                if let Some(d) = convert_track_drawing(t, layer_map, scale) {
                     fp_drawings.push(d);
                 }
             }
             for a in arcs.iter().filter(|a| a.component_id == comp_id) {
-                if let Some(d) = convert_arc_drawing(a, layer_map) {
+                if let Some(d) = convert_arc_drawing(a, layer_map, scale) {
                     fp_drawings.push(d);
                 }
             }
             for f in fills.iter().filter(|f| f.component_id == comp_id) {
-                if let Some(d) = convert_fill_drawing(f, layer_map) {
+                if let Some(d) = convert_fill_drawing(f, layer_map, scale) {
                     fp_drawings.push(d);
                 }
             }
             for txt in texts.iter().filter(|t| t.component_id == comp_id) {
-                if let Some(d) = convert_text_drawing(txt, comp, layer_map) {
+                if let Some(d) = convert_text_drawing(txt, comp, layer_map, scale) {
                     fp_drawings.push(d);
                 }
             }
@@ -426,10 +467,11 @@ fn convert_pad(
     _comp: &records::AltiumComponent,
     nets: &[records::AltiumNet],
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> Pad {
-    let pos = convert_point(pad.x, pad.y);
-    let size_x = altium_to_mm(pad.size_x);
-    let size_y = altium_to_mm(pad.size_y);
+    let pos = convert_point(pad.x, pad.y, scale);
+    let size_x = altium_to_mm(pad.size_x, scale);
+    let size_y = altium_to_mm(pad.size_y, scale);
 
     let (shape, polygons) = match pad.shape {
         1 => ("circle", None),
@@ -476,7 +518,7 @@ fn convert_pad(
     };
 
     let (drillshape, drillsize) = if is_th {
-        let d = altium_to_mm(pad.hole_size);
+        let d = altium_to_mm(pad.hole_size, scale);
         (Some("circle".to_string()), Some([d, d]))
     } else {
         (None, None)
@@ -511,6 +553,7 @@ fn convert_pad(
 fn convert_track_drawing(
     track: &records::AltiumTrack,
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> Option<FootprintDrawing> {
     let cat = layer_map.category(track.layer);
     let side = match cat {
@@ -518,9 +561,9 @@ fn convert_track_drawing(
         layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
         _ => return None,
     };
-    let start = convert_point(track.start_x, track.start_y);
-    let end = convert_point(track.end_x, track.end_y);
-    let width = altium_to_mm(track.width);
+    let start = convert_point(track.start_x, track.start_y, scale);
+    let end = convert_point(track.end_x, track.end_y, scale);
+    let width = altium_to_mm(track.width, scale);
     Some(FootprintDrawing {
         layer: side.to_string(),
         drawing: FootprintDrawingItem::Shape(Drawing::Segment { start, end, width }),
@@ -530,6 +573,7 @@ fn convert_track_drawing(
 fn convert_arc_drawing(
     arc: &records::AltiumArc,
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> Option<FootprintDrawing> {
     let cat = layer_map.category(arc.layer);
     let side = match cat {
@@ -537,9 +581,9 @@ fn convert_arc_drawing(
         layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
         _ => return None,
     };
-    let center = convert_point(arc.center_x, arc.center_y);
-    let radius = altium_to_mm(arc.radius);
-    let width = altium_to_mm(arc.width);
+    let center = convert_point(arc.center_x, arc.center_y, scale);
+    let radius = altium_to_mm(arc.radius, scale);
+    let width = altium_to_mm(arc.width, scale);
     Some(FootprintDrawing {
         layer: side.to_string(),
         drawing: FootprintDrawingItem::Shape(Drawing::Arc {
@@ -555,6 +599,7 @@ fn convert_arc_drawing(
 fn convert_fill_drawing(
     fill: &records::AltiumFill,
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> Option<FootprintDrawing> {
     let cat = layer_map.category(fill.layer);
     let side = match cat {
@@ -562,8 +607,8 @@ fn convert_fill_drawing(
         layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
         _ => return None,
     };
-    let start = convert_point(fill.x1, fill.y1);
-    let end = convert_point(fill.x2, fill.y2);
+    let start = convert_point(fill.x1, fill.y1, scale);
+    let end = convert_point(fill.x2, fill.y2, scale);
     Some(FootprintDrawing {
         layer: side.to_string(),
         drawing: FootprintDrawingItem::Shape(Drawing::Rect {
@@ -578,6 +623,7 @@ fn convert_text_drawing(
     txt: &records::AltiumText,
     comp: &records::AltiumComponent,
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> Option<FootprintDrawing> {
     let cat = layer_map.category(txt.layer);
     let side = match cat {
@@ -585,8 +631,8 @@ fn convert_text_drawing(
         layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
         _ => return None,
     };
-    let pos = convert_point(txt.x, txt.y);
-    let height = altium_to_mm(txt.height);
+    let pos = convert_point(txt.x, txt.y, scale);
+    let height = altium_to_mm(txt.height, scale);
 
     let text_content = if txt.is_designator {
         comp.designator.clone()
@@ -629,6 +675,7 @@ fn categorize_drawings(
     arcs: &[records::AltiumArc],
     fills: &[records::AltiumFill],
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> Drawings {
     let mut silk_f = Vec::new();
     let mut silk_b = Vec::new();
@@ -637,9 +684,9 @@ fn categorize_drawings(
 
     // Free tracks (component_id == 0xFFFF)
     for t in tracks.iter().filter(|t| t.component_id == 0xFFFF) {
-        let start = convert_point(t.start_x, t.start_y);
-        let end = convert_point(t.end_x, t.end_y);
-        let width = altium_to_mm(t.width);
+        let start = convert_point(t.start_x, t.start_y, scale);
+        let end = convert_point(t.end_x, t.end_y, scale);
+        let width = altium_to_mm(t.width, scale);
         let drawing = Drawing::Segment { start, end, width };
         match layer_map.category(t.layer) {
             layers::LayerCategory::SilkF => silk_f.push(drawing),
@@ -651,9 +698,9 @@ fn categorize_drawings(
     }
 
     for a in arcs.iter().filter(|a| a.component_id == 0xFFFF) {
-        let center = convert_point(a.center_x, a.center_y);
-        let radius = altium_to_mm(a.radius);
-        let width = altium_to_mm(a.width);
+        let center = convert_point(a.center_x, a.center_y, scale);
+        let radius = altium_to_mm(a.radius, scale);
+        let width = altium_to_mm(a.width, scale);
         let drawing = Drawing::Arc {
             start: center,
             radius,
@@ -671,8 +718,8 @@ fn categorize_drawings(
     }
 
     for f in fills.iter().filter(|f| f.component_id == 0xFFFF) {
-        let start = convert_point(f.x1, f.y1);
-        let end = convert_point(f.x2, f.y2);
+        let start = convert_point(f.x1, f.y1, scale);
+        let end = convert_point(f.x2, f.y2, scale);
         let drawing = Drawing::Rect {
             start,
             end,
@@ -709,15 +756,16 @@ fn build_track_data(
     vias: &[records::AltiumVia],
     nets: &[records::AltiumNet],
     layer_map: &layers::LayerMap,
+    scale: f64,
 ) -> LayerData<Vec<Track>> {
     let mut front = Vec::new();
     let mut back = Vec::new();
     let mut inner: HashMap<String, Vec<Track>> = HashMap::new();
 
     for t in tracks.iter().filter(|t| t.component_id == 0xFFFF) {
-        let start = convert_point(t.start_x, t.start_y);
-        let end = convert_point(t.end_x, t.end_y);
-        let width = altium_to_mm(t.width);
+        let start = convert_point(t.start_x, t.start_y, scale);
+        let end = convert_point(t.end_x, t.end_y, scale);
+        let width = altium_to_mm(t.width, scale);
         let net = nets
             .get(t.net_id as usize)
             .map(|n| n.name.clone())
@@ -743,9 +791,9 @@ fn build_track_data(
     }
 
     for a in arcs.iter().filter(|a| a.component_id == 0xFFFF) {
-        let center = convert_point(a.center_x, a.center_y);
-        let radius = altium_to_mm(a.radius);
-        let width = altium_to_mm(a.width);
+        let center = convert_point(a.center_x, a.center_y, scale);
+        let radius = altium_to_mm(a.radius, scale);
+        let width = altium_to_mm(a.width, scale);
         let net = nets
             .get(a.net_id as usize)
             .map(|n| n.name.clone())
@@ -772,9 +820,9 @@ fn build_track_data(
     }
 
     for v in vias {
-        let pos = convert_point(v.x, v.y);
-        let size = altium_to_mm(v.diameter);
-        let drill = altium_to_mm(v.hole_size);
+        let pos = convert_point(v.x, v.y, scale);
+        let size = altium_to_mm(v.diameter, scale);
+        let drill = altium_to_mm(v.hole_size, scale);
         let net = nets
             .get(v.net_id as usize)
             .map(|n| n.name.clone())

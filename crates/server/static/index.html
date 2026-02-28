@@ -8,16 +8,27 @@
         * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 800px;
             margin: 0 auto;
             padding: 2rem;
             background: #1a1a2e;
             color: #eee;
             min-height: 100vh;
+            max-width: 1200px;
         }
         h1 { color: #4ecca3; margin-bottom: 0.5rem; }
         .subtitle { color: #888; margin-bottom: 2rem; }
         .subtitle a { color: #4ecca3; }
+        .page-layout {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 2rem;
+            align-items: start;
+        }
+        @media (max-width: 768px) {
+            .page-layout {
+                grid-template-columns: 1fr;
+            }
+        }
         .upload-zone {
             border: 2px dashed #4ecca3;
             border-radius: 12px;
@@ -124,26 +135,73 @@
             width: 16px;
             height: 16px;
         }
-        .component-count { color: #888; font-size: 0.85rem; }
+        .sidebar-section {
+            padding: 1.5rem;
+            background: #16213e;
+            border-radius: 8px;
+            position: sticky;
+            top: 2rem;
+        }
+        .sidebar-section h2 {
+            color: #4ecca3;
+            font-size: 1.1rem;
+            margin: 0 0 1rem 0;
+        }
+        .public-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .public-table th {
+            text-align: left;
+            color: #888;
+            font-weight: 500;
+            padding: 0.5rem 0.5rem;
+            border-bottom: 1px solid #2a2a4e;
+        }
+        .public-table td {
+            padding: 0.5rem 0.5rem;
+            border-bottom: 1px solid #2a2a4e;
+        }
+        .public-table tr:last-child td { border-bottom: none; }
+        .public-table td a {
+            color: #4ecca3;
+            text-decoration: none;
+            display: block;
+            max-width: 160px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .public-table td a:hover { text-decoration: underline; }
+        .public-table .num { text-align: right; color: #aaa; }
+        .public-table .age { color: #666; white-space: nowrap; }
     </style>
 </head>
 <body>
     <h1>PasteBOM <span id="version" style="font-size:0.5em;color:#666"></span></h1>
     <p class="subtitle">Share interactive Bill of Materials and PCB layout viewers.</p>
 
-    <div class="upload-zone" id="dropzone">
-        <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd,.pcbdoc">
-        <p>Drop your PCB file here or click to browse</p>
-        <p class="formats">Supports: KiCad (.kicad_pcb), EasyEDA (.json), Eagle (.brd, .fbrd), Altium (.PcbDoc)</p>
-    </div>
-    <div class="upload-options">
-        <input type="checkbox" id="secretCheck">
-        <label for="secretCheck">Secret (won't appear in public feed)</label>
-    </div>
+    <div class="page-layout">
+        <div class="main-column">
+            <div class="upload-zone" id="dropzone">
+                <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd,.pcbdoc,.zip">
+                <p>Drop your PCB file here or click to browse</p>
+                <p class="formats">Supports: KiCad (.kicad_pcb), EasyEDA (.json), Eagle (.brd, .fbrd), Altium (.PcbDoc), Gerber (.zip)</p>
+            </div>
+            <div class="upload-options">
+                <input type="checkbox" id="secretCheck">
+                <label for="secretCheck">Secret (won't appear in public feed)</label>
+            </div>
 
-    <div class="result" id="result"></div>
-    <div class="history" id="history"></div>
-    <div class="history" id="recentPublic"></div>
+            <div class="result" id="result"></div>
+            <div class="history" id="history"></div>
+        </div>
+
+        <div class="sidebar">
+            <div class="sidebar-section" id="recentPublic"></div>
+        </div>
+    </div>
 
     <script>
         const dropzone = document.getElementById('dropzone');
@@ -180,7 +238,7 @@
                 return `<li><a href="${h.url}" target="_blank">${h.filename || h.url}</a><span class="history-meta">${date}</span></li>`;
             }).join('');
             historyEl.innerHTML = `
-                <h2>Recent BOMs <button class="history-clear" onclick="clearHistory()">Clear</button></h2>
+                <h2>Your Pastes (This Device Only) <button class="history-clear" onclick="clearHistory()">Clear</button></h2>
                 <ul class="history-list">${items}</ul>`;
         }
 
@@ -197,18 +255,38 @@
             return days + 'd ago';
         }
 
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
         async function loadRecent() {
             try {
                 const resp = await fetch('/api/recent');
                 const entries = await resp.json();
                 if (!entries.length) { recentEl.innerHTML = ''; return; }
-                const items = entries.map(e => {
+                const rows = entries.map(e => {
                     const ago = timeAgo(e.created);
-                    return `<li><a href="/b/${e.id}" target="_blank">${e.filename}</a><span class="component-count">${e.components} components</span><span class="history-meta">${ago}</span></li>`;
+                    const size = e.file_size != null ? formatSize(e.file_size) : '';
+                    return `<tr>
+                        <td><a href="/b/${e.id}" target="_blank">${e.filename}</a></td>
+                        <td class="num">${e.components}</td>
+                        <td class="num">${size}</td>
+                        <td class="age">${ago}</td>
+                    </tr>`;
                 }).join('');
                 recentEl.innerHTML = `
-                    <h2>Recently Shared</h2>
-                    <ul class="history-list">${items}</ul>`;
+                    <h2>Public Pastes</h2>
+                    <table class="public-table">
+                        <thead><tr>
+                            <th>Name</th>
+                            <th class="num">Components</th>
+                            <th class="num">Size</th>
+                            <th>Age</th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>`;
             } catch { recentEl.innerHTML = ''; }
         }
         loadRecent();
