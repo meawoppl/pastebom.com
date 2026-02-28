@@ -1091,15 +1091,17 @@ pub fn draw_nets(
             ctx.save();
             ctx.set_global_alpha(0.25);
             for name in tracks.inner_layer_names() {
-                draw_tracks(
-                    canvas,
-                    name,
-                    track_color,
-                    &colors.pad_hole,
-                    highlight,
-                    pcbdata,
-                    highlighted_net,
-                );
+                if !settings.hidden_layers.contains(name.as_str()) {
+                    draw_tracks(
+                        canvas,
+                        name,
+                        track_color,
+                        &colors.pad_hole,
+                        highlight,
+                        pcbdata,
+                        highlighted_net,
+                    );
+                }
             }
             ctx.restore();
         }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -25,6 +25,7 @@ pub struct Settings {
     pub column_order: Vec<String>,
     pub net_colors: HashMap<String, String>,
     pub highlight_row_on_click: bool,
+    pub hidden_layers: HashSet<String>,
 }
 
 impl Default for Settings {
@@ -53,6 +54,7 @@ impl Default for Settings {
             column_order: Vec::new(),
             net_colors: HashMap::new(),
             highlight_row_on_click: false,
+            hidden_layers: HashSet::new(),
         }
     }
 }
@@ -146,6 +148,11 @@ pub fn init_settings(prefix: &str) -> Settings {
     }
     if let Some(v) = read_storage("highlightRowOnClick", prefix) {
         s.highlight_row_on_click = v == "true";
+    }
+    if let Some(v) = read_storage("hiddenLayers", prefix) {
+        if let Ok(layers) = serde_json::from_str::<Vec<String>>(&v) {
+            s.hidden_layers = layers.into_iter().collect();
+        }
     }
 
     s
