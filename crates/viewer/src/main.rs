@@ -97,8 +97,13 @@ fn app() -> Html {
     let storage_prefix_str = use_state(String::new);
     let redraw_trigger = use_state(|| 0u32);
     let board_flipped = use_state(|| false);
-    let bom_sidebar_open = use_state(|| true);
-    let view_sidebar_open = use_state(|| true);
+    let is_mobile = web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .map(|w| w < 768.0)
+        .unwrap_or(false);
+    let bom_sidebar_open = use_state(move || !is_mobile);
+    let view_sidebar_open = use_state(move || !is_mobile);
     let upload_filename: UseStateHandle<Option<String>> = use_state(|| None);
 
     // Fetch pcbdata on mount
