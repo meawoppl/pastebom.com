@@ -712,6 +712,7 @@ fn build_track_data(
 ) -> LayerData<Vec<Track>> {
     let mut front = Vec::new();
     let mut back = Vec::new();
+    let mut inner: HashMap<String, Vec<Track>> = HashMap::new();
 
     for t in tracks.iter().filter(|t| t.component_id == 0xFFFF) {
         let start = convert_point(t.start_x, t.start_y);
@@ -731,6 +732,12 @@ fn build_track_data(
         match layer_map.category(t.layer) {
             layers::LayerCategory::CopperF => front.push(track),
             layers::LayerCategory::CopperB => back.push(track),
+            layers::LayerCategory::CopperInner => {
+                inner
+                    .entry(layer_map.inner_layer_name(t.layer))
+                    .or_default()
+                    .push(track);
+            }
             _ => {}
         }
     }
@@ -754,6 +761,12 @@ fn build_track_data(
         match layer_map.category(a.layer) {
             layers::LayerCategory::CopperF => front.push(track),
             layers::LayerCategory::CopperB => back.push(track),
+            layers::LayerCategory::CopperInner => {
+                inner
+                    .entry(layer_map.inner_layer_name(a.layer))
+                    .or_default()
+                    .push(track);
+            }
             _ => {}
         }
     }
@@ -774,20 +787,13 @@ fn build_track_data(
             drillsize: Some(drill),
         };
         front.push(via.clone());
-        back.push(Track::Segment {
-            start: pos,
-            end: pos,
-            width: size,
-            net,
-            drillsize: Some(drill),
-        });
+        back.push(via.clone());
+        for layer_tracks in inner.values_mut() {
+            layer_tracks.push(via.clone());
+        }
     }
 
-    LayerData {
-        front,
-        back,
-        inner: HashMap::new(),
-    }
+    LayerData { front, back, inner }
 }
 
 // ─── Metadata ────────────────────────────────────────────────────────
