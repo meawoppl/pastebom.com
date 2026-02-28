@@ -28,6 +28,12 @@ impl LayerMap {
         }
     }
 
+    /// Return a layer name string for inner copper layers (IDs 2-30).
+    /// Uses KiCad-compatible naming: "In1.Cu", "In2.Cu", etc.
+    pub fn inner_layer_name(&self, layer_id: u8) -> String {
+        format!("In{}.Cu", layer_id - 1)
+    }
+
     pub fn category(&self, layer_id: u8) -> LayerCategory {
         if let Some(cat) = self.categories.get(&layer_id) {
             return cat.clone();
