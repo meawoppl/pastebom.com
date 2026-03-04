@@ -420,9 +420,10 @@ M02*
         // Board outline: 4 segments forming a 50x30mm rectangle
         assert_eq!(pcb.edges.len(), 4);
 
-        // Bounding box should be ~50x30mm
+        // Bounding box should be ~50x30mm (Y is negated: 0 to -30)
         assert!((pcb.edges_bbox.maxx - 50.0).abs() < 0.1);
-        assert!((pcb.edges_bbox.maxy - 30.0).abs() < 0.1);
+        assert!((pcb.edges_bbox.miny - (-30.0)).abs() < 0.1);
+        assert!(pcb.edges_bbox.maxy.abs() < 0.1);
 
         // Copper top: 1 track segment
         let tracks = pcb.tracks.unwrap();
