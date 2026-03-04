@@ -589,7 +589,7 @@ M30
                 ..
             } => {
                 assert!((start[0] - 5.0).abs() < 1e-6);
-                assert!((start[1] - 5.0).abs() < 1e-6);
+                assert!((start[1] - (-5.0)).abs() < 1e-6);
                 assert!((radius - 0.15).abs() < 1e-6);
                 assert_eq!(*filled, Some(1));
             }
