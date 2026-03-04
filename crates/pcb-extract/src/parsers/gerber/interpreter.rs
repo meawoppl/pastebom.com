@@ -116,10 +116,11 @@ impl Interpreter {
     }
 
     /// Convert a raw Y coordinate integer to millimetres, applying mirror/scale.
+    /// Negates the result so Gerber Y-up coordinates become Y-down for the viewer.
     #[inline]
     fn cy(&self, val: i64) -> f64 {
         let mm = self.converter.to_mm(val, false);
-        mm * self.scale_y * if self.mirror_y { -1.0 } else { 1.0 }
+        -(mm * self.scale_y * if self.mirror_y { -1.0 } else { 1.0 })
     }
 
     fn process(&mut self, cmd: &GerberCommand) {
@@ -250,7 +251,7 @@ impl Interpreter {
                     self.sr_x_repeat = *x_repeat;
                     self.sr_y_repeat = *y_repeat;
                     self.sr_x_step = step_x_mm;
-                    self.sr_y_step = step_y_mm;
+                    self.sr_y_step = -step_y_mm; // negated: Gerber Y-up → viewer Y-down
                 }
                 // x_repeat=1, y_repeat=1 was already closed above; nothing left to do.
             }
@@ -458,10 +459,10 @@ impl Interpreter {
             end_angle += 360.0;
         }
 
-        // CW arcs go from start_angle decreasing to end_angle
-        // CCW arcs go from start_angle increasing to end_angle
-        // The Drawing::Arc type uses startangle/endangle in CCW direction.
-        if self.interpolation == InterpolationMode::ClockwiseArc {
+        // Y is negated to convert Gerber Y-up to viewer Y-down, which swaps
+        // the visual sense of CW and CCW. So we swap start/end for the
+        // opposite direction from what the Gerber file specifies.
+        if self.interpolation == InterpolationMode::CounterClockwiseArc {
             std::mem::swap(&mut start_angle, &mut end_angle);
         }
 
@@ -501,7 +502,8 @@ impl Interpreter {
         let start_angle = (y1 - cy).atan2(x1 - cx);
         let mut end_angle = (y2 - cy).atan2(x2 - cx);
 
-        let is_cw = self.interpolation == InterpolationMode::ClockwiseArc;
+        // Y is negated, so CW/CCW are visually swapped
+        let is_cw = self.interpolation == InterpolationMode::CounterClockwiseArc;
 
         // Ensure correct sweep direction
         if is_cw {
@@ -758,7 +760,7 @@ mod tests {
                 ..
             } => {
                 assert!((start[0] - 1.0).abs() < 1e-6);
-                assert!((start[1] - 2.0).abs() < 1e-6);
+                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
                 assert!((*radius - 0.05).abs() < 1e-6);
                 assert_eq!(*filled, Some(1));
             }
@@ -789,11 +791,11 @@ mod tests {
         assert_eq!(output.drawings.len(), 1);
         match &output.drawings[0] {
             Drawing::Rect { start, end, .. } => {
-                // Center at (1.0, 1.0), rect half-sizes (0.25, 0.15)
+                // Center at (1.0, -1.0) (Y negated), rect half-sizes (0.25, 0.15)
                 assert!((start[0] - 0.75).abs() < 1e-6);
-                assert!((start[1] - 0.85).abs() < 1e-6);
+                assert!((start[1] - (-1.15)).abs() < 1e-6);
                 assert!((end[0] - 1.25).abs() < 1e-6);
-                assert!((end[1] - 1.15).abs() < 1e-6);
+                assert!((end[1] - (-0.85)).abs() < 1e-6);
             }
             other => panic!("expected Rect, got: {other:?}"),
         }
@@ -948,9 +950,9 @@ mod tests {
         match &output.drawings[0] {
             Drawing::Segment { start, end, .. } => {
                 assert!((start[0] - 1.0).abs() < 1e-6);
-                assert!((start[1] - 2.0).abs() < 1e-6);
+                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
                 assert!((end[0] - 3.0).abs() < 1e-6);
-                assert!((end[1] - 2.0).abs() < 1e-6); // Y persisted
+                assert!((end[1] - (-2.0)).abs() < 1e-6); // Y persisted, negated
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1190,13 +1192,13 @@ mod tests {
             other => panic!("expected Segment, got: {other:?}"),
         }
 
-        // Second flash at (5.0, 3.0): segment offset by (5.0, 3.0)
+        // Second flash at (5.0, -3.0): segment offset by (5.0, -3.0) (Y negated)
         match &output.drawings[1] {
             Drawing::Segment { start, end, .. } => {
                 assert!((start[0] - 5.0).abs() < 1e-6);
-                assert!((start[1] - 3.0).abs() < 1e-6);
+                assert!((start[1] - (-3.0)).abs() < 1e-6);
                 assert!((end[0] - 6.0).abs() < 1e-6);
-                assert!((end[1] - 3.0).abs() < 1e-6);
+                assert!((end[1] - (-3.0)).abs() < 1e-6);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1267,7 +1269,7 @@ mod tests {
         match &output.drawings[0] {
             Drawing::Circle { start, radius, .. } => {
                 assert!((start[0] - 1.0).abs() < 1e-6);
-                assert!((start[1] - 2.0).abs() < 1e-6);
+                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
                 assert!((*radius - 0.25).abs() < 1e-6); // diameter 0.5 / 2
             }
             other => panic!("expected Circle, got: {other:?}"),
@@ -1404,7 +1406,7 @@ mod tests {
                 .then(a[1].partial_cmp(&b[1]).unwrap())
         });
 
-        let expected = [[0.0, 0.0], [0.0, 4.0], [3.0, 0.0], [3.0, 4.0]];
+        let expected = [[0.0, -4.0], [0.0, 0.0], [3.0, -4.0], [3.0, 0.0]]; // Y negated
         for (got, exp) in starts.iter().zip(expected.iter()) {
             assert!(
                 (got[0] - exp[0]).abs() < 1e-6,
@@ -1448,7 +1450,7 @@ mod tests {
 
     #[test]
     fn test_image_mirror_x() {
-        // %MIA1B0% — mirror about Y axis: all X coords negate, Y unchanged.
+        // %MIA1B0% — mirror about Y axis: all X coords negate, Y negated (Gerber Y-up → Y-down).
         let mut cmds = setup_commands();
         cmds.extend([
             GerberCommand::ImageMirror { a: true, b: false },
@@ -1469,9 +1471,9 @@ mod tests {
         match &output.drawings[0] {
             Drawing::Segment { start, end, .. } => {
                 assert!((start[0] - (-1.0)).abs() < 1e-6, "X should be negated");
-                assert!((start[1] - 2.0).abs() < 1e-6);
+                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
                 assert!((end[0] - (-3.0)).abs() < 1e-6, "X should be negated");
-                assert!((end[1] - 2.0).abs() < 1e-6);
+                assert!((end[1] - (-2.0)).abs() < 1e-6); // Y negated
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1500,9 +1502,9 @@ mod tests {
         match &output.drawings[0] {
             Drawing::Segment { start, end, .. } => {
                 assert!((start[0] - 2.0).abs() < 1e-6, "X scaled by 2");
-                assert!((start[1] - 0.5).abs() < 1e-6, "Y scaled by 0.5");
+                assert!((start[1] - (-0.5)).abs() < 1e-6, "Y scaled by 0.5, negated");
                 assert!((end[0] - 4.0).abs() < 1e-6, "X scaled by 2");
-                assert!((end[1] - 1.0).abs() < 1e-6, "Y scaled by 0.5");
+                assert!((end[1] - (-1.0)).abs() < 1e-6, "Y scaled by 0.5, negated");
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
