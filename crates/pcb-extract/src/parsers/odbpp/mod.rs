@@ -13,9 +13,9 @@ use std::io::Read;
 use features::{PadFeature, Unit};
 use matrix::{LayerContext, LayerType};
 
-/// Parse an ODB++ archive (.tgz) into PcbData.
+/// Parse an ODB++ archive (.tgz or .zip) into PcbData.
 pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
-    let files = extract_tar_gz(data)?;
+    let files = extract_archive(data)?;
     let job_root = find_job_root(&files)?;
 
     // Parse the matrix to understand layers
@@ -560,6 +560,35 @@ fn compute_bbox(edges: &[Drawing]) -> BBox {
         };
     }
     bbox
+}
+
+/// Try extracting as .tgz first, then fall back to .zip.
+fn extract_archive(data: &[u8]) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
+    extract_tar_gz(data).or_else(|_| extract_zip(data))
+}
+
+/// Extract all files from a .zip archive into memory.
+fn extract_zip(data: &[u8]) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
+    let reader = std::io::Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| ExtractError::ParseError(format!("Failed to read ZIP archive: {e}")))?;
+    let mut files = HashMap::new();
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| ExtractError::ParseError(format!("Failed to read ZIP entry: {e}")))?;
+        if entry.is_file() {
+            let name = entry.name().to_string();
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content).map_err(|e| {
+                ExtractError::ParseError(format!("Failed to read ZIP entry content: {e}"))
+            })?;
+            files.insert(name, content);
+        }
+    }
+
+    Ok(files)
 }
 
 /// Extract all files from a .tgz archive into memory.

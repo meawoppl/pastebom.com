@@ -24,28 +24,81 @@ pub struct ExtractOptions {
     pub include_nets: bool,
 }
 
-/// Detect format from file extension.
+/// Detect format from file extension alone (no content inspection).
 pub fn detect_format(path: &Path) -> Option<PcbFormat> {
-    match path
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .as_deref()
-    {
+        .map(|e| e.to_lowercase());
+
+    match ext.as_deref() {
         Some("kicad_pcb") => Some(PcbFormat::KiCad),
         Some("json") => Some(PcbFormat::EasyEda),
         Some("brd") | Some("fbrd") => Some(PcbFormat::Eagle),
         Some("pcbdoc") => Some(PcbFormat::Altium),
-        Some("zip") => Some(PcbFormat::Gerber),
         Some("gds") | Some("gds2") => Some(PcbFormat::Gdsii),
         Some("tgz") => Some(PcbFormat::OdbPlusPlus),
+        Some("zip") => Some(PcbFormat::Gerber),
+        Some("gz") => {
+            // Handle .tar.gz double extension
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if stem.ends_with(".tar") {
+                Some(PcbFormat::OdbPlusPlus)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
 
-/// Auto-detect format from extension and parse.
+/// Detect format using both filename and file content.
+///
+/// For unambiguous extensions, returns immediately.
+/// For `.zip` archives, peeks inside to distinguish Gerber from ODB++.
+pub fn detect_format_with_content(path: &Path, data: &[u8]) -> Option<PcbFormat> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    match ext.as_deref() {
+        Some("zip") => {
+            if zip_contains_odbpp(data) {
+                Some(PcbFormat::OdbPlusPlus)
+            } else {
+                Some(PcbFormat::Gerber)
+            }
+        }
+        Some("tgz") => Some(PcbFormat::OdbPlusPlus),
+        Some("gz") => {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if stem.ends_with(".tar") {
+                Some(PcbFormat::OdbPlusPlus)
+            } else {
+                None
+            }
+        }
+        _ => detect_format(path),
+    }
+}
+
+/// Check if a ZIP archive contains ODB++ structure (matrix/matrix file).
+fn zip_contains_odbpp(data: &[u8]) -> bool {
+    let reader = std::io::Cursor::new(data);
+    let Ok(archive) = zip::ZipArchive::new(reader) else {
+        return false;
+    };
+    let found = archive
+        .file_names()
+        .any(|name| name.ends_with("/matrix/matrix") || name == "matrix/matrix");
+    found
+}
+
+/// Auto-detect format from extension + content and parse.
 pub fn extract(path: &Path, opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
-    let format = detect_format(path).ok_or_else(|| {
+    let data = std::fs::read(path)?;
+    let format = detect_format_with_content(path, &data).ok_or_else(|| {
         ExtractError::UnsupportedFormat(
             path.extension()
                 .and_then(|e| e.to_str())
@@ -53,7 +106,6 @@ pub fn extract(path: &Path, opts: &ExtractOptions) -> Result<PcbData, ExtractErr
                 .to_string(),
         )
     })?;
-    let data = std::fs::read(path)?;
     extract_bytes(&data, format, opts)
 }
 
@@ -71,5 +123,44 @@ pub fn extract_bytes(
         PcbFormat::Gerber => parsers::gerber::parse(data, opts),
         PcbFormat::Gdsii => parsers::gdsii::parse(data, opts),
         PcbFormat::OdbPlusPlus => parsers::odbpp::parse(data, opts),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_detect_format_extensions() {
+        assert_eq!(
+            detect_format(Path::new("board.kicad_pcb")),
+            Some(PcbFormat::KiCad)
+        );
+        assert_eq!(
+            detect_format(Path::new("board.zip")),
+            Some(PcbFormat::Gerber)
+        );
+        assert_eq!(
+            detect_format(Path::new("board.tgz")),
+            Some(PcbFormat::OdbPlusPlus)
+        );
+        assert_eq!(
+            detect_format(Path::new("board.tar.gz")),
+            Some(PcbFormat::OdbPlusPlus)
+        );
+        assert_eq!(detect_format(Path::new("board.xyz")), None);
+    }
+
+    #[test]
+    fn test_detect_tar_gz_double_extension() {
+        let path = PathBuf::from("my_board.tar.gz");
+        assert_eq!(detect_format(&path), Some(PcbFormat::OdbPlusPlus));
+    }
+
+    #[test]
+    fn test_detect_plain_gz_not_matched() {
+        let path = PathBuf::from("compressed.gz");
+        assert_eq!(detect_format(&path), None);
     }
 }
