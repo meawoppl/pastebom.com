@@ -15,6 +15,7 @@ pub enum PcbFormat {
     Altium,
     Gerber,
     Gdsii,
+    OdbPlusPlus,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -37,6 +38,7 @@ pub fn detect_format(path: &Path) -> Option<PcbFormat> {
         Some("pcbdoc") => Some(PcbFormat::Altium),
         Some("zip") => Some(PcbFormat::Gerber),
         Some("gds") | Some("gds2") => Some(PcbFormat::Gdsii),
+        Some("tgz") => Some(PcbFormat::OdbPlusPlus),
         _ => None,
     }
 }
@@ -68,5 +70,6 @@ pub fn extract_bytes(
         PcbFormat::Altium => parsers::altium::parse(data, opts),
         PcbFormat::Gerber => parsers::gerber::parse(data, opts),
         PcbFormat::Gdsii => parsers::gdsii::parse(data, opts),
+        PcbFormat::OdbPlusPlus => parsers::odbpp::parse(data, opts),
     }
 }
