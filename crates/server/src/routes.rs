@@ -118,7 +118,7 @@ async fn upload(
     }
 
     let path = std::path::Path::new(&filename);
-    let format = pcb_extract::detect_format(path)
+    let format = pcb_extract::detect_format_with_content(path, &data)
         .ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "Unsupported file format"))?;
 
     let file_size = data.len();

@@ -5,14 +5,14 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "pcb-extract", about = "Extract PCB data to JSON")]
 struct Cli {
-    /// Input PCB file (.kicad_pcb, .json, .brd, .pcbdoc, .zip, .gds, .gds2)
+    /// Input PCB file (.kicad_pcb, .json, .brd, .pcbdoc, .zip, .gds, .gds2, .tgz)
     input: PathBuf,
 
     /// Output JSON file (stdout if not specified)
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Override auto-detected format (kicad, easyeda, eagle, altium, gerber, gdsii)
+    /// Override auto-detected format (kicad, easyeda, eagle, altium, gerber, gdsii, odbpp)
     #[arg(short, long)]
     format: Option<String>,
 
@@ -37,8 +37,9 @@ fn parse_format(s: &str) -> Result<PcbFormat, String> {
         "altium" => Ok(PcbFormat::Altium),
         "gerber" => Ok(PcbFormat::Gerber),
         "gdsii" | "gds" => Ok(PcbFormat::Gdsii),
+        "odbpp" | "odb++" | "odb" => Ok(PcbFormat::OdbPlusPlus),
         _ => Err(format!(
-            "Unknown format: {s}. Use: kicad, easyeda, eagle, altium, gerber, gdsii"
+            "Unknown format: {s}. Use: kicad, easyeda, eagle, altium, gerber, gdsii, odbpp"
         )),
     }
 }
