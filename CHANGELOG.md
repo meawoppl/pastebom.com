@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.0
+
+- Add ODB++ file format support (.tgz and .zip archives)
+- Content-based format detection to distinguish ODB++ from Gerber in ZIP files
+- Replace manual floating-point assertions with approx crate
+- Fix ODB++ profile rendering (board outline as edges, not filled polygon)
+- Fix ODB++ pad positions (absolute world coordinates)
+- Negate ODB++ Y axis to match viewer coordinate system
+- Add Edge.Cuts, F.SilkS, and F.Fab visibility toggles with color swatches
+
 ## 1.7.3
 
 - Add Gerber zip file parser (RS-274X copper, silkscreen, board outline)
