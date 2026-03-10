@@ -302,6 +302,7 @@ fn parse_coord_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_basic_excellon() {
@@ -329,9 +330,9 @@ M30
                 filled,
                 ..
             } => {
-                assert!((start[0] - 14.478).abs() < 1e-6);
-                assert!((start[1] - (-10.541)).abs() < 1e-6);
-                assert!((radius - 0.15).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 14.478, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -10.541, epsilon = 1e-6);
+                assert_abs_diff_eq!(*radius, 0.15, epsilon = 1e-6);
                 assert_eq!(*filled, Some(1));
             }
             _ => panic!("Expected Circle"),
@@ -340,9 +341,9 @@ M30
         // Third drill hit: T12 (0.8mm diameter = 0.4mm radius)
         match &drawings[2] {
             Drawing::Circle { start, radius, .. } => {
-                assert!((start[0] - 15.0).abs() < 1e-6);
-                assert!((start[1] - (-10.0)).abs() < 1e-6);
-                assert!((radius - 0.4).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 15.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -10.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(*radius, 0.4, epsilon = 1e-6);
             }
             _ => panic!("Expected Circle"),
         }
@@ -364,10 +365,10 @@ M30
         match &drawings[0] {
             Drawing::Circle { start, radius, .. } => {
                 // 1.0 inch = 25.4mm
-                assert!((start[0] - 25.4).abs() < 1e-3);
-                assert!((start[1] - (-25.4)).abs() < 1e-3);
+                assert_abs_diff_eq!(start[0], 25.4, epsilon = 1e-3);
+                assert_abs_diff_eq!(start[1], -25.4, epsilon = 1e-3);
                 // 0.010 inch diameter = 0.254mm diameter = 0.127mm radius
-                assert!((radius - 0.127).abs() < 1e-3);
+                assert_abs_diff_eq!(*radius, 0.127, epsilon = 1e-3);
             }
             _ => panic!("Expected Circle"),
         }
@@ -392,8 +393,8 @@ M30
                 // omit leading zeros even in TZ mode, so digits are right-aligned
                 // against the decimal point. Pad left to 6 digits:
                 // "14478" → "014478" → 14.478mm
-                assert!((start[0] - 14.478).abs() < 1e-3);
-                assert!((start[1] - (-10.541)).abs() < 1e-3);
+                assert_abs_diff_eq!(start[0], 14.478, epsilon = 1e-3);
+                assert_abs_diff_eq!(start[1], -10.541, epsilon = 1e-3);
             }
             _ => panic!("Expected Circle"),
         }
@@ -416,8 +417,8 @@ M30
             Drawing::Circle { start, .. } => {
                 // LZ (leading zeros suppressed): pad left to 6 digits
                 // "14478" → "014478" → 014.478 = 14.478mm
-                assert!((start[0] - 14.478).abs() < 1e-3);
-                assert!((start[1] - (-10.541)).abs() < 1e-3);
+                assert_abs_diff_eq!(start[0], 14.478, epsilon = 1e-3);
+                assert_abs_diff_eq!(start[1], -10.541, epsilon = 1e-3);
             }
             _ => panic!("Expected Circle"),
         }
@@ -456,8 +457,8 @@ M30
         assert_eq!(drawings.len(), 1);
         match &drawings[0] {
             Drawing::Circle { start, .. } => {
-                assert!((start[0] - 10.0).abs() < 1e-6);
-                assert!((start[1] - (-20.0)).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 10.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -20.0, epsilon = 1e-6);
             }
             _ => panic!("Expected Circle"),
         }
@@ -487,17 +488,17 @@ M30
 
         // T01 hits should have 0.15mm radius
         match &drawings[0] {
-            Drawing::Circle { radius, .. } => assert!((radius - 0.15).abs() < 1e-6),
+            Drawing::Circle { radius, .. } => assert_abs_diff_eq!(*radius, 0.15, epsilon = 1e-6),
             _ => panic!("Expected Circle"),
         }
         // T02 hit should have 0.4mm radius
         match &drawings[2] {
-            Drawing::Circle { radius, .. } => assert!((radius - 0.4).abs() < 1e-6),
+            Drawing::Circle { radius, .. } => assert_abs_diff_eq!(*radius, 0.4, epsilon = 1e-6),
             _ => panic!("Expected Circle"),
         }
         // T03 hits should have 0.5mm radius
         match &drawings[3] {
-            Drawing::Circle { radius, .. } => assert!((radius - 0.5).abs() < 1e-6),
+            Drawing::Circle { radius, .. } => assert_abs_diff_eq!(*radius, 0.5, epsilon = 1e-6),
             _ => panic!("Expected Circle"),
         }
     }
@@ -525,16 +526,16 @@ M30
         assert_eq!(drawings.len(), 2);
         match &drawings[0] {
             Drawing::Circle { start, radius, .. } => {
-                assert!((start[0] - 4.572).abs() < 1e-3, "x={}", start[0]);
-                assert!((start[1] - (-4.572)).abs() < 1e-3, "y={}", start[1]);
-                assert!((radius - 2.15).abs() < 1e-3);
+                assert_abs_diff_eq!(start[0], 4.572, epsilon = 1e-3);
+                assert_abs_diff_eq!(start[1], -4.572, epsilon = 1e-3);
+                assert_abs_diff_eq!(*radius, 2.15, epsilon = 1e-3);
             }
             _ => panic!("Expected Circle"),
         }
         match &drawings[1] {
             Drawing::Circle { start, .. } => {
-                assert!((start[0] - 135.128).abs() < 1e-3, "x={}", start[0]);
-                assert!((start[1] - (-58.928)).abs() < 1e-3, "y={}", start[1]);
+                assert_abs_diff_eq!(start[0], 135.128, epsilon = 1e-3);
+                assert_abs_diff_eq!(start[1], -58.928, epsilon = 1e-3);
             }
             _ => panic!("Expected Circle"),
         }

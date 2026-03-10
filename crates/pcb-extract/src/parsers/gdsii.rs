@@ -1247,6 +1247,7 @@ fn polygon_area(pts: &[[f64; 2]]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_gds_float_to_f64() {
@@ -1258,33 +1259,33 @@ mod tests {
         // 1.0 = (1/16) * 16^1 = 0.0625 * 16 = 1.0
         let one = [0x41, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let val = gds_float_to_f64(&one);
-        assert!((val - 1.0).abs() < 1e-10, "Expected 1.0, got {}", val);
+        assert_abs_diff_eq!(val, 1.0, epsilon = 1e-10);
 
         // Test -1.0
         let neg_one = [0xC1, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let val = gds_float_to_f64(&neg_one);
-        assert!((val + 1.0).abs() < 1e-10, "Expected -1.0, got {}", val);
+        assert_abs_diff_eq!(val, -1.0, epsilon = 1e-10);
 
         // Test 1e-9 (1nm database unit): common GDSII unit
         let nanometer = [0x39, 0x44, 0xB8, 0x2F, 0xA0, 0x9B, 0x5A, 0x54];
         let val = gds_float_to_f64(&nanometer);
-        assert!((val - 1e-9).abs() < 1e-18, "Expected 1e-9, got {}", val);
+        assert_abs_diff_eq!(val, 1e-9, epsilon = 1e-18);
 
         // Verify round-trip through f64_to_gds for 1e-6
         let micron_bytes = f64_to_gds(1e-6);
         let val = gds_float_to_f64(&micron_bytes);
-        assert!((val - 1e-6).abs() < 1e-15, "Expected 1e-6, got {}", val);
+        assert_abs_diff_eq!(val, 1e-6, epsilon = 1e-15);
     }
 
     #[test]
     fn test_polygon_area() {
         // Unit square
         let pts = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-        assert!((polygon_area(&pts) - 1.0).abs() < 1e-10);
+        assert_abs_diff_eq!(polygon_area(&pts), 1.0, epsilon = 1e-10);
 
         // Triangle
         let pts = vec![[0.0, 0.0], [2.0, 0.0], [1.0, 2.0]];
-        assert!((polygon_area(&pts) - 2.0).abs() < 1e-10);
+        assert_abs_diff_eq!(polygon_area(&pts), 2.0, epsilon = 1e-10);
     }
 
     /// Build a minimal GDSII binary from scratch for testing.
@@ -1613,28 +1614,24 @@ mod tests {
     fn test_transform_point_identity() {
         let pt = [1.0, 2.0];
         let result = transform_point(pt, [0.0, 0.0], false, 1.0, 0.0);
-        assert!((result[0] - 1.0).abs() < 1e-10);
-        assert!((result[1] - 2.0).abs() < 1e-10);
+        assert_abs_diff_eq!(result[0], 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(result[1], 2.0, epsilon = 1e-10);
     }
 
     #[test]
     fn test_transform_point_translate() {
         let pt = [1.0, 2.0];
         let result = transform_point(pt, [10.0, 20.0], false, 1.0, 0.0);
-        assert!((result[0] - 11.0).abs() < 1e-10);
-        assert!((result[1] - 22.0).abs() < 1e-10);
+        assert_abs_diff_eq!(result[0], 11.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(result[1], 22.0, epsilon = 1e-10);
     }
 
     #[test]
     fn test_transform_point_rotate_90() {
         let pt = [1.0, 0.0];
         let result = transform_point(pt, [0.0, 0.0], false, 1.0, 90.0);
-        assert!(result[0].abs() < 1e-10, "Expected ~0, got {}", result[0]);
-        assert!(
-            (result[1] - 1.0).abs() < 1e-10,
-            "Expected ~1, got {}",
-            result[1]
-        );
+        assert_abs_diff_eq!(result[0], 0.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(result[1], 1.0, epsilon = 1e-10);
     }
 
     #[test]

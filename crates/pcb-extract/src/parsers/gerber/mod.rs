@@ -347,6 +347,7 @@ fn expand_bbox_drawing(bbox: &mut BBox, drawing: &Drawing) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
     use std::io::Write;
 
     /// Create a minimal in-memory zip with Gerber files for testing.
@@ -421,9 +422,9 @@ M02*
         assert_eq!(pcb.edges.len(), 4);
 
         // Bounding box should be ~50x30mm (Y is negated: 0 to -30)
-        assert!((pcb.edges_bbox.maxx - 50.0).abs() < 0.1);
-        assert!((pcb.edges_bbox.miny - (-30.0)).abs() < 0.1);
-        assert!(pcb.edges_bbox.maxy.abs() < 0.1);
+        assert_abs_diff_eq!(pcb.edges_bbox.maxx, 50.0, epsilon = 0.1);
+        assert_abs_diff_eq!(pcb.edges_bbox.miny, -30.0, epsilon = 0.1);
+        assert_abs_diff_eq!(pcb.edges_bbox.maxy, 0.0, epsilon = 0.1);
 
         // Copper top: 1 track segment
         let tracks = pcb.tracks.unwrap();
@@ -588,9 +589,9 @@ M30
                 filled,
                 ..
             } => {
-                assert!((start[0] - 5.0).abs() < 1e-6);
-                assert!((start[1] - (-5.0)).abs() < 1e-6);
-                assert!((radius - 0.15).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 5.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -5.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(*radius, 0.15, epsilon = 1e-6);
                 assert_eq!(*filled, Some(1));
             }
             _ => panic!("Expected Circle"),
@@ -599,7 +600,7 @@ M30
         // Third drill: T02 (0.8mm dia = 0.4mm radius)
         match &drills[2] {
             Drawing::Circle { radius, .. } => {
-                assert!((radius - 0.4).abs() < 1e-6);
+                assert_abs_diff_eq!(*radius, 0.4, epsilon = 1e-6);
             }
             _ => panic!("Expected Circle"),
         }

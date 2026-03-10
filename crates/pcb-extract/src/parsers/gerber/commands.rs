@@ -655,6 +655,7 @@ fn parse_g_code(s: &str) -> Option<GerberCommand> {
 mod tests {
     use super::*;
     use crate::parsers::gerber::lexer::tokenize;
+    use approx::assert_abs_diff_eq;
 
     fn parse(input: &str) -> Vec<GerberCommand> {
         let tokens = tokenize(input);
@@ -936,7 +937,7 @@ mod tests {
                     ApertureTemplate::Macro { name, params } => {
                         assert_eq!(name, "OC8");
                         assert_eq!(params.len(), 1);
-                        assert!((params[0] - 0.1).abs() < 1e-9);
+                        assert_abs_diff_eq!(params[0], 0.1, epsilon = 1e-9);
                     }
                     other => panic!("expected Macro template, got: {other:?}"),
                 }
@@ -1003,8 +1004,8 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         match &cmds[0] {
             GerberCommand::ImageScale { a, b } => {
-                assert!((*a - 2.0).abs() < 1e-9);
-                assert!((*b - 1.5).abs() < 1e-9);
+                assert_abs_diff_eq!(*a, 2.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(*b, 1.5, epsilon = 1e-9);
             }
             other => panic!("expected ImageScale, got: {other:?}"),
         }
