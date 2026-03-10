@@ -241,11 +241,11 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
 
                 fp_pads.push(Pad {
                     layers: pad_layers,
-                    pos: [rel_x, rel_y],
+                    pos: [px, py],
                     size: [pad_w, pad_h],
                     shape,
                     pad_type,
-                    angle: None,
+                    angle: Some(odb_comp.rotation),
                     pin1: if pin_idx == 0 { Some(1) } else { None },
                     net: net_name,
                     offset: None,
