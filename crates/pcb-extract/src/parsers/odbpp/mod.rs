@@ -191,7 +191,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         for odb_comp in &odb_components {
             let fp_index = all_footprints.len();
             let cx = unit.coord_to_mm(odb_comp.x);
-            let cy = unit.coord_to_mm(odb_comp.y);
+            let cy = -unit.coord_to_mm(odb_comp.y);
 
             let mut fp_pads = Vec::new();
             let mut pad_bbox = BBox::empty();
@@ -199,7 +199,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
 
             for (pin_idx, pin) in odb_comp.pins.iter().enumerate() {
                 let px = unit.coord_to_mm(pin.x);
-                let py = unit.coord_to_mm(pin.y);
+                let py = -unit.coord_to_mm(pin.y);
 
                 // Compute position relative to component center, un-rotated
                 let dx = px - cx;

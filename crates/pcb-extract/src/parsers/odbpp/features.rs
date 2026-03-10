@@ -99,7 +99,7 @@ pub fn parse_features(content: &str) -> FeatureData {
                         .iter()
                         .map(|poly| {
                             poly.iter()
-                                .map(|p| [unit.coord_to_mm(p[0]), unit.coord_to_mm(p[1])])
+                                .map(|p| [unit.coord_to_mm(p[0]), -unit.coord_to_mm(p[1])])
                                 .collect()
                         })
                         .collect();
@@ -188,8 +188,8 @@ pub fn parse_features(content: &str) -> FeatureData {
                 ) {
                     let width = symbol_width(&sym_table, sym_idx, &unit);
                     drawings.push(Drawing::Segment {
-                        start: [unit.coord_to_mm(xs), unit.coord_to_mm(ys)],
-                        end: [unit.coord_to_mm(xe), unit.coord_to_mm(ye)],
+                        start: [unit.coord_to_mm(xs), -unit.coord_to_mm(ys)],
+                        end: [unit.coord_to_mm(xe), -unit.coord_to_mm(ye)],
                         width,
                     });
                 }
@@ -205,11 +205,11 @@ pub fn parse_features(content: &str) -> FeatureData {
                     parts[7].parse::<usize>(),
                 ) {
                     let width = symbol_width(&sym_table, sym_idx, &unit);
-                    let start_angle = (ys - yc).atan2(xs - xc).to_degrees();
-                    let end_angle = (ye - yc).atan2(xe - xc).to_degrees();
+                    let start_angle = -(ys - yc).atan2(xs - xc).to_degrees();
+                    let end_angle = -(ye - yc).atan2(xe - xc).to_degrees();
                     let r = ((xs - xc).powi(2) + (ys - yc).powi(2)).sqrt();
                     drawings.push(Drawing::Arc {
-                        start: [unit.coord_to_mm(xc), unit.coord_to_mm(yc)],
+                        start: [unit.coord_to_mm(xc), -unit.coord_to_mm(yc)],
                         radius: unit.coord_to_mm(r),
                         startangle: start_angle,
                         endangle: end_angle,
@@ -230,7 +230,7 @@ pub fn parse_features(content: &str) -> FeatureData {
                         let w = unit.symbol_dim_to_mm(info.width);
                         let h = unit.symbol_dim_to_mm(info.height);
                         let cx = unit.coord_to_mm(x);
-                        let cy = unit.coord_to_mm(y);
+                        let cy = -unit.coord_to_mm(y);
 
                         let (shape_name, drawing) = match info.shape {
                             symbols::SymbolShape::Round => {
@@ -419,7 +419,7 @@ L 0 1.25 3.93 1.25 1 P 0;;ID=123
         match &data.drawings[0] {
             Drawing::Segment { start, end, width } => {
                 assert!((start[0] - 0.0).abs() < 0.001);
-                assert!((start[1] - 1.25 * 25.4).abs() < 0.01);
+                assert!((start[1] + 1.25 * 25.4).abs() < 0.01);
                 assert!((end[0] - 3.93 * 25.4).abs() < 0.01);
                 assert!((width - 25.0 * 0.0254).abs() < 0.001);
             }
