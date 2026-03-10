@@ -634,6 +634,10 @@ fn app() -> Html {
                     s.render_dnp_outline = value;
                     write_storage("dnpOutline", &value.to_string(), &storage_prefix_str);
                 }
+                "edge_cuts" => {
+                    s.render_edge_cuts = value;
+                    write_storage("edgeCutsVisible", &value.to_string(), &storage_prefix_str);
+                }
                 "redraw_on_drag" => {
                     s.redraw_on_drag = value;
                     write_storage("redrawOnDrag", &value.to_string(), &storage_prefix_str);
@@ -1003,27 +1007,21 @@ fn app() -> Html {
                                     }
                                 })}
                             }
-                            <div class="layer-key-item">
-                                <span class="layer-swatch" style="background: var(--silkscreen-edge-color);"></span>
-                                <span>{format!("{}.SilkS", layer_prefix)}</span>
-                            </div>
-                            <div class="layer-key-item">
-                                <span class="layer-swatch" style="background: var(--fabrication-edge-color);"></span>
-                                <span>{format!("{}.Fab", layer_prefix)}</span>
-                            </div>
-                            <div class="layer-key-item">
-                                <span class="layer-swatch" style="background: var(--pcb-edge-color);"></span>
-                                <span>{"Edge.Cuts"}</span>
-                            </div>
                         </div>
                         // ─── Settings ─────────────────────────────────
                         <SettingCheckbox label="Dark mode" checked={settings.dark_mode}
                             on_change={toggle_dark_mode.clone()} is_top={true} />
-                        <SettingCheckbox label="Silkscreen" checked={settings.render_silkscreen}
+                        <SettingCheckbox label={format!("{}.SilkS", layer_prefix)} checked={settings.render_silkscreen}
+                            swatch={Some("var(--silkscreen-edge-color)".to_string())}
                             on_change={{let ts = toggle_setting.clone(); let v = settings.render_silkscreen; Callback::from(move |_| ts.emit(("silkscreen".into(), !v)))}}
                             is_top={false} />
-                        <SettingCheckbox label="Fab layer" checked={settings.render_fabrication}
+                        <SettingCheckbox label={format!("{}.Fab", layer_prefix)} checked={settings.render_fabrication}
+                            swatch={Some("var(--fabrication-edge-color)".to_string())}
                             on_change={{let ts = toggle_setting.clone(); let v = settings.render_fabrication; Callback::from(move |_| ts.emit(("fabrication".into(), !v)))}}
+                            is_top={false} />
+                        <SettingCheckbox label="Edge.Cuts" checked={settings.render_edge_cuts}
+                            swatch={Some("var(--pcb-edge-color)".to_string())}
+                            on_change={{let ts = toggle_setting.clone(); let v = settings.render_edge_cuts; Callback::from(move |_| ts.emit(("edge_cuts".into(), !v)))}}
                             is_top={false} />
                         <SettingCheckbox label="References" checked={settings.render_references}
                             on_change={{let ts = toggle_setting.clone(); let v = settings.render_references; Callback::from(move |_| ts.emit(("references".into(), !v)))}}
@@ -1113,6 +1111,8 @@ struct SettingCheckboxProps {
     on_change: Callback<()>,
     #[prop_or(false)]
     is_top: bool,
+    #[prop_or_default]
+    swatch: Option<String>,
 }
 
 #[function_component(SettingCheckbox)]
@@ -1124,6 +1124,9 @@ fn setting_checkbox(props: &SettingCheckboxProps) -> Html {
     html! {
         <label class={classes!("menu-label", props.is_top.then_some("menu-label-top"))}>
             <input type="checkbox" checked={props.checked} onclick={onclick} />
+            if let Some(ref color) = props.swatch {
+                <span class="layer-swatch" style={format!("background: {};", color)}></span>
+            }
             {&props.label}
         </label>
     }

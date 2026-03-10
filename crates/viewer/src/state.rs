@@ -17,6 +17,7 @@ pub struct Settings {
     pub render_fabrication: bool,
     pub render_tracks: bool,
     pub render_zones: bool,
+    pub render_edge_cuts: bool,
     pub render_dnp_outline: bool,
     pub checkboxes: Vec<String>,
     pub checkbox_stored_refs: HashMap<String, String>,
@@ -46,6 +47,7 @@ impl Default for Settings {
             render_fabrication: true,
             render_tracks: true,
             render_zones: true,
+            render_edge_cuts: true,
             render_dnp_outline: false,
             checkboxes: vec!["Sourced".to_string(), "Placed".to_string()],
             checkbox_stored_refs: HashMap::new(),
@@ -121,6 +123,9 @@ pub fn init_settings(prefix: &str) -> Settings {
     }
     if let Some(v) = read_storage("zonesVisible", prefix) {
         s.render_zones = v != "false";
+    }
+    if let Some(v) = read_storage("edgeCutsVisible", prefix) {
+        s.render_edge_cuts = v != "false";
     }
     if let Some(v) = read_storage("dnpOutline", prefix) {
         s.render_dnp_outline = v == "true";
