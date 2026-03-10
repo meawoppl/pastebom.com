@@ -1340,14 +1340,16 @@ pub fn draw_background(
         marked_footprints,
         cache,
     );
-    draw_edge_cuts(
-        &layer.bg,
-        layer.transform.s * layer.transform.zoom,
-        pcbdata,
-        colors,
-        settings,
-        pcbdata.font_data.as_ref(),
-    );
+    if settings.render_edge_cuts {
+        draw_edge_cuts(
+            &layer.bg,
+            layer.transform.s * layer.transform.zoom,
+            pcbdata,
+            colors,
+            settings,
+            pcbdata.font_data.as_ref(),
+        );
+    }
 
     // Draw drill holes (punch through bg canvas for see-through effect)
     draw_drills(&layer.bg, pcbdata);
