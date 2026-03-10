@@ -702,48 +702,49 @@ fn rotate_point(x: f64, y: f64, angle_deg: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_expr_literal() {
         let expr = parse_expr("42.5").unwrap();
-        assert!((expr.eval(&[]) - 42.5).abs() < 1e-9);
+        assert_abs_diff_eq!(expr.eval(&[]), 42.5, epsilon = 1e-9);
     }
 
     #[test]
     fn test_expr_variable() {
         let expr = parse_expr("$1").unwrap();
-        assert!((expr.eval(&[3.0]) - 3.0).abs() < 1e-9);
+        assert_abs_diff_eq!(expr.eval(&[3.0]), 3.0, epsilon = 1e-9);
     }
 
     #[test]
     fn test_expr_multiply() {
         let expr = parse_expr("1.08239X$1").unwrap();
-        assert!((expr.eval(&[0.1]) - 0.108239).abs() < 1e-9);
+        assert_abs_diff_eq!(expr.eval(&[0.1]), 0.108239, epsilon = 1e-9);
     }
 
     #[test]
     fn test_expr_add_sub() {
         let expr = parse_expr("$1+$2-1.0").unwrap();
-        assert!((expr.eval(&[3.0, 5.0]) - 7.0).abs() < 1e-9);
+        assert_abs_diff_eq!(expr.eval(&[3.0, 5.0]), 7.0, epsilon = 1e-9);
     }
 
     #[test]
     fn test_expr_precedence() {
         // 2 + 3 * 4 = 14, not 20
         let expr = parse_expr("2+3x4").unwrap();
-        assert!((expr.eval(&[]) - 14.0).abs() < 1e-9);
+        assert_abs_diff_eq!(expr.eval(&[]), 14.0, epsilon = 1e-9);
     }
 
     #[test]
     fn test_expr_parentheses() {
         let expr = parse_expr("(2+3)x4").unwrap();
-        assert!((expr.eval(&[]) - 20.0).abs() < 1e-9);
+        assert_abs_diff_eq!(expr.eval(&[]), 20.0, epsilon = 1e-9);
     }
 
     #[test]
     fn test_expr_negative() {
         let expr = parse_expr("-1.5").unwrap();
-        assert!((expr.eval(&[]) - (-1.5)).abs() < 1e-9);
+        assert_abs_diff_eq!(expr.eval(&[]), -1.5, epsilon = 1e-9);
     }
 
     #[test]
@@ -786,9 +787,9 @@ mod tests {
         assert_eq!(drawings.len(), 1);
         match &drawings[0] {
             Drawing::Circle { start, radius, .. } => {
-                assert!((start[0] - 10.0).abs() < 1e-6);
-                assert!((start[1] - 20.0).abs() < 1e-6);
-                assert!((*radius - 0.25).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 10.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], 20.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(*radius, 0.25, epsilon = 1e-6);
             }
             other => panic!("expected Circle, got: {other:?}"),
         }
@@ -841,15 +842,15 @@ mod tests {
     #[test]
     fn test_rotate_point_zero() {
         let (x, y) = rotate_point(1.0, 0.0, 0.0);
-        assert!((x - 1.0).abs() < 1e-9);
-        assert!(y.abs() < 1e-9);
+        assert_abs_diff_eq!(x, 1.0, epsilon = 1e-9);
+        assert_abs_diff_eq!(y, 0.0, epsilon = 1e-9);
     }
 
     #[test]
     fn test_rotate_point_90() {
         let (x, y) = rotate_point(1.0, 0.0, 90.0);
-        assert!(x.abs() < 1e-9);
-        assert!((y - 1.0).abs() < 1e-9);
+        assert_abs_diff_eq!(x, 0.0, epsilon = 1e-9);
+        assert_abs_diff_eq!(y, 1.0, epsilon = 1e-9);
     }
 
     #[test]
@@ -881,10 +882,10 @@ mod tests {
                     startangle,
                     endangle,
                 } => {
-                    assert!((*radius - 0.75).abs() < 1e-6, "mid-radius should be 0.75");
-                    assert!((*width - 0.5).abs() < 1e-6, "ring width should be 0.5");
-                    assert!(start[0].abs() < 1e-9);
-                    assert!(start[1].abs() < 1e-9);
+                    assert_abs_diff_eq!(*radius, 0.75, epsilon = 1e-6);
+                    assert_abs_diff_eq!(*width, 0.5, epsilon = 1e-6);
+                    assert_abs_diff_eq!(start[0], 0.0, epsilon = 1e-9);
+                    assert_abs_diff_eq!(start[1], 0.0, epsilon = 1e-9);
                     assert!(*endangle > *startangle, "arc should sweep forward");
                     let span = endangle - startangle;
                     assert!(span < 90.0, "each quadrant arc must be < 90°");
