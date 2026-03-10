@@ -61,19 +61,20 @@ impl CoordinateConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_default_format_mm() {
         let conv = CoordinateConverter::default();
         // FSLAX24Y24, MM: raw 10000 = 1.0000 mm
-        assert!((conv.to_mm(10000, true) - 1.0).abs() < 1e-9);
-        assert!((conv.to_mm(10000, false) - 1.0).abs() < 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(10000, true), 1.0, epsilon = 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(10000, false), 1.0, epsilon = 1e-9);
     }
 
     #[test]
     fn test_negative_coordinate() {
         let conv = CoordinateConverter::default();
-        assert!((conv.to_mm(-25000, true) - (-2.5)).abs() < 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(-25000, true), -2.5, epsilon = 1e-9);
     }
 
     #[test]
@@ -88,7 +89,7 @@ mod tests {
             units: Units::Inches,
         };
         // raw 10000 = 1.0000 inches = 25.4 mm
-        assert!((conv.to_mm(10000, true) - 25.4).abs() < 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(10000, true), 25.4, epsilon = 1e-9);
     }
 
     #[test]
@@ -103,15 +104,15 @@ mod tests {
             units: Units::Millimeters,
         };
         // raw 100000 = 1.00000 mm
-        assert!((conv.to_mm(100000, true) - 1.0).abs() < 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(100000, true), 1.0, epsilon = 1e-9);
         // raw 1234567 = 12.34567 mm
-        assert!((conv.to_mm(1234567, true) - 12.34567).abs() < 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(1234567, true), 12.34567, epsilon = 1e-9);
     }
 
     #[test]
     fn test_zero() {
         let conv = CoordinateConverter::default();
-        assert!((conv.to_mm(0, true)).abs() < 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(0, true), 0.0, epsilon = 1e-9);
     }
 
     #[test]
@@ -126,6 +127,6 @@ mod tests {
             units: Units::Inches,
         };
         // raw 100000 = 1.00000 inches = 25.4 mm
-        assert!((conv.to_mm(100000, true) - 25.4).abs() < 1e-9);
+        assert_abs_diff_eq!(conv.to_mm(100000, true), 25.4, epsilon = 1e-9);
     }
 }

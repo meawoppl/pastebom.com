@@ -47,6 +47,7 @@ impl ApertureTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_define_and_get() {
@@ -68,7 +69,7 @@ mod tests {
     fn test_stroke_width_circle() {
         let mut table = ApertureTable::default();
         table.define(10, ApertureTemplate::Circle { diameter: 0.254 });
-        assert!((table.stroke_width(10) - 0.254).abs() < 1e-9);
+        assert_abs_diff_eq!(table.stroke_width(10), 0.254, epsilon = 1e-9);
     }
 
     #[test]
@@ -81,13 +82,13 @@ mod tests {
                 y_size: 0.3,
             },
         );
-        assert!((table.stroke_width(11) - 0.3).abs() < 1e-9);
+        assert_abs_diff_eq!(table.stroke_width(11), 0.3, epsilon = 1e-9);
     }
 
     #[test]
     fn test_stroke_width_missing() {
         let table = ApertureTable::default();
-        assert!((table.stroke_width(99)).abs() < 1e-9);
+        assert_abs_diff_eq!(table.stroke_width(99), 0.0, epsilon = 1e-9);
     }
 
     #[test]
@@ -95,6 +96,6 @@ mod tests {
         let table = ApertureTable::default();
         // Missing apertures return None from get and 0.0 from stroke_width
         assert!(table.get(42).is_none());
-        assert!((table.stroke_width(42)).abs() < 1e-9);
+        assert_abs_diff_eq!(table.stroke_width(42), 0.0, epsilon = 1e-9);
     }
 }

@@ -105,48 +105,49 @@ pub fn parse_symbol_name(name: &str) -> Option<SymbolInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_round() {
         let s = parse_symbol_name("r25").unwrap();
         assert_eq!(s.shape, SymbolShape::Round);
-        assert!((s.width - 25.0).abs() < 1e-6);
+        assert_abs_diff_eq!(s.width, 25.0, epsilon = 1e-6);
     }
 
     #[test]
     fn test_square() {
         let s = parse_symbol_name("s40").unwrap();
         assert_eq!(s.shape, SymbolShape::Square);
-        assert!((s.width - 40.0).abs() < 1e-6);
+        assert_abs_diff_eq!(s.width, 40.0, epsilon = 1e-6);
     }
 
     #[test]
     fn test_rect() {
         let s = parse_symbol_name("rect20x60").unwrap();
         assert_eq!(s.shape, SymbolShape::Rect);
-        assert!((s.width - 20.0).abs() < 1e-6);
-        assert!((s.height - 60.0).abs() < 1e-6);
+        assert_abs_diff_eq!(s.width, 20.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(s.height, 60.0, epsilon = 1e-6);
     }
 
     #[test]
     fn test_rect_rounded() {
         let s = parse_symbol_name("rect20x60xr5").unwrap();
         assert_eq!(s.shape, SymbolShape::Rect);
-        assert!((s.width - 20.0).abs() < 1e-6);
+        assert_abs_diff_eq!(s.width, 20.0, epsilon = 1e-6);
     }
 
     #[test]
     fn test_oval() {
         let s = parse_symbol_name("oval141.73x62.99").unwrap();
         assert_eq!(s.shape, SymbolShape::Oval);
-        assert!((s.width - 141.73).abs() < 1e-6);
+        assert_abs_diff_eq!(s.width, 141.73, epsilon = 1e-6);
     }
 
     #[test]
     fn test_round_decimal() {
         let s = parse_symbol_name("r0.5").unwrap();
         assert_eq!(s.shape, SymbolShape::Round);
-        assert!((s.width - 0.5).abs() < 1e-6);
+        assert_abs_diff_eq!(s.width, 0.5, epsilon = 1e-6);
     }
 
     #[test]

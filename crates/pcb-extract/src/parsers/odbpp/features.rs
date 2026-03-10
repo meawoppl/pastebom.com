@@ -358,6 +358,7 @@ fn approximate_arc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_parse_profile() {
@@ -404,10 +405,10 @@ L 0 1.25 3.93 1.25 1 P 0;;ID=123
         assert_eq!(data.drawings.len(), 1);
         match &data.drawings[0] {
             Drawing::Segment { start, end, width } => {
-                assert!((start[0] - 0.0).abs() < 0.001);
-                assert!((start[1] - 1.25 * 25.4).abs() < 0.01);
-                assert!((end[0] - 3.93 * 25.4).abs() < 0.01);
-                assert!((width - 25.0 * 0.0254).abs() < 0.001);
+                assert_abs_diff_eq!(start[0], 0.0, epsilon = 0.001);
+                assert_abs_diff_eq!(start[1], 1.25 * 25.4, epsilon = 0.01);
+                assert_abs_diff_eq!(end[0], 3.93 * 25.4, epsilon = 0.01);
+                assert_abs_diff_eq!(*width, 25.0 * 0.0254, epsilon = 0.001);
             }
             _ => panic!("expected segment"),
         }
@@ -425,10 +426,10 @@ P 2.0 1.0 1 P 0 8 0;;ID=101
         let data = parse_features(content);
         assert_eq!(data.pads.len(), 2);
         assert_eq!(data.pads[0].shape, "circle");
-        assert!((data.pads[0].width_mm - 50.0 * 0.0254).abs() < 0.001);
+        assert_abs_diff_eq!(data.pads[0].width_mm, 50.0 * 0.0254, epsilon = 0.001);
         assert_eq!(data.pads[1].shape, "rect");
-        assert!((data.pads[1].width_mm - 20.0 * 0.0254).abs() < 0.001);
-        assert!((data.pads[1].height_mm - 60.0 * 0.0254).abs() < 0.001);
+        assert_abs_diff_eq!(data.pads[1].width_mm, 20.0 * 0.0254, epsilon = 0.001);
+        assert_abs_diff_eq!(data.pads[1].height_mm, 60.0 * 0.0254, epsilon = 0.001);
     }
 
     #[test]
@@ -436,11 +437,11 @@ P 2.0 1.0 1 P 0 8 0;;ID=101
         let points = approximate_arc(1.0, 0.0, 0.0, 1.0, 0.0, 0.0, false);
         assert!(points.len() >= 3);
         // First point should be near (1,0)
-        assert!((points[0][0] - 1.0).abs() < 0.01);
-        assert!((points[0][1] - 0.0).abs() < 0.01);
+        assert_abs_diff_eq!(points[0][0], 1.0, epsilon = 0.01);
+        assert_abs_diff_eq!(points[0][1], 0.0, epsilon = 0.01);
         // Last point should be near (0,1)
         let last = points.last().unwrap();
-        assert!((last[0] - 0.0).abs() < 0.01);
-        assert!((last[1] - 1.0).abs() < 0.01);
+        assert_abs_diff_eq!(last[0], 0.0, epsilon = 0.01);
+        assert_abs_diff_eq!(last[1], 1.0, epsilon = 0.01);
     }
 }

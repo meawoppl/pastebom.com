@@ -703,6 +703,7 @@ fn find_title(files: &HashMap<String, Vec<u8>>, job_root: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_compute_bbox() {
@@ -712,10 +713,10 @@ mod tests {
             width: 0.0,
         }];
         let bbox = compute_bbox(&edges);
-        assert!((bbox.minx - 0.0).abs() < 1e-6);
-        assert!((bbox.miny - 0.0).abs() < 1e-6);
-        assert!((bbox.maxx - 100.0).abs() < 1e-6);
-        assert!((bbox.maxy - 50.0).abs() < 1e-6);
+        assert_abs_diff_eq!(bbox.minx, 0.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(bbox.miny, 0.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(bbox.maxx, 100.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(bbox.maxy, 50.0, epsilon = 1e-6);
     }
 
     #[test]

@@ -691,6 +691,8 @@ pub fn interpret(commands: &[GerberCommand]) -> Result<GerberLayerOutput, Extrac
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
     use crate::parsers::gerber::commands::ApertureTemplate;
     use crate::parsers::gerber::coord::{CoordinateFormat, Units};
@@ -732,11 +734,11 @@ mod tests {
         assert_eq!(output.drawings.len(), 1);
         match &output.drawings[0] {
             Drawing::Segment { start, end, width } => {
-                assert!((start[0]).abs() < 1e-6);
-                assert!((start[1]).abs() < 1e-6);
-                assert!((end[0] - 1.0).abs() < 1e-6);
-                assert!((end[1]).abs() < 1e-6);
-                assert!((*width - 0.1).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 0.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], 0.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[0], 1.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[1], 0.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(*width, 0.1, epsilon = 1e-6);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -759,9 +761,9 @@ mod tests {
                 filled,
                 ..
             } => {
-                assert!((start[0] - 1.0).abs() < 1e-6);
-                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
-                assert!((*radius - 0.05).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 1.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -2.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(*radius, 0.05, epsilon = 1e-6);
                 assert_eq!(*filled, Some(1));
             }
             other => panic!("expected Circle, got: {other:?}"),
@@ -792,10 +794,10 @@ mod tests {
         match &output.drawings[0] {
             Drawing::Rect { start, end, .. } => {
                 // Center at (1.0, -1.0) (Y negated), rect half-sizes (0.25, 0.15)
-                assert!((start[0] - 0.75).abs() < 1e-6);
-                assert!((start[1] - (-1.15)).abs() < 1e-6);
-                assert!((end[0] - 1.25).abs() < 1e-6);
-                assert!((end[1] - (-0.85)).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 0.75, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -1.15, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[0], 1.25, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[1], -0.85, epsilon = 1e-6);
             }
             other => panic!("expected Rect, got: {other:?}"),
         }
@@ -949,10 +951,10 @@ mod tests {
         assert_eq!(output.drawings.len(), 1);
         match &output.drawings[0] {
             Drawing::Segment { start, end, .. } => {
-                assert!((start[0] - 1.0).abs() < 1e-6);
-                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
-                assert!((end[0] - 3.0).abs() < 1e-6);
-                assert!((end[1] - (-2.0)).abs() < 1e-6); // Y persisted, negated
+                assert_abs_diff_eq!(start[0], 1.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -2.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[0], 3.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[1], -2.0, epsilon = 1e-6);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1053,7 +1055,7 @@ mod tests {
         assert_eq!(output.drawings.len(), 1);
         match &output.drawings[0] {
             Drawing::Segment { end, .. } => {
-                assert!((end[0] - 25.4).abs() < 1e-4);
+                assert_abs_diff_eq!(end[0], 25.4, epsilon = 1e-4);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1184,10 +1186,10 @@ mod tests {
         // First flash at (2.0, 0.0): segment offset by (2.0, 0.0)
         match &output.drawings[0] {
             Drawing::Segment { start, end, .. } => {
-                assert!((start[0] - 2.0).abs() < 1e-6, "start.x: {}", start[0]);
-                assert!((start[1]).abs() < 1e-6);
-                assert!((end[0] - 3.0).abs() < 1e-6, "end.x: {}", end[0]);
-                assert!((end[1]).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 2.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], 0.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[0], 3.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[1], 0.0, epsilon = 1e-6);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1195,10 +1197,10 @@ mod tests {
         // Second flash at (5.0, -3.0): segment offset by (5.0, -3.0) (Y negated)
         match &output.drawings[1] {
             Drawing::Segment { start, end, .. } => {
-                assert!((start[0] - 5.0).abs() < 1e-6);
-                assert!((start[1] - (-3.0)).abs() < 1e-6);
-                assert!((end[0] - 6.0).abs() < 1e-6);
-                assert!((end[1] - (-3.0)).abs() < 1e-6);
+                assert_abs_diff_eq!(start[0], 5.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -3.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[0], 6.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[1], -3.0, epsilon = 1e-6);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1268,9 +1270,9 @@ mod tests {
         assert_eq!(output.drawings.len(), 1);
         match &output.drawings[0] {
             Drawing::Circle { start, radius, .. } => {
-                assert!((start[0] - 1.0).abs() < 1e-6);
-                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
-                assert!((*radius - 0.25).abs() < 1e-6); // diameter 0.5 / 2
+                assert_abs_diff_eq!(start[0], 1.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -2.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(*radius, 0.25, epsilon = 1e-6);
             }
             other => panic!("expected Circle, got: {other:?}"),
         }
@@ -1408,18 +1410,8 @@ mod tests {
 
         let expected = [[0.0, -4.0], [0.0, 0.0], [3.0, -4.0], [3.0, 0.0]]; // Y negated
         for (got, exp) in starts.iter().zip(expected.iter()) {
-            assert!(
-                (got[0] - exp[0]).abs() < 1e-6,
-                "start x: got {} exp {}",
-                got[0],
-                exp[0]
-            );
-            assert!(
-                (got[1] - exp[1]).abs() < 1e-6,
-                "start y: got {} exp {}",
-                got[1],
-                exp[1]
-            );
+            assert_abs_diff_eq!(got[0], exp[0], epsilon = 1e-6);
+            assert_abs_diff_eq!(got[1], exp[1], epsilon = 1e-6);
         }
     }
 
@@ -1470,10 +1462,10 @@ mod tests {
         assert_eq!(output.drawings.len(), 1);
         match &output.drawings[0] {
             Drawing::Segment { start, end, .. } => {
-                assert!((start[0] - (-1.0)).abs() < 1e-6, "X should be negated");
-                assert!((start[1] - (-2.0)).abs() < 1e-6); // Y negated
-                assert!((end[0] - (-3.0)).abs() < 1e-6, "X should be negated");
-                assert!((end[1] - (-2.0)).abs() < 1e-6); // Y negated
+                assert_abs_diff_eq!(start[0], -1.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -2.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[0], -3.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[1], -2.0, epsilon = 1e-6);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
@@ -1501,10 +1493,10 @@ mod tests {
         assert_eq!(output.drawings.len(), 1);
         match &output.drawings[0] {
             Drawing::Segment { start, end, .. } => {
-                assert!((start[0] - 2.0).abs() < 1e-6, "X scaled by 2");
-                assert!((start[1] - (-0.5)).abs() < 1e-6, "Y scaled by 0.5, negated");
-                assert!((end[0] - 4.0).abs() < 1e-6, "X scaled by 2");
-                assert!((end[1] - (-1.0)).abs() < 1e-6, "Y scaled by 0.5, negated");
+                assert_abs_diff_eq!(start[0], 2.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(start[1], -0.5, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[0], 4.0, epsilon = 1e-6);
+                assert_abs_diff_eq!(end[1], -1.0, epsilon = 1e-6);
             }
             other => panic!("expected Segment, got: {other:?}"),
         }
