@@ -196,7 +196,7 @@ fn parse_body_line(
 
         if let Some((x, y)) = parse_coordinate_line(&upper, units, zero_sup, format) {
             drawings.push(Drawing::Circle {
-                start: [x, y],
+                start: [x, -y],
                 radius: tool.diameter_mm / 2.0,
                 width: 0.0,
                 filled: Some(1),
@@ -330,7 +330,7 @@ M30
                 ..
             } => {
                 assert!((start[0] - 14.478).abs() < 1e-6);
-                assert!((start[1] - 10.541).abs() < 1e-6);
+                assert!((start[1] - (-10.541)).abs() < 1e-6);
                 assert!((radius - 0.15).abs() < 1e-6);
                 assert_eq!(*filled, Some(1));
             }
@@ -341,7 +341,7 @@ M30
         match &drawings[2] {
             Drawing::Circle { start, radius, .. } => {
                 assert!((start[0] - 15.0).abs() < 1e-6);
-                assert!((start[1] - 10.0).abs() < 1e-6);
+                assert!((start[1] - (-10.0)).abs() < 1e-6);
                 assert!((radius - 0.4).abs() < 1e-6);
             }
             _ => panic!("Expected Circle"),
@@ -365,7 +365,7 @@ M30
             Drawing::Circle { start, radius, .. } => {
                 // 1.0 inch = 25.4mm
                 assert!((start[0] - 25.4).abs() < 1e-3);
-                assert!((start[1] - 25.4).abs() < 1e-3);
+                assert!((start[1] - (-25.4)).abs() < 1e-3);
                 // 0.010 inch diameter = 0.254mm diameter = 0.127mm radius
                 assert!((radius - 0.127).abs() < 1e-3);
             }
@@ -393,7 +393,7 @@ M30
                 // against the decimal point. Pad left to 6 digits:
                 // "14478" → "014478" → 14.478mm
                 assert!((start[0] - 14.478).abs() < 1e-3);
-                assert!((start[1] - 10.541).abs() < 1e-3);
+                assert!((start[1] - (-10.541)).abs() < 1e-3);
             }
             _ => panic!("Expected Circle"),
         }
@@ -417,7 +417,7 @@ M30
                 // LZ (leading zeros suppressed): pad left to 6 digits
                 // "14478" → "014478" → 014.478 = 14.478mm
                 assert!((start[0] - 14.478).abs() < 1e-3);
-                assert!((start[1] - 10.541).abs() < 1e-3);
+                assert!((start[1] - (-10.541)).abs() < 1e-3);
             }
             _ => panic!("Expected Circle"),
         }
@@ -457,7 +457,7 @@ M30
         match &drawings[0] {
             Drawing::Circle { start, .. } => {
                 assert!((start[0] - 10.0).abs() < 1e-6);
-                assert!((start[1] - 20.0).abs() < 1e-6);
+                assert!((start[1] - (-20.0)).abs() < 1e-6);
             }
             _ => panic!("Expected Circle"),
         }
@@ -526,7 +526,7 @@ M30
         match &drawings[0] {
             Drawing::Circle { start, radius, .. } => {
                 assert!((start[0] - 4.572).abs() < 1e-3, "x={}", start[0]);
-                assert!((start[1] - 4.572).abs() < 1e-3, "y={}", start[1]);
+                assert!((start[1] - (-4.572)).abs() < 1e-3, "y={}", start[1]);
                 assert!((radius - 2.15).abs() < 1e-3);
             }
             _ => panic!("Expected Circle"),
@@ -534,7 +534,7 @@ M30
         match &drawings[1] {
             Drawing::Circle { start, .. } => {
                 assert!((start[0] - 135.128).abs() < 1e-3, "x={}", start[0]);
-                assert!((start[1] - 58.928).abs() < 1e-3, "y={}", start[1]);
+                assert!((start[1] - (-58.928)).abs() < 1e-3, "y={}", start[1]);
             }
             _ => panic!("Expected Circle"),
         }
