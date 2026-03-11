@@ -185,9 +185,20 @@
     <div class="page-layout">
         <div class="main-column">
             <div class="upload-zone" id="dropzone">
-                <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd,.pcbdoc,.zip,.gds,.gds2">
+                <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd,.pcbdoc,.zip,.tgz,.tar.gz,.gds,.gds2">
                 <p>Drop your PCB file here or click to browse</p>
-                <p class="formats">Supports: KiCad (.kicad_pcb), EasyEDA (.json), Eagle (.brd, .fbrd), Altium (.PcbDoc), Gerber (.zip), GDSII (.gds, .gds2)</p>
+                <div class="formats">
+                    Supported formats:
+                    <ul style="text-align: left; display: inline-block; margin: 0.5rem 0 0 0; padding-left: 1.5rem;">
+                        <li>KiCad (.kicad_pcb)</li>
+                        <li>EasyEDA (.json)</li>
+                        <li>Eagle (.brd, .fbrd)</li>
+                        <li>Altium (.PcbDoc)</li>
+                        <li>Gerber (.zip)</li>
+                        <li>ODB++ (.tgz, .zip, .tar.gz)</li>
+                        <li>GDSII (.gds, .gds2)</li>
+                    </ul>
+                </div>
             </div>
             <div class="upload-options">
                 <input type="checkbox" id="secretCheck">
