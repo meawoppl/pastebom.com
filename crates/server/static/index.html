@@ -168,7 +168,7 @@
             color: #4ecca3;
             text-decoration: none;
             display: block;
-            max-width: 160px;
+            max-width: 300px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
@@ -206,11 +206,11 @@
             </div>
 
             <div class="result" id="result"></div>
-            <div class="history" id="history"></div>
+            <div id="recentPublic"></div>
         </div>
 
         <div class="sidebar">
-            <div class="sidebar-section" id="recentPublic"></div>
+            <div class="sidebar-section" id="history"></div>
         </div>
     </div>
 
@@ -272,6 +272,18 @@
             return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
         }
 
+        function detectFormat(filename) {
+            const name = filename.toLowerCase();
+            if (name.endsWith('.kicad_pcb')) return 'KiCad';
+            if (name.endsWith('.json')) return 'EasyEDA';
+            if (name.endsWith('.brd') || name.endsWith('.fbrd')) return 'Eagle';
+            if (name.endsWith('.pcbdoc')) return 'Altium';
+            if (name.endsWith('.gds') || name.endsWith('.gds2')) return 'GDSII';
+            if (name.endsWith('.tgz') || name.endsWith('.tar.gz')) return 'ODB++';
+            if (name.endsWith('.zip')) return 'Gerber/ODB++';
+            return '';
+        }
+
         async function loadRecent() {
             try {
                 const resp = await fetch('/api/recent');
@@ -280,8 +292,10 @@
                 const rows = entries.map(e => {
                     const ago = timeAgo(e.created);
                     const size = e.file_size != null ? formatSize(e.file_size) : '';
+                    const fmt = detectFormat(e.filename);
                     return `<tr>
                         <td><a href="/b/${e.id}" target="_blank">${e.filename}</a></td>
+                        <td>${fmt}</td>
                         <td class="num">${e.components}</td>
                         <td class="num">${size}</td>
                         <td class="age">${ago}</td>
@@ -292,6 +306,7 @@
                     <table class="public-table">
                         <thead><tr>
                             <th>Name</th>
+                            <th>Format</th>
                             <th class="num">Components</th>
                             <th class="num">Size</th>
                             <th>Age</th>
