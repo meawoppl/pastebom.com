@@ -40,6 +40,7 @@ pub fn router() -> Router<AppState> {
         .route("/b/{id}", get(get_bom))
         .route("/b/{id}/data", get(get_bom_data))
         .route("/b/{id}/meta", get(get_meta))
+        .route("/b/{id}/thumb.svg", get(get_thumb_svg))
         .route("/health", get(health))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD))
 }
@@ -263,6 +264,64 @@ async fn get_meta(
     let meta: BomMeta = serde_json::from_slice(&meta_bytes)
         .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Invalid metadata"))?;
     Ok(Json(meta))
+}
+
+/// Serve SVG thumbnail at /b/{id}/thumb.svg with S3 pull-through cache.
+async fn get_thumb_svg(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let thumb_key = format!("thumbnails/{id}.svg");
+
+    // Try cache first
+    if let Ok(cached) = state.s3.get_object(&thumb_key).await {
+        return Ok((
+            StatusCode::OK,
+            [
+                ("content-type", "image/svg+xml"),
+                ("cache-control", "public, max-age=86400"),
+            ],
+            cached,
+        ));
+    }
+
+    // Cache miss — load PcbData and render
+    let data_key = format!("boms/{id}.json");
+    let json_bytes = state
+        .s3
+        .get_object(&data_key)
+        .await
+        .map_err(|_| error_response(StatusCode::NOT_FOUND, "BOM not found"))?;
+
+    let pcb_data: pcb_extract::types::PcbData =
+        serde_json::from_slice(&json_bytes).map_err(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to parse BOM data",
+            )
+        })?;
+
+    let svg = pcb_extract::thumbnail::render_svg(&pcb_data);
+    let svg_bytes = svg.into_bytes();
+
+    // Store in cache (fire and forget)
+    let s3 = state.s3.clone();
+    let cache_key = thumb_key.clone();
+    let cache_bytes = svg_bytes.clone();
+    tokio::spawn(async move {
+        let _ = s3
+            .put_object(&cache_key, cache_bytes, "image/svg+xml")
+            .await;
+    });
+
+    Ok((
+        StatusCode::OK,
+        [
+            ("content-type", "image/svg+xml"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        svg_bytes,
+    ))
 }
 
 fn error_response(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
