@@ -1,5 +1,5 @@
 use serde::ser::{SerializeMap, Serializer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Round a float to N decimal places.
@@ -37,7 +37,7 @@ fn serialize_opt_point<S: Serializer>(p: &Option<[f64; 2]>, s: S) -> Result<S::O
 
 // ─── Top-level PcbData ───────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcbData {
     pub edges_bbox: BBox,
     pub edges: Vec<Drawing>,
@@ -62,7 +62,7 @@ pub struct PcbData {
 
 // ─── Bounding Box ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BBox {
     #[serde(serialize_with = "serialize_f64_rounded")]
     pub minx: f64,
@@ -94,14 +94,14 @@ impl BBox {
 
 // ─── Drawings container ──────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Drawings {
     pub silkscreen: LayerData<Vec<Drawing>>,
     pub fabrication: LayerData<Vec<Drawing>>,
 }
 
 /// Front/Back/Inner layer data.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerData<T> {
     #[serde(rename = "F")]
     pub front: T,
@@ -113,7 +113,7 @@ pub struct LayerData<T> {
 
 // ─── Drawing types ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Drawing {
     Segment {
@@ -180,7 +180,7 @@ pub enum Drawing {
 }
 
 /// Text drawing — not tagged with "type" since ibom outputs bare objects.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextDrawing {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub svgpath: Option<String>,
@@ -208,14 +208,14 @@ pub struct TextDrawing {
 }
 
 /// A drawing that can be either a shape or text (footprint drawings use this).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FootprintDrawingItem {
     Shape(Drawing),
     Text(TextDrawing),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FootprintDrawing {
     pub layer: String,
     pub drawing: FootprintDrawingItem,
@@ -223,7 +223,7 @@ pub struct FootprintDrawing {
 
 // ─── Footprint ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Footprint {
     #[serde(rename = "ref")]
     pub ref_: String,
@@ -235,7 +235,7 @@ pub struct Footprint {
     pub layer: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FootprintBBox {
     #[serde(serialize_with = "serialize_point")]
     pub pos: [f64; 2],
@@ -249,7 +249,7 @@ pub struct FootprintBBox {
 
 // ─── Pad ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pad {
     pub layers: Vec<String>,
     #[serde(serialize_with = "serialize_point")]
@@ -300,7 +300,7 @@ pub struct Pad {
 
 // ─── Track ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Track {
     Segment {
@@ -336,7 +336,7 @@ pub enum Track {
 
 // ─── Zone ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Zone {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polygons: Option<Vec<Vec<[f64; 2]>>>,
@@ -357,7 +357,7 @@ pub struct Zone {
 
 pub type FontData = HashMap<String, GlyphData>;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlyphData {
     pub w: f64,
     pub l: Vec<Vec<[f64; 2]>>,
@@ -365,7 +365,7 @@ pub struct GlyphData {
 
 // ─── Metadata ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
     pub title: String,
     pub revision: String,
@@ -375,7 +375,7 @@ pub struct Metadata {
 
 // ─── BOM data ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BomData {
     pub both: Vec<Vec<(String, usize)>>,
     #[serde(rename = "F")]
@@ -387,7 +387,7 @@ pub struct BomData {
 }
 
 /// Map of footprint index (as string) to field values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct BomFields(pub HashMap<String, Vec<String>>);
 
 impl Serialize for BomFields {
