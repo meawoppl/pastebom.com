@@ -176,6 +176,8 @@
         .public-table td a:hover { text-decoration: underline; }
         .public-table .num { text-align: right; color: #aaa; }
         .public-table .age { color: #666; white-space: nowrap; }
+        .thumb-cell { width: 60px; padding: 0.25rem 0.5rem; }
+        .thumb-img { width: 56px; height: auto; border-radius: 4px; border: 1px solid #2a2a4e; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -294,6 +296,7 @@
                     const size = e.file_size != null ? formatSize(e.file_size) : '';
                     const fmt = detectFormat(e.filename);
                     return `<tr>
+                        <td class="thumb-cell"><a href="/b/${e.id}" target="_blank"><img src="/b/${e.id}/thumb.svg" class="thumb-img" loading="lazy" alt=""></a></td>
                         <td><a href="/b/${e.id}" target="_blank">${e.filename}</a></td>
                         <td>${fmt}</td>
                         <td class="num">${e.components}</td>
@@ -305,6 +308,7 @@
                     <h2>Public Pastes</h2>
                     <table class="public-table">
                         <thead><tr>
+                            <th></th>
                             <th>Name</th>
                             <th>Format</th>
                             <th class="num">Components</th>
