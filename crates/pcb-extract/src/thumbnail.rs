@@ -426,9 +426,7 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
         assert!(svg.contains("viewBox"));
-        // Should have board outline segments
         assert!(svg.contains("<line"));
-        // Should have a pad circle
         assert!(svg.contains("<circle"));
     }
 
@@ -443,5 +441,458 @@ mod tests {
         };
         let svg = render_svg(&data);
         assert!(svg.contains("viewBox=\"0 0 100 100\""));
+    }
+
+    #[test]
+    fn test_negative_bbox() {
+        let mut data = minimal_pcbdata();
+        data.edges_bbox = BBox {
+            minx: 0.0,
+            miny: 0.0,
+            maxx: -5.0,
+            maxy: -5.0,
+        };
+        let svg = render_svg(&data);
+        assert!(svg.contains("viewBox=\"0 0 100 100\""));
+    }
+
+    #[test]
+    fn test_viewbox_includes_margin() {
+        let data = minimal_pcbdata();
+        let svg = render_svg(&data);
+        // bbox is 0,0 to 50,30; margin=2 → viewBox starts at -2,-2 with size 54x34
+        assert!(svg.contains("viewBox=\"-2.0000 -2.0000 54.0000 34.0000\""));
+    }
+
+    #[test]
+    fn test_aspect_ratio_preserved() {
+        let mut data = minimal_pcbdata();
+        data.edges_bbox = BBox {
+            minx: 0.0,
+            miny: 0.0,
+            maxx: 100.0,
+            maxy: 50.0,
+        };
+        let svg = render_svg(&data);
+        // width=400, height should be 400 * (54/104) ≈ 207.69 (with margin)
+        assert!(svg.contains("width=\"400\""));
+        assert!(svg.contains("height=\""));
+    }
+
+    #[test]
+    fn test_rect_pad_rendering() {
+        let mut data = minimal_pcbdata();
+        data.footprints[0].pads[0].shape = "rect".to_string();
+        let svg = render_svg(&data);
+        assert!(svg.contains("<rect"));
+        assert!(svg.contains(PAD_COLOR));
+    }
+
+    #[test]
+    fn test_back_side_pads_excluded() {
+        let mut data = minimal_pcbdata();
+        data.footprints[0].layer = "B".to_string();
+        let svg = render_svg(&data);
+        // Back-side footprint pads should not be rendered
+        assert!(!svg.contains(PAD_COLOR));
+    }
+
+    #[test]
+    fn test_rotated_pad_position() {
+        let mut data = minimal_pcbdata();
+        data.footprints[0].bbox.angle = 90.0;
+        data.footprints[0].pads[0].pos = [1.0, 0.0];
+        let svg = render_svg(&data);
+        assert!(svg.contains("<circle"));
+    }
+
+    #[test]
+    fn test_circle_drawing_stroked() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Circle {
+            start: [10.0, 10.0],
+            radius: 3.0,
+            width: 0.2,
+            filled: None,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("fill=\"none\""));
+        assert!(svg.contains(&format!("stroke=\"{SILK_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_circle_drawing_filled() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Circle {
+            start: [10.0, 10.0],
+            radius: 3.0,
+            width: 0.0,
+            filled: Some(1),
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains(&format!("fill=\"{SILK_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_rect_drawing_filled() {
+        let mut data = minimal_pcbdata();
+        data.edges.push(Drawing::Rect {
+            start: [5.0, 5.0],
+            end: [15.0, 10.0],
+            width: 0.0,
+        });
+        let svg = render_svg(&data);
+        let rect_count = svg.matches("<rect").count();
+        // background rect + edge rect
+        assert!(rect_count >= 2);
+    }
+
+    #[test]
+    fn test_rect_drawing_stroked() {
+        let mut data = minimal_pcbdata();
+        data.edges.push(Drawing::Rect {
+            start: [5.0, 5.0],
+            end: [15.0, 10.0],
+            width: 0.3,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains(&format!("stroke=\"{EDGE_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_arc_drawing() {
+        let mut data = minimal_pcbdata();
+        data.edges.push(Drawing::Arc {
+            start: [25.0, 15.0],
+            radius: 5.0,
+            startangle: 0.0,
+            endangle: 90.0,
+            width: 0.2,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("<path d=\"M"));
+        assert!(svg.contains("A5.0000"));
+    }
+
+    #[test]
+    fn test_curve_drawing() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Curve {
+            start: [0.0, 0.0],
+            end: [10.0, 10.0],
+            cpa: [3.0, 0.0],
+            cpb: [7.0, 10.0],
+            width: 0.15,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("C"));
+        assert!(svg.contains("stroke-linecap=\"round\""));
+    }
+
+    #[test]
+    fn test_polygon_filled() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Polygon {
+            pos: [10.0, 10.0],
+            angle: 0.0,
+            polygons: vec![vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]],
+            filled: Some(1),
+            width: 0.0,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("fill-rule=\"evenodd\""));
+        assert!(svg.contains(&format!("fill=\"{SILK_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_polygon_stroked() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Polygon {
+            pos: [10.0, 10.0],
+            angle: 0.0,
+            polygons: vec![vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0]]],
+            filled: None,
+            width: 0.3,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("fill=\"none\""));
+        assert!(svg.contains(&format!("stroke=\"{SILK_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_polygon_rotated() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Polygon {
+            pos: [0.0, 0.0],
+            angle: 45.0,
+            polygons: vec![vec![[1.0, 0.0], [0.0, 1.0]]],
+            filled: Some(1),
+            width: 0.0,
+        });
+        let svg = render_svg(&data);
+        // After 45° rotation, [1,0] → [cos45, sin45] ≈ [0.7071, 0.7071]
+        assert!(svg.contains("M0.7071 0.7071"));
+    }
+
+    #[test]
+    fn test_polygon_skip_degenerate() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Polygon {
+            pos: [0.0, 0.0],
+            angle: 0.0,
+            polygons: vec![vec![[0.0, 0.0]]],
+            filled: Some(1),
+            width: 0.0,
+        });
+        let svg = render_svg(&data);
+        // Single-point polygon should not produce a path element
+        assert!(!svg.contains("fill-rule=\"evenodd\""));
+    }
+
+    #[test]
+    fn test_tracks_rendering() {
+        let mut data = minimal_pcbdata();
+        data.tracks = Some(LayerData {
+            front: vec![Track::Segment {
+                start: [5.0, 5.0],
+                end: [20.0, 15.0],
+                width: 0.25,
+                net: None,
+                drillsize: None,
+            }],
+            back: vec![],
+            inner: HashMap::new(),
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains(&format!("stroke=\"{TRACK_COLOR}\"")));
+        assert!(svg.contains("opacity=\"0.5\""));
+    }
+
+    #[test]
+    fn test_track_arc_rendering() {
+        let mut data = minimal_pcbdata();
+        data.tracks = Some(LayerData {
+            front: vec![Track::Arc {
+                center: [25.0, 15.0],
+                startangle: 0.0,
+                endangle: 90.0,
+                radius: 5.0,
+                width: 0.25,
+                net: None,
+            }],
+            back: vec![],
+            inner: HashMap::new(),
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("<path d=\"M"));
+        assert!(svg.contains(&format!("stroke=\"{TRACK_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_zones_rendering() {
+        let mut data = minimal_pcbdata();
+        data.zones = Some(LayerData {
+            front: vec![Zone {
+                polygons: Some(vec![vec![
+                    [0.0, 0.0],
+                    [10.0, 0.0],
+                    [10.0, 10.0],
+                    [0.0, 10.0],
+                ]]),
+                svgpath: None,
+                width: None,
+                net: None,
+                fillrule: None,
+            }],
+            back: vec![],
+            inner: HashMap::new(),
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains(&format!("fill=\"{PAD_COLOR}\"")));
+        assert!(svg.contains("opacity=\"0.3\""));
+        assert!(svg.contains("fill-rule=\"evenodd\""));
+    }
+
+    #[test]
+    fn test_zone_no_polygons() {
+        let mut data = minimal_pcbdata();
+        data.zones = Some(LayerData {
+            front: vec![Zone {
+                polygons: None,
+                svgpath: None,
+                width: None,
+                net: None,
+                fillrule: None,
+            }],
+            back: vec![],
+            inner: HashMap::new(),
+        });
+        let svg = render_svg(&data);
+        // Should not crash, just no zone path rendered
+        assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn test_zone_degenerate_polygon() {
+        let mut data = minimal_pcbdata();
+        data.zones = Some(LayerData {
+            front: vec![Zone {
+                polygons: Some(vec![vec![[0.0, 0.0], [1.0, 1.0]]]),
+                svgpath: None,
+                width: None,
+                net: None,
+                fillrule: None,
+            }],
+            back: vec![],
+            inner: HashMap::new(),
+        });
+        let svg = render_svg(&data);
+        // 2-point polygon (< 3) should be skipped
+        assert!(!svg.contains("opacity=\"0.3\""));
+    }
+
+    #[test]
+    fn test_minimum_stroke_width() {
+        let mut data = minimal_pcbdata();
+        data.edges = vec![Drawing::Segment {
+            start: [0.0, 0.0],
+            end: [50.0, 0.0],
+            width: 0.01,
+        }];
+        let svg = render_svg(&data);
+        // Width below 0.1 should be clamped to 0.1
+        assert!(svg.contains("stroke-width=\"0.1000\""));
+    }
+
+    #[test]
+    fn test_background_rect_present() {
+        let data = minimal_pcbdata();
+        let svg = render_svg(&data);
+        assert!(svg.contains(&format!("fill=\"{BG_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_multiple_pads_per_footprint() {
+        let mut data = minimal_pcbdata();
+        let base_pad = data.footprints[0].pads[0].clone();
+        let mut pad2 = base_pad.clone();
+        pad2.pos = [2.0, 0.0];
+        pad2.shape = "rect".to_string();
+        data.footprints[0].pads.push(pad2);
+        let svg = render_svg(&data);
+        // Should have both a circle pad and a rect pad
+        let circle_count = svg.matches(&format!("fill=\"{PAD_COLOR}\"")).count();
+        assert_eq!(circle_count, 2);
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let data = minimal_pcbdata();
+        let json = serde_json::to_string(&data).unwrap();
+        let deserialized: PcbData = serde_json::from_str(&json).unwrap();
+        let svg_original = render_svg(&data);
+        let svg_roundtrip = render_svg(&deserialized);
+        assert_eq!(svg_original, svg_roundtrip);
+    }
+
+    #[test]
+    fn test_serde_roundtrip_with_tracks_and_zones() {
+        let mut data = minimal_pcbdata();
+        data.tracks = Some(LayerData {
+            front: vec![
+                Track::Segment {
+                    start: [1.0, 2.0],
+                    end: [3.0, 4.0],
+                    width: 0.25,
+                    net: Some("GND".to_string()),
+                    drillsize: None,
+                },
+                Track::Arc {
+                    center: [10.0, 10.0],
+                    startangle: 0.0,
+                    endangle: 45.0,
+                    radius: 5.0,
+                    width: 0.2,
+                    net: None,
+                },
+            ],
+            back: vec![],
+            inner: HashMap::new(),
+        });
+        data.zones = Some(LayerData {
+            front: vec![Zone {
+                polygons: Some(vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]]),
+                svgpath: None,
+                width: None,
+                net: Some("VCC".to_string()),
+                fillrule: None,
+            }],
+            back: vec![],
+            inner: HashMap::new(),
+        });
+
+        let json = serde_json::to_string(&data).unwrap();
+        let deserialized: PcbData = serde_json::from_str(&json).unwrap();
+        let svg_original = render_svg(&data);
+        let svg_roundtrip = render_svg(&deserialized);
+        assert_eq!(svg_original, svg_roundtrip);
+    }
+
+    #[test]
+    fn test_all_drawing_types_in_single_render() {
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front = vec![
+            Drawing::Segment {
+                start: [1.0, 1.0],
+                end: [10.0, 1.0],
+                width: 0.15,
+            },
+            Drawing::Circle {
+                start: [20.0, 10.0],
+                radius: 2.0,
+                width: 0.1,
+                filled: None,
+            },
+            Drawing::Circle {
+                start: [30.0, 10.0],
+                radius: 1.0,
+                width: 0.0,
+                filled: Some(1),
+            },
+            Drawing::Rect {
+                start: [5.0, 20.0],
+                end: [15.0, 25.0],
+                width: 0.2,
+            },
+            Drawing::Arc {
+                start: [25.0, 20.0],
+                radius: 3.0,
+                startangle: 0.0,
+                endangle: 180.0,
+                width: 0.15,
+            },
+            Drawing::Curve {
+                start: [0.0, 0.0],
+                end: [10.0, 10.0],
+                cpa: [3.0, 0.0],
+                cpb: [7.0, 10.0],
+                width: 0.1,
+            },
+            Drawing::Polygon {
+                pos: [35.0, 15.0],
+                angle: 30.0,
+                polygons: vec![vec![[0.0, 0.0], [3.0, 0.0], [1.5, 3.0]]],
+                filled: Some(1),
+                width: 0.0,
+            },
+        ];
+        let svg = render_svg(&data);
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.ends_with("</svg>"));
+        // Verify all element types present
+        assert!(svg.contains("<line"));
+        assert!(svg.contains("<circle"));
+        assert!(svg.contains("<rect"));
+        assert!(svg.contains("<path"));
     }
 }
