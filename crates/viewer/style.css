@@ -207,6 +207,8 @@ body {
   color: #aaa;
 }
 
+/* Pull tabs live outside sidebar divs for mobile accessibility */
+
 .pull-tab {
   position: absolute;
   top: 50%;
@@ -224,8 +226,7 @@ body {
   padding: 0;
   font-size: 16px;
   color: #666;
-  z-index: 11;
-  transition: background 0.2s, color 0.2s, border-color 0.65s;
+  z-index: 15;
   border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
@@ -246,15 +247,25 @@ body {
 }
 
 .pull-tab-left {
-  right: -25px;
+  left: 0;
   border-radius: 0 8px 8px 0;
   border-left: none;
+  transition: left 0.3s ease;
+}
+
+.pull-tab-left.tab-open {
+  left: calc(12px + 380px);
 }
 
 .pull-tab-right {
-  left: -25px;
+  right: 0;
   border-radius: 8px 0 0 8px;
   border-right: none;
+  transition: right 0.3s ease;
+}
+
+.pull-tab-right.tab-open {
+  right: calc(12px + 270px);
 }
 
 .sidebar-controls {
@@ -526,6 +537,33 @@ button#bom-netlist-btn {
   border-color: rgba(255, 255, 255, 0.15);
 }
 
+.layer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+  font-family: Consolas, "DejaVu Sans Mono", Monaco, monospace;
+  cursor: pointer;
+}
+
+.layer-toggle:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.dark .layer-toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.layer-toggle input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.layer-toggle-label {
+  user-select: none;
+}
+
 /* ─── Settings Controls ─────────────────────────────────────────── */
 
 .flexbox {
@@ -686,4 +724,49 @@ a {
 
 .dark .version-badge {
   color: rgba(255, 255, 255, 0.15);
+}
+
+/* ─── Mobile Responsive ──────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .bom-sidebar {
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 85vw;
+    max-width: 85vw;
+    min-width: unset;
+    border-radius: 0 12px 12px 0;
+    resize: none;
+  }
+
+  .view-sidebar {
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 75vw;
+    border-radius: 12px 0 0 12px;
+  }
+
+  .bom-sidebar.sidebar-closed {
+    transform: translateX(calc(-100% - 12px));
+  }
+
+  .view-sidebar.sidebar-closed {
+    transform: translateX(calc(100% + 12px));
+  }
+
+  .pull-tab-left.tab-open {
+    left: 85vw;
+  }
+
+  .pull-tab-right.tab-open {
+    right: 75vw;
+  }
+
+  .flip-btn {
+    top: 8px;
+    padding: 6px 20px;
+    font-size: 12px;
+  }
 }

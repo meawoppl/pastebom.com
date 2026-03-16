@@ -646,6 +646,10 @@ fn app() -> Html {
                         &storage_prefix_str,
                     );
                 }
+                "edge_cuts" => {
+                    s.render_edge_cuts = value;
+                    write_storage("edgeCutsVisible", &value.to_string(), &storage_prefix_str);
+                }
                 "highlight_row_on_click" => {
                     s.highlight_row_on_click = value;
                     write_storage(
@@ -845,13 +849,20 @@ fn app() -> Html {
             // ─── Flip button ───────────────────────────────────
             <button class="flip-btn" onclick={on_flip}>{layer_label}</button>
 
+            // ─── Pull tabs (outside sidebars for mobile accessibility) ──
+                <button class={classes!("pull-tab", "pull-tab-left", (*bom_sidebar_open).then_some("tab-open"))} onclick={{
+                    let s = bom_sidebar_open.clone();
+                    let open = *bom_sidebar_open;
+                    Callback::from(move |_: MouseEvent| s.set(!open))
+                }}>{if *bom_sidebar_open { "\u{2039}" } else { "\u{203a}" }}</button>
+                <button class={classes!("pull-tab", "pull-tab-right", (*view_sidebar_open).then_some("tab-open"))} onclick={{
+                    let s = view_sidebar_open.clone();
+                    let open = *view_sidebar_open;
+                    Callback::from(move |_: MouseEvent| s.set(!open))
+                }}>{if *view_sidebar_open { "\u{203a}" } else { "\u{2039}" }}</button>
+
             // ─── BOM sidebar (left) ────────────────────────────
                 <div class={classes!("sidebar", "bom-sidebar", (!*bom_sidebar_open).then_some("sidebar-closed"))}>
-                    <button class="pull-tab pull-tab-left" onclick={{
-                        let s = bom_sidebar_open.clone();
-                        let open = *bom_sidebar_open;
-                        Callback::from(move |_: MouseEvent| s.set(!open))
-                    }}>{if *bom_sidebar_open { "\u{2039}" } else { "\u{203a}" }}</button>
                     <div class="sidebar-header">
                         <div>
                             <div class="sidebar-title">{
@@ -969,11 +980,6 @@ fn app() -> Html {
 
             // ─── View sidebar (right) ──────────────────────────
                 <div class={classes!("sidebar", "view-sidebar", (!*view_sidebar_open).then_some("sidebar-closed"))}>
-                    <button class="pull-tab pull-tab-right" onclick={{
-                        let s = view_sidebar_open.clone();
-                        let open = *view_sidebar_open;
-                        Callback::from(move |_: MouseEvent| s.set(!open))
-                    }}>{if *view_sidebar_open { "\u{203a}" } else { "\u{2039}" }}</button>
                     <div class="sidebar-header">
                         <span class="sidebar-title">{"View"}</span>
                     </div>
@@ -981,76 +987,68 @@ fn app() -> Html {
                         // ─── Layer color key ──────────────────────────
                         <div class="layer-key">
                             <div class="layer-key-title">{format!("Layers ({})", layer_label)}</div>
-                            <div class="layer-key-item">
-                                <span class="layer-swatch" style="background: var(--pad-color);"></span>
-                                <span>{format!("{}.Cu (pads)", layer_prefix)}</span>
-                            </div>
+                            <LayerToggle
+                                label={format!("{}.Cu (pads)", layer_prefix)}
+                                color="var(--pad-color)"
+                                checked={settings.render_pads}
+                                on_change={{let ts = toggle_setting.clone(); let v = settings.render_pads; Callback::from(move |_| ts.emit(("pads".into(), !v)))}}
+                            />
                             if has_tracks {
-                                <div class="layer-key-item">
-                                    <span class="layer-swatch" style={format!("background: var(--track-color-{});", if *board_flipped { "back" } else { "front" })}></span>
-                                    <span>{format!("{}.Cu (tracks)", layer_prefix)}</span>
-                                </div>
-                                <div class="layer-key-item">
-                                    <span class="layer-swatch" style={format!("background: var(--zone-color-{});", if *board_flipped { "back" } else { "front" })}></span>
-                                    <span>{format!("{}.Cu (zones)", layer_prefix)}</span>
-                                </div>
+                                <LayerToggle
+                                    label={format!("{}.Cu (tracks)", layer_prefix)}
+                                    color={format!("var(--track-color-{})", if *board_flipped { "back" } else { "front" })}
+                                    checked={settings.render_tracks}
+                                    on_change={{let ts = toggle_setting.clone(); let v = settings.render_tracks; Callback::from(move |_| ts.emit(("tracks".into(), !v)))}}
+                                />
+                                <LayerToggle
+                                    label={format!("{}.Cu (zones)", layer_prefix)}
+                                    color={format!("var(--zone-color-{})", if *board_flipped { "back" } else { "front" })}
+                                    checked={settings.render_zones}
+                                    on_change={{let ts = toggle_setting.clone(); let v = settings.render_zones; Callback::from(move |_| ts.emit(("zones".into(), !v)))}}
+                                />
                                 {for inner_layer_names.iter().map(|name| {
+                                    let tl = toggle_layer.clone();
+                                    let n = name.clone();
+                                    let visible = !settings.hidden_layers.contains(name);
+                                    let color = format!("var(--track-color-{})", if *board_flipped { "back" } else { "front" });
                                     html! {
-                                        <div class="layer-key-item">
-                                            <span class="layer-swatch" style={format!("background: var(--track-color-{}); opacity: 0.25;", if *board_flipped { "back" } else { "front" })}></span>
-                                            <span>{name.clone()}</span>
-                                        </div>
+                                        <LayerToggle
+                                            label={name.clone()}
+                                            {color}
+                                            checked={visible}
+                                            on_change={Callback::from(move |_| tl.emit(n.clone()))}
+                                            opacity={0.25}
+                                        />
                                     }
                                 })}
                             }
-                            <div class="layer-key-item">
-                                <span class="layer-swatch" style="background: var(--silkscreen-edge-color);"></span>
-                                <span>{format!("{}.SilkS", layer_prefix)}</span>
-                            </div>
-                            <div class="layer-key-item">
-                                <span class="layer-swatch" style="background: var(--fabrication-edge-color);"></span>
-                                <span>{format!("{}.Fab", layer_prefix)}</span>
-                            </div>
-                            <div class="layer-key-item">
-                                <span class="layer-swatch" style="background: var(--pcb-edge-color);"></span>
-                                <span>{"Edge.Cuts"}</span>
-                            </div>
+                            <LayerToggle
+                                label={format!("{}.SilkS", layer_prefix)}
+                                color="var(--silkscreen-edge-color)"
+                                checked={settings.render_silkscreen}
+                                on_change={{let ts = toggle_setting.clone(); let v = settings.render_silkscreen; Callback::from(move |_| ts.emit(("silkscreen".into(), !v)))}}
+                            />
+                            <LayerToggle
+                                label={format!("{}.Fab", layer_prefix)}
+                                color="var(--fabrication-edge-color)"
+                                checked={settings.render_fabrication}
+                                on_change={{let ts = toggle_setting.clone(); let v = settings.render_fabrication; Callback::from(move |_| ts.emit(("fabrication".into(), !v)))}}
+                            />
+                            <LayerToggle
+                                label="Edge.Cuts"
+                                color="var(--pcb-edge-color)"
+                                checked={settings.render_edge_cuts}
+                                on_change={{let ts = toggle_setting.clone(); let v = settings.render_edge_cuts; Callback::from(move |_| ts.emit(("edge_cuts".into(), !v)))}}
+                            />
                         </div>
                         // ─── Settings ─────────────────────────────────
                         <SettingCheckbox label="Dark mode" checked={settings.dark_mode}
                             on_change={toggle_dark_mode.clone()} is_top={true} />
-                        <SettingCheckbox label="Silkscreen" checked={settings.render_silkscreen}
-                            on_change={{let ts = toggle_setting.clone(); let v = settings.render_silkscreen; Callback::from(move |_| ts.emit(("silkscreen".into(), !v)))}}
-                            is_top={false} />
-                        <SettingCheckbox label="Fab layer" checked={settings.render_fabrication}
-                            on_change={{let ts = toggle_setting.clone(); let v = settings.render_fabrication; Callback::from(move |_| ts.emit(("fabrication".into(), !v)))}}
-                            is_top={false} />
                         <SettingCheckbox label="References" checked={settings.render_references}
                             on_change={{let ts = toggle_setting.clone(); let v = settings.render_references; Callback::from(move |_| ts.emit(("references".into(), !v)))}}
                             is_top={false} />
                         <SettingCheckbox label="Values" checked={settings.render_values}
                             on_change={{let ts = toggle_setting.clone(); let v = settings.render_values; Callback::from(move |_| ts.emit(("values".into(), !v)))}}
-                            is_top={false} />
-                        if has_tracks {
-                            <SettingCheckbox label="Tracks" checked={settings.render_tracks}
-                                on_change={{let ts = toggle_setting.clone(); let v = settings.render_tracks; Callback::from(move |_| ts.emit(("tracks".into(), !v)))}}
-                                is_top={false} />
-                            <SettingCheckbox label="Zones" checked={settings.render_zones}
-                                on_change={{let ts = toggle_setting.clone(); let v = settings.render_zones; Callback::from(move |_| ts.emit(("zones".into(), !v)))}}
-                                is_top={false} />
-                            {for inner_layer_names.iter().map(|name| {
-                                let tl = toggle_layer.clone();
-                                let n = name.clone();
-                                let visible = !settings.hidden_layers.contains(name);
-                                html! {
-                                    <SettingCheckbox label={name.clone()} checked={visible}
-                                        on_change={Callback::from(move |_| tl.emit(n.clone()))}
-                                        is_top={false} />
-                                }
-                            })}
-                        }
-                        <SettingCheckbox label="Pads" checked={settings.render_pads}
-                            on_change={{let ts = toggle_setting.clone(); let v = settings.render_pads; Callback::from(move |_| ts.emit(("pads".into(), !v)))}}
                             is_top={false} />
                         <SettingCheckbox label="Redraw on drag" checked={settings.redraw_on_drag}
                             on_change={{let ts = toggle_setting.clone(); let v = settings.redraw_on_drag; Callback::from(move |_| ts.emit(("redraw_on_drag".into(), !v)))}}
@@ -1125,6 +1123,36 @@ fn setting_checkbox(props: &SettingCheckboxProps) -> Html {
         <label class={classes!("menu-label", props.is_top.then_some("menu-label-top"))}>
             <input type="checkbox" checked={props.checked} onclick={onclick} />
             {&props.label}
+        </label>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct LayerToggleProps {
+    label: AttrValue,
+    color: AttrValue,
+    checked: bool,
+    on_change: Callback<()>,
+    #[prop_or(1.0)]
+    opacity: f64,
+}
+
+#[function_component(LayerToggle)]
+fn layer_toggle(props: &LayerToggleProps) -> Html {
+    let onclick = {
+        let cb = props.on_change.clone();
+        Callback::from(move |_: MouseEvent| cb.emit(()))
+    };
+    let swatch_style = if props.opacity < 1.0 {
+        format!("background: {}; opacity: {};", props.color, props.opacity)
+    } else {
+        format!("background: {};", props.color)
+    };
+    html! {
+        <label class="layer-toggle">
+            <input type="checkbox" checked={props.checked} onclick={onclick} />
+            <span class="layer-swatch" style={swatch_style}></span>
+            <span class="layer-toggle-label">{&props.label}</span>
         </label>
     }
 }
