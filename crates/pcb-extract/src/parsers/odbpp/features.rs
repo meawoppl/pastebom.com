@@ -303,9 +303,28 @@ pub fn parse_features(content: &str) -> FeatureData {
 }
 
 /// Parse the profile file into board edge drawings.
+/// Converts filled polygon contours into line segments suitable for edge rendering.
 pub fn parse_profile(content: &str) -> (Unit, Vec<Drawing>) {
     let data = parse_features(content);
-    (data.unit, data.drawings)
+    let mut edges = Vec::new();
+
+    for drawing in &data.drawings {
+        if let Drawing::Polygon { polygons, .. } = drawing {
+            for poly in polygons {
+                for pair in poly.windows(2) {
+                    edges.push(Drawing::Segment {
+                        start: pair[0],
+                        end: pair[1],
+                        width: 0.0,
+                    });
+                }
+            }
+        } else {
+            edges.push(drawing.clone());
+        }
+    }
+
+    (data.unit, edges)
 }
 
 fn symbol_width(sym_table: &[String], idx: usize, unit: &Unit) -> f64 {
@@ -383,14 +402,9 @@ SE
 "#;
         let (unit, drawings) = parse_profile(content);
         assert_eq!(unit, Unit::Inch);
-        assert_eq!(drawings.len(), 1);
-        match &drawings[0] {
-            Drawing::Polygon { polygons, .. } => {
-                assert_eq!(polygons.len(), 1);
-                assert_eq!(polygons[0].len(), 5);
-            }
-            _ => panic!("expected polygon"),
-        }
+        // Profile polygon (5 points) → 4 line segments
+        assert_eq!(drawings.len(), 4);
+        assert!(matches!(drawings[0], Drawing::Segment { .. }));
     }
 
     #[test]
