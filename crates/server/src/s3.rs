@@ -1,5 +1,10 @@
 use std::path::PathBuf;
 
+pub struct ObjectInfo {
+    pub key: String,
+    pub last_modified: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Clone)]
 pub struct S3Client {
     backend: StorageBackend,
@@ -87,6 +92,76 @@ impl S3Client {
                 std::fs::write(&file_path, &body)
                     .map_err(|e| S3Error(format!("write failed: {e}")))?;
                 Ok(())
+            }
+        }
+    }
+
+    pub async fn list_objects(&self, prefix: &str) -> Result<Vec<ObjectInfo>, S3Error> {
+        match &self.backend {
+            StorageBackend::S3 {
+                client,
+                bucket,
+                prefix: s3_prefix,
+            } => {
+                let full_prefix = s3_key(s3_prefix, prefix);
+                let mut objects = Vec::new();
+                let mut continuation_token: Option<String> = None;
+                loop {
+                    let mut req = client.list_objects_v2().bucket(bucket).prefix(&full_prefix);
+                    if let Some(token) = &continuation_token {
+                        req = req.continuation_token(token);
+                    }
+                    let resp = req.send().await.map_err(|e| S3Error(e.to_string()))?;
+                    for obj in resp.contents() {
+                        if let Some(key) = obj.key() {
+                            let logical_key = if s3_prefix.is_empty() {
+                                key.to_string()
+                            } else {
+                                let stripped = format!("{}/", s3_prefix.trim_end_matches('/'));
+                                key.strip_prefix(&stripped).unwrap_or(key).to_string()
+                            };
+                            let last_modified = obj
+                                .last_modified()
+                                .and_then(|t| {
+                                    chrono::DateTime::from_timestamp(t.secs(), t.subsec_nanos())
+                                })
+                                .unwrap_or_else(chrono::Utc::now);
+                            objects.push(ObjectInfo {
+                                key: logical_key,
+                                last_modified,
+                            });
+                        }
+                    }
+                    if resp.is_truncated() == Some(true) {
+                        continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+                    } else {
+                        break;
+                    }
+                }
+                Ok(objects)
+            }
+            StorageBackend::Filesystem { root } => {
+                let dir = root.join(prefix);
+                let mut objects = Vec::new();
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let key = format!(
+                                "{}/{}",
+                                prefix.trim_end_matches('/'),
+                                entry.file_name().to_string_lossy()
+                            );
+                            let last_modified = entry
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .map(chrono::DateTime::<chrono::Utc>::from)
+                                .unwrap_or_else(|_| chrono::Utc::now());
+                            objects.push(ObjectInfo { key, last_modified });
+                        }
+                    }
+                }
+                Ok(objects)
             }
         }
     }

@@ -25,10 +25,62 @@ pub struct RecentEntry {
 }
 
 pub async fn load_recent(s3: &crate::s3::S3Client) -> Vec<RecentEntry> {
-    match s3.get_object(RECENT_KEY).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => Vec::new(),
+    if let Ok(bytes) = s3.get_object(RECENT_KEY).await {
+        if let Ok(entries) = serde_json::from_slice::<Vec<RecentEntry>>(&bytes) {
+            if !entries.is_empty() {
+                return entries;
+            }
+        }
     }
+
+    tracing::info!("recent.json not found, scanning storage for recent uploads");
+    let entries = reconstruct_recent(s3).await;
+
+    if !entries.is_empty() {
+        if let Ok(json) = serde_json::to_vec(&entries) {
+            let _ = s3.put_object(RECENT_KEY, json, "application/json").await;
+        }
+        tracing::info!(
+            "Reconstructed {} recent entries from storage",
+            entries.len()
+        );
+    }
+
+    entries
+}
+
+async fn reconstruct_recent(s3: &crate::s3::S3Client) -> Vec<RecentEntry> {
+    let objects = match s3.list_objects("boms/").await {
+        Ok(objs) => objs,
+        Err(e) => {
+            tracing::warn!("Failed to list objects for recent reconstruction: {e}");
+            return Vec::new();
+        }
+    };
+
+    let mut meta_objects: Vec<_> = objects
+        .into_iter()
+        .filter(|o| o.key.ends_with(".meta.json"))
+        .collect();
+    meta_objects.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    meta_objects.truncate(MAX_RECENT);
+
+    let mut entries = Vec::new();
+    for obj in meta_objects {
+        if let Ok(bytes) = s3.get_object(&obj.key).await {
+            if let Ok(meta) = serde_json::from_slice::<BomMeta>(&bytes) {
+                entries.push(RecentEntry {
+                    id: meta.id,
+                    filename: meta.filename,
+                    components: meta.components,
+                    file_size: meta.file_size,
+                    created: obj.last_modified.to_rfc3339(),
+                });
+            }
+        }
+    }
+
+    entries
 }
 
 pub fn router() -> Router<AppState> {
