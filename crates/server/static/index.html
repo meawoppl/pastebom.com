@@ -6,11 +6,12 @@
     <title>PasteBOM - Interactive BOM Hosting</title>
     <style>
         * { box-sizing: border-box; }
+        html { background: #1a1a2e; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             margin: 0 auto;
             padding: 2rem;
-            background: #1a1a2e;
+            background: transparent;
             color: #eee;
             min-height: 100vh;
             max-width: 1200px;
@@ -178,9 +179,80 @@
         .public-table .age { color: #666; white-space: nowrap; }
         .thumb-cell { width: 60px; padding: 0.25rem 0.5rem; }
         .thumb-img { width: 56px; height: auto; border-radius: 4px; border: 1px solid #2a2a4e; vertical-align: middle; }
+
+        /* PCB mosaic background */
+        .pcb-mosaic {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0;
+            display: grid;
+            grid-template-columns: repeat(var(--mosaic-cols, 4), 1fr);
+            grid-template-rows: repeat(var(--mosaic-rows, 3), 1fr);
+            gap: 0;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 1.5s ease-in;
+        }
+        .pcb-mosaic.visible { opacity: 1; }
+        .mosaic-cell {
+            overflow: hidden;
+            position: relative;
+        }
+        .mosaic-cell img {
+            width: 160%;
+            height: 160%;
+            object-fit: cover;
+            position: absolute;
+            filter: brightness(0.6) saturate(0.7);
+            transition: opacity 2s ease-in-out;
+            will-change: transform;
+        }
+        .mosaic-cell img.fading-out { opacity: 0; }
+
+        @keyframes kb1 {
+            0%   { top: -10%; left: -10%; transform: scale(1); }
+            100% { top: -20%; left: -25%; transform: scale(1.15); }
+        }
+        @keyframes kb2 {
+            0%   { top: -20%; left: -30%; transform: scale(1.1); }
+            100% { top: -5%;  left: -10%; transform: scale(1); }
+        }
+        @keyframes kb3 {
+            0%   { top: -5%;  left: -20%; transform: scale(1.05); }
+            100% { top: -25%; left: -5%;  transform: scale(1.2); }
+        }
+        @keyframes kb4 {
+            0%   { top: -25%; left: -5%;  transform: scale(1.15); }
+            100% { top: -10%; left: -30%; transform: scale(1.05); }
+        }
+        @keyframes kb5 {
+            0%   { top: -15%; left: -15%; transform: scale(1); }
+            100% { top: -5%;  left: -25%; transform: scale(1.18); }
+        }
+        @keyframes kb6 {
+            0%   { top: -5%;  left: -5%;  transform: scale(1.2); }
+            100% { top: -20%; left: -20%; transform: scale(1); }
+        }
+
+        .pcb-mosaic-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            background: radial-gradient(ellipse at center, rgba(26,26,46,0.75) 0%, rgba(26,26,46,0.92) 100%);
+            pointer-events: none;
+        }
+
+        body { position: relative; z-index: 2; }
     </style>
 </head>
 <body>
+    <div class="pcb-mosaic" id="pcbMosaic"></div>
+    <div class="pcb-mosaic-overlay"></div>
+
     <h1>PasteBOM <span id="version" style="font-size:0.5em;color:#666"></span></h1>
     <p class="subtitle">Share interactive Bill of Materials and PCB layout viewers.</p>
 
@@ -324,6 +396,136 @@
         fetch('/health').then(r => r.json()).then(d => {
             document.getElementById('version').textContent = 'v' + d.version;
         }).catch(() => {});
+
+        // PCB mosaic background
+        (async function initMosaic() {
+            const mosaic = document.getElementById('pcbMosaic');
+            const KB_ANIMS = ['kb1','kb2','kb3','kb4','kb5','kb6'];
+            const CYCLE_INTERVAL = 8000; // ms between tile swaps
+            const ANIM_DURATION_MIN = 20; // seconds
+            const ANIM_DURATION_MAX = 35;
+
+            const MAX_COMPONENTS = 200;
+            const MAX_FILE_SIZE = 512 * 1024; // 512 KB source file
+            const MAX_POOL = 8;
+            const EXCLUDED_FORMATS = ['ODB++', 'Gerber/ODB++', 'GDSII'];
+
+            // Compute grid size based on viewport — larger cells = fewer tiles
+            const cellSize = 400;
+            const cols = Math.max(2, Math.ceil(window.innerWidth / cellSize));
+            const rows = Math.max(2, Math.ceil(window.innerHeight / cellSize));
+            mosaic.style.setProperty('--mosaic-cols', cols);
+            mosaic.style.setProperty('--mosaic-rows', rows);
+            const totalCells = cols * rows;
+
+            // Fetch recent and aggressively filter
+            let thumbIds = [];
+            try {
+                const resp = await fetch('/api/recent');
+                const entries = await resp.json();
+                thumbIds = entries
+                    .filter(e => {
+                        const fmt = detectFormat(e.filename);
+                        if (EXCLUDED_FORMATS.includes(fmt)) return false;
+                        if (e.components > MAX_COMPONENTS) return false;
+                        if (e.file_size && e.file_size > MAX_FILE_SIZE) return false;
+                        return true;
+                    })
+                    .slice(0, MAX_POOL)
+                    .map(e => e.id);
+            } catch { return; }
+
+            if (thumbIds.length < 2) return;
+
+            function randomPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+            function applyKenBurns(img) {
+                const anim = randomPick(KB_ANIMS);
+                const dur = ANIM_DURATION_MIN + Math.random() * (ANIM_DURATION_MAX - ANIM_DURATION_MIN);
+                const dir = Math.random() > 0.5 ? 'alternate' : 'alternate-reverse';
+                img.style.animation = `${anim} ${dur.toFixed(1)}s ease-in-out infinite ${dir}`;
+            }
+
+            // Pre-fetch SVGs and rasterize to PNG bitmaps via offscreen canvas.
+            // Animating raw SVGs forces the browser to re-rasterize thousands of
+            // paths every frame; bitmaps are GPU-friendly and essentially free.
+            const RASTER_SIZE = 512;
+            const uniqueIds = [...new Set(thumbIds)];
+            const bitmapUrls = {};
+            for (const id of uniqueIds) {
+                try {
+                    const r = await fetch(`/b/${id}/thumb.svg`);
+                    if (!r.ok) continue;
+                    const svgText = await r.text();
+                    const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
+                    const url = URL.createObjectURL(svgBlob);
+                    const img = new Image();
+                    await new Promise((resolve, reject) => {
+                        img.onload = resolve;
+                        img.onerror = reject;
+                        img.src = url;
+                    });
+                    const canvas = document.createElement('canvas');
+                    canvas.width = RASTER_SIZE;
+                    canvas.height = RASTER_SIZE;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, RASTER_SIZE, RASTER_SIZE);
+                    URL.revokeObjectURL(url);
+                    bitmapUrls[id] = canvas.toDataURL('image/png');
+                } catch { /* skip this thumbnail */ }
+            }
+
+            // Only use IDs that rasterized successfully
+            thumbIds = thumbIds.filter(id => bitmapUrls[id]);
+            if (thumbIds.length < 2) return;
+
+            // Create cells with pre-fetched thumbnails
+            const usedPerCell = [];
+            let loaded = 0;
+            for (let i = 0; i < totalCells; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'mosaic-cell';
+                const id = randomPick(thumbIds);
+                usedPerCell.push(id);
+                const img = document.createElement('img');
+                img.src = bitmapUrls[id];
+                img.alt = '';
+                applyKenBurns(img);
+                img.addEventListener('load', () => {
+                    if (++loaded >= Math.min(4, totalCells)) mosaic.classList.add('visible');
+                }, { once: true });
+                cell.appendChild(img);
+                mosaic.appendChild(cell);
+            }
+
+            // Cycle: periodically swap a random tile's image
+            setInterval(() => {
+                const idx = Math.floor(Math.random() * totalCells);
+                const cell = mosaic.children[idx];
+                const oldImg = cell.querySelector('img');
+
+                // Pick a different thumbnail than what's currently shown
+                let newId;
+                do { newId = randomPick(thumbIds); } while (newId === usedPerCell[idx] && thumbIds.length > 1);
+                usedPerCell[idx] = newId;
+
+                // Crossfade: fade out old, add new behind it
+                const newImg = document.createElement('img');
+                newImg.src = bitmapUrls[newId];
+                newImg.alt = '';
+                newImg.style.opacity = '0';
+                applyKenBurns(newImg);
+                cell.insertBefore(newImg, oldImg);
+
+                // Animate the swap
+                requestAnimationFrame(() => {
+                    newImg.style.transition = 'opacity 2s ease-in-out';
+                    newImg.style.opacity = '1';
+                    oldImg.classList.add('fading-out');
+                    setTimeout(() => oldImg.remove(), 2200);
+                });
+            }, CYCLE_INTERVAL);
+        })();
 
         dropzone.addEventListener('click', () => fileInput.click());
         dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
