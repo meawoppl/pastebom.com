@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+    # rustls-webpki 0.101.7 is pinned by rustls 0.21 via the AWS SDK.
+    # No patched 0.101.x exists. The 0.103.x copy is already patched.
+    # CRL distribution point matching — low practical impact.
+    "RUSTSEC-2026-0049",
+]
