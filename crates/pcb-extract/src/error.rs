@@ -5,6 +5,9 @@ pub enum ExtractError {
     #[error("unsupported file format: {0}")]
     UnsupportedFormat(String),
 
+    #[error("file appears to be a macOS resource fork (AppleDouble), not a valid PCB file")]
+    MacosResourceFork,
+
     #[error("parse error: {0}")]
     ParseError(String),
 

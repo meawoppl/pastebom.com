@@ -110,12 +110,19 @@ pub fn extract(path: &Path, opts: &ExtractOptions) -> Result<PcbData, ExtractErr
     extract_bytes(&data, format, opts)
 }
 
+/// AppleDouble magic number found at the start of macOS resource fork files.
+const APPLE_DOUBLE_MAGIC: [u8; 4] = [0x00, 0x05, 0x16, 0x07];
+
 /// Parse from bytes with explicit format.
 pub fn extract_bytes(
     data: &[u8],
     format: PcbFormat,
     opts: &ExtractOptions,
 ) -> Result<PcbData, ExtractError> {
+    if data.starts_with(&APPLE_DOUBLE_MAGIC) {
+        return Err(ExtractError::MacosResourceFork);
+    }
+
     match format {
         PcbFormat::KiCad => parsers::kicad::parse(data, opts),
         PcbFormat::EasyEda => parsers::easyeda::parse(data, opts),
@@ -163,5 +170,25 @@ mod tests {
     fn test_detect_plain_gz_not_matched() {
         let path = PathBuf::from("compressed.gz");
         assert_eq!(detect_format(&path), None);
+    }
+
+    #[test]
+    fn test_reject_macos_resource_fork() {
+        let mut data = vec![0x00, 0x05, 0x16, 0x07];
+        data.extend_from_slice(b"Mac OS X        ");
+
+        let opts = ExtractOptions::default();
+        let result = extract_bytes(&data, PcbFormat::KiCad, &opts);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExtractError::MacosResourceFork),
+            "expected MacosResourceFork error, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("macOS resource fork"),
+            "error message should mention macOS resource fork"
+        );
     }
 }
