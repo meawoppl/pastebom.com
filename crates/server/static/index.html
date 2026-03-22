@@ -245,7 +245,12 @@
 
         function renderHistory() {
             const history = getHistory();
-            if (history.length === 0) { historyEl.innerHTML = ''; return; }
+            if (history.length === 0) {
+                historyEl.innerHTML = `
+                    <h2>Your Pastes (This Device Only)</h2>
+                    <p style="color:#666;font-size:0.9rem;margin:0">Upload a PCB file to get started.</p>`;
+                return;
+            }
             const items = history.map(h => {
                 const date = new Date(h.created).toLocaleDateString();
                 return `<li><a href="${h.url}" target="_blank">${h.filename || h.url}</a><span class="history-meta">${date}</span></li>`;

@@ -33,14 +33,14 @@ body {
 .dark.topmostdiv {
   --pcb-edge-color: #eee;
   --pad-color: #808080;
-  --pad-hole-color: #1e2428;
+  --pad-hole-color: #1a1a2e;
   --pin1-outline-color: #ffa800;
   --pin1-outline-color-highlight: #ccff00;
   --track-color-front: #993333;
   --zone-color-front: #553030;
   --track-color-back: #333399;
   --zone-color-back: #303055;
-  background-color: #252c30;
+  background-color: #1a1a2e;
   color: #eee;
 }
 
@@ -135,7 +135,7 @@ body {
 .dark .sidebar .sidebar-controls,
 .dark .sidebar .sidebar-table-container,
 .dark .sidebar .sidebar-settings {
-  background: rgba(30, 36, 40, 0.75);
+  background: rgba(22, 33, 62, 0.75);
 }
 
 .dark .sidebar {
@@ -452,7 +452,7 @@ button#bom-netlist-btn {
 }
 
 .dark .bom th {
-  background-color: #3b4749;
+  background-color: #16213e;
 }
 
 .bom tr.highlighted:nth-child(n) {
@@ -468,7 +468,7 @@ button#bom-netlist-btn {
 }
 
 .dark .bom tr:nth-child(even) {
-  background-color: #313b40;
+  background-color: #1e2744;
 }
 
 .bom tr.checked {
