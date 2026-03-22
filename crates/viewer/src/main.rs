@@ -297,22 +297,27 @@ fn app() -> Html {
             e.prevent_default();
             if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
                 let mut vs = state.borrow_mut();
-
-                let mut wheeldelta = e.delta_y();
-                if e.delta_mode() == 1 {
-                    wheeldelta *= 30.0;
-                } else if e.delta_mode() == 2 {
-                    wheeldelta *= 300.0;
-                }
-                let m = (1.1f64).powf(-wheeldelta / 40.0).clamp(0.5, 2.0);
                 let dpr = web_sys::window()
                     .map(|w| w.device_pixel_ratio())
                     .unwrap_or(1.0);
 
-                vs.canvases.transform.zoom *= m;
-                let zoomd = (1.0 - m) / vs.canvases.transform.zoom;
-                vs.canvases.transform.panx += dpr * e.offset_x() as f64 * zoomd;
-                vs.canvases.transform.pany += dpr * e.offset_y() as f64 * zoomd;
+                if e.ctrl_key() {
+                    let mut wheeldelta = e.delta_y();
+                    if e.delta_mode() == 1 {
+                        wheeldelta *= 30.0;
+                    } else if e.delta_mode() == 2 {
+                        wheeldelta *= 300.0;
+                    }
+                    let m = (1.1f64).powf(-wheeldelta / 40.0).clamp(0.5, 2.0);
+
+                    vs.canvases.transform.zoom *= m;
+                    let zoomd = (1.0 - m) / vs.canvases.transform.zoom;
+                    vs.canvases.transform.panx += dpr * e.offset_x() as f64 * zoomd;
+                    vs.canvases.transform.pany += dpr * e.offset_y() as f64 * zoomd;
+                } else {
+                    vs.canvases.transform.panx -= dpr * e.delta_x() / vs.canvases.transform.zoom;
+                    vs.canvases.transform.pany -= dpr * e.delta_y() / vs.canvases.transform.zoom;
+                }
 
                 let hl = (*highlighted_footprints).clone();
                 let hn = (*highlighted_net).clone();
