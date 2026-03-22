@@ -6,8 +6,10 @@ use crate::ExtractOptions;
 
 // GDSII record types
 const HEADER: u8 = 0x00;
+const BGNLIB: u8 = 0x01;
 const LIBNAME: u8 = 0x02;
 const UNITS: u8 = 0x03;
+const ENDLIB: u8 = 0x04;
 const BGNSTR: u8 = 0x05;
 const STRNAME: u8 = 0x06;
 const ENDSTR: u8 = 0x07;
@@ -29,6 +31,55 @@ const STRANS: u8 = 0x1A;
 const MAG: u8 = 0x1B;
 const ANGLE: u8 = 0x1C;
 const PATHTYPE: u8 = 0x21;
+
+/// All valid GDSII record type codes.
+const KNOWN_RECORD_TYPES: &[u8] = &[
+    0x00, // HEADER
+    0x01, // BGNLIB
+    0x02, // LIBNAME
+    0x03, // UNITS
+    0x04, // ENDLIB
+    0x05, // BGNSTR
+    0x06, // STRNAME
+    0x07, // ENDSTR
+    0x08, // BOUNDARY
+    0x09, // PATH
+    0x0A, // SREF
+    0x0B, // AREF
+    0x0C, // TEXT
+    0x0D, // LAYER
+    0x0E, // DATATYPE
+    0x0F, // WIDTH
+    0x10, // XY
+    0x11, // ENDEL
+    0x12, // SNAME
+    0x13, // COLROW
+    0x14, // TEXTNODE
+    0x15, // NODE
+    0x16, // TEXTTYPE
+    0x17, // PRESENTATION
+    0x19, // STRING
+    0x1A, // STRANS
+    0x1B, // MAG
+    0x1C, // ANGLE
+    0x1F, // REFLIBS
+    0x20, // FONTS
+    0x21, // PATHTYPE
+    0x22, // GENERATIONS
+    0x23, // ATTRTABLE
+    0x26, // ELFLAGS
+    0x2A, // NODETYPE
+    0x2B, // PROPATTR
+    0x2C, // PROPVALUE
+    0x2D, // BOX
+    0x2E, // BOXTYPE
+    0x2F, // PLEX
+    0x32, // TAPENUM
+    0x33, // TAPECODE
+    0x36, // FORMAT
+    0x37, // MASK
+    0x38, // ENDMASKS
+];
 
 // GDSII data types
 const DT_NONE: u8 = 0x00;
@@ -155,9 +206,17 @@ fn parse_records(data: &[u8]) -> Result<Vec<Record>, ExtractError> {
 
         let record_type = data[offset + 2];
         let data_type = data[offset + 3];
+
+        if !KNOWN_RECORD_TYPES.contains(&record_type) {
+            return Err(ExtractError::ParseError(format!(
+                "GDSII: unknown record type 0x{:02X} at offset {}",
+                record_type, offset
+            )));
+        }
+
         let payload = &data[offset + 4..offset + length];
 
-        let record_data = parse_record_data(data_type, payload)?;
+        let record_data = parse_record_data(data_type, payload, record_type, offset)?;
         records.push(Record {
             record_type,
             data: record_data,
@@ -170,7 +229,12 @@ fn parse_records(data: &[u8]) -> Result<Vec<Record>, ExtractError> {
 }
 
 /// Parse the data payload of a record based on data type.
-fn parse_record_data(data_type: u8, payload: &[u8]) -> Result<RecordData, ExtractError> {
+fn parse_record_data(
+    data_type: u8,
+    payload: &[u8],
+    record_type: u8,
+    offset: usize,
+) -> Result<RecordData, ExtractError> {
     match data_type {
         DT_NONE => Ok(RecordData::None),
         DT_BITARRAY => {
@@ -222,7 +286,10 @@ fn parse_record_data(data_type: u8, payload: &[u8]) -> Result<RecordData, Extrac
             }
             Ok(RecordData::Ascii(s))
         }
-        _ => Ok(RecordData::None),
+        _ => Err(ExtractError::ParseError(format!(
+            "GDSII: invalid data type 0x{:02X} for record type 0x{:02X} at offset {}",
+            data_type, record_type, offset
+        ))),
     }
 }
 
@@ -861,6 +928,22 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     let records = parse_records(data)?;
     if records.is_empty() {
         return Err(ExtractError::ParseError("GDSII: no records found".into()));
+    }
+
+    // Validate required library structure
+    let has_bgnlib = records.iter().any(|r| r.record_type == BGNLIB);
+    let has_endlib = records.iter().any(|r| r.record_type == ENDLIB);
+
+    if !has_bgnlib {
+        return Err(ExtractError::ParseError(
+            "GDSII: missing BGNLIB record (library not properly opened)".into(),
+        ));
+    }
+
+    if !has_endlib {
+        return Err(ExtractError::ParseError(
+            "GDSII: missing ENDLIB record (library not properly closed)".into(),
+        ));
     }
 
     // Extract units
@@ -1668,5 +1751,106 @@ mod tests {
         // Should parse without error
         assert!(!pcb.edges.is_empty());
         assert_eq!(pcb.metadata.title, "testlib");
+    }
+
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test-fixtures")
+            .join(name)
+    }
+
+    fn parse_fixture(name: &str) -> Result<PcbData, ExtractError> {
+        let data = std::fs::read(fixture_path(name)).unwrap();
+        parse(&data, &ExtractOptions::default())
+    }
+
+    #[test]
+    fn test_malformed_badbytes_record() {
+        let err = parse_fixture("badbytes_record.gds")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("invalid record length"),
+            "Expected 'invalid record length', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_malformed_badbytes_cell() {
+        let err = parse_fixture("badbytes_cell.gds").unwrap_err().to_string();
+        assert!(
+            err.contains("invalid record length"),
+            "Expected 'invalid record length', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_malformed_badbytes_boundary() {
+        let err = parse_fixture("badbytes_boundary.gds")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("invalid record length"),
+            "Expected 'invalid record length', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_malformed_no_endlib() {
+        let err = parse_fixture("no_endlib.gds").unwrap_err().to_string();
+        assert!(
+            err.contains("missing ENDLIB"),
+            "Expected 'missing ENDLIB', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_malformed_no_bgnlib() {
+        let err = parse_fixture("no_bgnlib.gds").unwrap_err().to_string();
+        assert!(
+            err.contains("missing BGNLIB"),
+            "Expected 'missing BGNLIB', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_malformed_unknown_record() {
+        let err = parse_fixture("unknown_record.gds").unwrap_err().to_string();
+        assert!(
+            err.contains("unknown record type"),
+            "Expected 'unknown record type', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_malformed_unknown_cell() {
+        let err = parse_fixture("unknown_cell.gds").unwrap_err().to_string();
+        assert!(
+            err.contains("unknown record type"),
+            "Expected 'unknown record type', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_malformed_unimplemented_record() {
+        let err = parse_fixture("unimplemented_record.gds")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("GDSII"), "Expected GDSII error, got: {}", err);
+    }
+
+    #[test]
+    fn test_malformed_unimplemented_cell() {
+        let err = parse_fixture("unimplemented_cell.gds")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("GDSII"), "Expected GDSII error, got: {}", err);
     }
 }
