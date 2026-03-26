@@ -87,6 +87,7 @@ pub fn router() -> Router<AppState> {
     const MAX_UPLOAD: usize = 50 * 1024 * 1024;
     Router::new()
         .route("/", get(index))
+        .route("/terms", get(terms))
         .route("/upload", post(upload))
         .route("/api/recent", get(get_recent))
         .route("/b/{id}", get(get_bom))
@@ -99,6 +100,10 @@ pub fn router() -> Router<AppState> {
 
 async fn index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
+}
+
+async fn terms() -> Html<&'static str> {
+    Html(include_str!("../static/terms.html"))
 }
 
 #[derive(Serialize)]
