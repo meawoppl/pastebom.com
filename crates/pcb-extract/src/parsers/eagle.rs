@@ -6,8 +6,13 @@ use std::collections::HashMap;
 
 /// Parse an Eagle/Fusion360 .brd/.fbrd file into PcbData.
 pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
-    let text = std::str::from_utf8(data)
-        .map_err(|e| ExtractError::ParseError(format!("Invalid UTF-8: {e}")))?;
+    let text = std::str::from_utf8(data).map_err(|_| {
+        ExtractError::ParseError(
+            "File appears to be a binary PCB format (possibly Cadence Allegro). \
+             Only Eagle XML .brd files are supported."
+                .to_string(),
+        )
+    })?;
     let parse_opts = roxmltree::ParsingOptions {
         allow_dtd: true,
         ..roxmltree::ParsingOptions::default()
