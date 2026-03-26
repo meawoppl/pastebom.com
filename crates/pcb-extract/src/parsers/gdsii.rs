@@ -31,6 +31,8 @@ const STRANS: u8 = 0x1A;
 const MAG: u8 = 0x1B;
 const ANGLE: u8 = 0x1C;
 const PATHTYPE: u8 = 0x21;
+const BGNEXTN: u8 = 0x30;
+const ENDEXTN: u8 = 0x31;
 
 /// All valid GDSII record type codes.
 const KNOWN_RECORD_TYPES: &[u8] = &[
@@ -74,6 +76,8 @@ const KNOWN_RECORD_TYPES: &[u8] = &[
     0x2D, // BOX
     0x2E, // BOXTYPE
     0x2F, // PLEX
+    0x30, // BGNEXTN
+    0x31, // ENDEXTN
     0x32, // TAPENUM
     0x33, // TAPECODE
     0x36, // FORMAT
@@ -88,6 +92,12 @@ const DT_I16: u8 = 0x02;
 const DT_I32: u8 = 0x03;
 const DT_F64: u8 = 0x05;
 const DT_ASCII: u8 = 0x06;
+
+/// Maximum number of flattened elements before stopping.
+const MAX_FLATTEN_ELEMENTS: usize = 500_000;
+
+/// Maximum number of footprints to generate.
+const MAX_FOOTPRINTS: usize = 5_000;
 
 /// A parsed GDSII record.
 struct Record {
@@ -458,7 +468,7 @@ fn parse_path(records: &[Record], start: usize) -> Result<(GdsElement, usize), E
                     layer = vals[0];
                 }
             }
-            DATATYPE | PATHTYPE => {}
+            DATATYPE | PATHTYPE | BGNEXTN | ENDEXTN => {}
             WIDTH => {
                 let vals = get_i32(&records[i].data);
                 if !vals.is_empty() {
@@ -766,9 +776,22 @@ struct FlattenOutput {
     texts: Vec<(i16, [f64; 2], String)>,
 }
 
-/// Flatten structure elements into geometry, resolving SREF/AREF recursively.
+impl FlattenOutput {
+    fn element_count(&self) -> usize {
+        self.boundaries.len() + self.paths.len() + self.texts.len()
+    }
+}
+
+/// Cached flattened geometry for a structure (in local coordinates, no transform).
+struct CachedFlatten {
+    boundaries: Vec<(i16, Vec<[f64; 2]>)>,
+    paths: Vec<(i16, i32, Vec<[f64; 2]>)>,
+    texts: Vec<(i16, [f64; 2], String)>,
+}
+
+/// Compute bounding box of a structure hierarchy without full flattening.
 #[allow(clippy::too_many_arguments)]
-fn flatten_structure(
+fn compute_structure_bbox(
     idx: usize,
     structures: &[GdsStructure],
     struct_map: &HashMap<&str, usize>,
@@ -778,42 +801,34 @@ fn flatten_structure(
     mag: f64,
     angle_deg: f64,
     depth: usize,
-    out: &mut FlattenOutput,
-) {
+) -> BBox {
     if depth > 64 {
-        return; // prevent infinite recursion
+        return BBox::empty();
     }
 
     let structure = &structures[idx];
+    let mut bbox = BBox::empty();
 
     for elem in &structure.elements {
         match elem {
-            GdsElement::Boundary { layer, xy } => {
-                let pts: Vec<[f64; 2]> = xy
-                    .iter()
-                    .map(|&(x, y)| {
-                        let pt = xy_to_mm(x, y, scale);
-                        transform_point(pt, origin, mirror_x, mag, angle_deg)
-                    })
-                    .collect();
-                out.boundaries.push((*layer, pts));
+            GdsElement::Boundary { xy, .. } => {
+                for &(x, y) in xy {
+                    let pt = xy_to_mm(x, y, scale);
+                    let pt = transform_point(pt, origin, mirror_x, mag, angle_deg);
+                    bbox.expand_point(pt[0], pt[1]);
+                }
             }
-            GdsElement::Path {
-                layer, width, xy, ..
-            } => {
-                let pts: Vec<[f64; 2]> = xy
-                    .iter()
-                    .map(|&(x, y)| {
-                        let pt = xy_to_mm(x, y, scale);
-                        transform_point(pt, origin, mirror_x, mag, angle_deg)
-                    })
-                    .collect();
-                out.paths.push((*layer, *width, pts));
+            GdsElement::Path { xy, .. } => {
+                for &(x, y) in xy {
+                    let pt = xy_to_mm(x, y, scale);
+                    let pt = transform_point(pt, origin, mirror_x, mag, angle_deg);
+                    bbox.expand_point(pt[0], pt[1]);
+                }
             }
-            GdsElement::Text { layer, xy, text } => {
+            GdsElement::Text { xy, .. } => {
                 let pt = xy_to_mm(xy.0, xy.1, scale);
                 let pt = transform_point(pt, origin, mirror_x, mag, angle_deg);
-                out.texts.push((*layer, pt, text.clone()));
+                bbox.expand_point(pt[0], pt[1]);
             }
             GdsElement::SRef {
                 sname,
@@ -826,7 +841,7 @@ fn flatten_structure(
                     let ref_origin = xy_to_mm(xy.0, xy.1, scale);
                     let ref_origin = transform_point(ref_origin, origin, mirror_x, mag, angle_deg);
                     let ref_mirror = (strans & 0x8000) != 0;
-                    flatten_structure(
+                    let sub = compute_structure_bbox(
                         ref_idx,
                         structures,
                         struct_map,
@@ -836,8 +851,11 @@ fn flatten_structure(
                         *ref_mag,
                         *ref_angle,
                         depth + 1,
-                        out,
                     );
+                    if sub.minx != f64::INFINITY {
+                        bbox.expand_point(sub.minx, sub.miny);
+                        bbox.expand_point(sub.maxx, sub.maxy);
+                    }
                 }
             }
             GdsElement::ARef {
@@ -850,7 +868,6 @@ fn flatten_structure(
                 angle: ref_angle,
             } => {
                 if let Some(&ref_idx) = struct_map.get(sname.as_str()) {
-                    // AREF XY has 3 points: origin, col spacing end, row spacing end
                     if xy.len() >= 3 {
                         let p0 = xy_to_mm(xy[0].0, xy[0].1, scale);
                         let p0 = transform_point(p0, origin, mirror_x, mag, angle_deg);
@@ -859,56 +876,248 @@ fn flatten_structure(
                         let p2 = xy_to_mm(xy[2].0, xy[2].1, scale);
                         let p2 = transform_point(p2, origin, mirror_x, mag, angle_deg);
 
-                        let ncols = *cols as usize;
-                        let nrows = *rows as usize;
-
-                        let col_dx = if ncols > 1 {
-                            (p1[0] - p0[0]) / ncols as f64
-                        } else {
-                            0.0
-                        };
-                        let col_dy = if ncols > 1 {
-                            (p1[1] - p0[1]) / ncols as f64
-                        } else {
-                            0.0
-                        };
-                        let row_dx = if nrows > 1 {
-                            (p2[0] - p0[0]) / nrows as f64
-                        } else {
-                            0.0
-                        };
-                        let row_dy = if nrows > 1 {
-                            (p2[1] - p0[1]) / nrows as f64
-                        } else {
-                            0.0
-                        };
-
                         let ref_mirror = (strans & 0x8000) != 0;
 
-                        for r in 0..nrows {
-                            for c in 0..ncols {
-                                let inst_origin = [
-                                    p0[0] + c as f64 * col_dx + r as f64 * row_dx,
-                                    p0[1] + c as f64 * col_dy + r as f64 * row_dy,
-                                ];
-                                flatten_structure(
-                                    ref_idx,
-                                    structures,
-                                    struct_map,
-                                    scale,
-                                    inst_origin,
-                                    ref_mirror,
-                                    *ref_mag,
-                                    *ref_angle,
-                                    depth + 1,
-                                    out,
-                                );
+                        // Only check corners for bbox
+                        for &(r, c) in &[
+                            (0usize, 0usize),
+                            (0, (*cols as usize).saturating_sub(1)),
+                            ((*rows as usize).saturating_sub(1), 0),
+                            (
+                                (*rows as usize).saturating_sub(1),
+                                (*cols as usize).saturating_sub(1),
+                            ),
+                        ] {
+                            let ncols = *cols as usize;
+                            let nrows = *rows as usize;
+                            let col_dx = if ncols > 1 {
+                                (p1[0] - p0[0]) / ncols as f64
+                            } else {
+                                0.0
+                            };
+                            let col_dy = if ncols > 1 {
+                                (p1[1] - p0[1]) / ncols as f64
+                            } else {
+                                0.0
+                            };
+                            let row_dx = if nrows > 1 {
+                                (p2[0] - p0[0]) / nrows as f64
+                            } else {
+                                0.0
+                            };
+                            let row_dy = if nrows > 1 {
+                                (p2[1] - p0[1]) / nrows as f64
+                            } else {
+                                0.0
+                            };
+                            let inst_origin = [
+                                p0[0] + c as f64 * col_dx + r as f64 * row_dx,
+                                p0[1] + c as f64 * col_dy + r as f64 * row_dy,
+                            ];
+                            let sub = compute_structure_bbox(
+                                ref_idx,
+                                structures,
+                                struct_map,
+                                scale,
+                                inst_origin,
+                                ref_mirror,
+                                *ref_mag,
+                                *ref_angle,
+                                depth + 1,
+                            );
+                            if sub.minx != f64::INFINITY {
+                                bbox.expand_point(sub.minx, sub.miny);
+                                bbox.expand_point(sub.maxx, sub.maxy);
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    bbox
+}
+
+/// Flatten structure elements into geometry, resolving SREF/AREF recursively.
+/// Uses a cell cache and element count limit to handle large IC layouts.
+#[allow(clippy::too_many_arguments)]
+fn flatten_structure(
+    idx: usize,
+    structures: &[GdsStructure],
+    struct_map: &HashMap<&str, usize>,
+    scale: f64,
+    origin: [f64; 2],
+    mirror_x: bool,
+    mag: f64,
+    angle_deg: f64,
+    depth: usize,
+    out: &mut FlattenOutput,
+    cache: &mut HashMap<usize, CachedFlatten>,
+) {
+    if depth > 64 || out.element_count() >= MAX_FLATTEN_ELEMENTS {
+        return;
+    }
+
+    // Check if we have a cached version of this cell's local geometry
+    if !cache.contains_key(&idx) {
+        let mut local = FlattenOutput {
+            boundaries: Vec::new(),
+            paths: Vec::new(),
+            texts: Vec::new(),
+        };
+        let structure = &structures[idx];
+        for elem in &structure.elements {
+            match elem {
+                GdsElement::Boundary { layer, xy } => {
+                    let pts: Vec<[f64; 2]> =
+                        xy.iter().map(|&(x, y)| xy_to_mm(x, y, scale)).collect();
+                    local.boundaries.push((*layer, pts));
+                }
+                GdsElement::Path {
+                    layer, width, xy, ..
+                } => {
+                    let pts: Vec<[f64; 2]> =
+                        xy.iter().map(|&(x, y)| xy_to_mm(x, y, scale)).collect();
+                    local.paths.push((*layer, *width, pts));
+                }
+                GdsElement::Text { layer, xy, text } => {
+                    let pt = xy_to_mm(xy.0, xy.1, scale);
+                    local.texts.push((*layer, pt, text.clone()));
+                }
+                GdsElement::SRef {
+                    sname,
+                    xy,
+                    strans,
+                    mag: ref_mag,
+                    angle: ref_angle,
+                } => {
+                    if let Some(&ref_idx) = struct_map.get(sname.as_str()) {
+                        let ref_origin = xy_to_mm(xy.0, xy.1, scale);
+                        let ref_mirror = (strans & 0x8000) != 0;
+                        flatten_structure(
+                            ref_idx,
+                            structures,
+                            struct_map,
+                            scale,
+                            ref_origin,
+                            ref_mirror,
+                            *ref_mag,
+                            *ref_angle,
+                            depth + 1,
+                            &mut local,
+                            cache,
+                        );
+                    }
+                }
+                GdsElement::ARef {
+                    sname,
+                    xy,
+                    cols,
+                    rows,
+                    strans,
+                    mag: ref_mag,
+                    angle: ref_angle,
+                } => {
+                    if let Some(&ref_idx) = struct_map.get(sname.as_str()) {
+                        if xy.len() >= 3 {
+                            let p0 = xy_to_mm(xy[0].0, xy[0].1, scale);
+                            let p1 = xy_to_mm(xy[1].0, xy[1].1, scale);
+                            let p2 = xy_to_mm(xy[2].0, xy[2].1, scale);
+
+                            let ncols = *cols as usize;
+                            let nrows = *rows as usize;
+
+                            let col_dx = if ncols > 1 {
+                                (p1[0] - p0[0]) / ncols as f64
+                            } else {
+                                0.0
+                            };
+                            let col_dy = if ncols > 1 {
+                                (p1[1] - p0[1]) / ncols as f64
+                            } else {
+                                0.0
+                            };
+                            let row_dx = if nrows > 1 {
+                                (p2[0] - p0[0]) / nrows as f64
+                            } else {
+                                0.0
+                            };
+                            let row_dy = if nrows > 1 {
+                                (p2[1] - p0[1]) / nrows as f64
+                            } else {
+                                0.0
+                            };
+
+                            let ref_mirror = (strans & 0x8000) != 0;
+
+                            for r in 0..nrows {
+                                for c in 0..ncols {
+                                    if local.element_count() >= MAX_FLATTEN_ELEMENTS {
+                                        break;
+                                    }
+                                    let inst_origin = [
+                                        p0[0] + c as f64 * col_dx + r as f64 * row_dx,
+                                        p0[1] + c as f64 * col_dy + r as f64 * row_dy,
+                                    ];
+                                    flatten_structure(
+                                        ref_idx,
+                                        structures,
+                                        struct_map,
+                                        scale,
+                                        inst_origin,
+                                        ref_mirror,
+                                        *ref_mag,
+                                        *ref_angle,
+                                        depth + 1,
+                                        &mut local,
+                                        cache,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cache.insert(
+            idx,
+            CachedFlatten {
+                boundaries: local.boundaries,
+                paths: local.paths,
+                texts: local.texts,
+            },
+        );
+    }
+
+    // Apply the transform to cached geometry and append to output
+    let cached = cache.get(&idx).unwrap();
+    for (layer, pts) in &cached.boundaries {
+        if out.element_count() >= MAX_FLATTEN_ELEMENTS {
+            return;
+        }
+        let transformed: Vec<[f64; 2]> = pts
+            .iter()
+            .map(|pt| transform_point(*pt, origin, mirror_x, mag, angle_deg))
+            .collect();
+        out.boundaries.push((*layer, transformed));
+    }
+    for (layer, width, pts) in &cached.paths {
+        if out.element_count() >= MAX_FLATTEN_ELEMENTS {
+            return;
+        }
+        let transformed: Vec<[f64; 2]> = pts
+            .iter()
+            .map(|pt| transform_point(*pt, origin, mirror_x, mag, angle_deg))
+            .collect();
+        out.paths.push((*layer, *width, transformed));
+    }
+    for (layer, pt, text) in &cached.texts {
+        if out.element_count() >= MAX_FLATTEN_ELEMENTS {
+            return;
+        }
+        let transformed = transform_point(*pt, origin, mirror_x, mag, angle_deg);
+        out.texts.push((*layer, transformed, text.clone()));
     }
 }
 
@@ -971,12 +1180,26 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     // Find top-level structure
     let top_idx = find_top_structure(&structures).unwrap_or(structures.len() - 1);
 
-    // Flatten the top structure
+    // Compute bbox by walking the hierarchy (works even for huge layouts)
+    let hier_bbox = compute_structure_bbox(
+        top_idx,
+        &structures,
+        &struct_map,
+        scale,
+        [0.0, 0.0],
+        false,
+        1.0,
+        0.0,
+        0,
+    );
+
+    // Flatten the top structure (with element cap for large layouts)
     let mut flat = FlattenOutput {
         boundaries: Vec::new(),
         paths: Vec::new(),
         texts: Vec::new(),
     };
+    let mut cache: HashMap<usize, CachedFlatten> = HashMap::new();
 
     flatten_structure(
         top_idx,
@@ -989,16 +1212,16 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         0.0,
         0,
         &mut flat,
+        &mut cache,
     );
 
     let boundaries = flat.boundaries;
     let all_paths = flat.paths;
 
-    // Build board outline from boundaries (use all geometry for bbox)
-    let mut bbox = BBox::empty();
+    // Start with hierarchy bbox, then expand with flattened geometry
+    let mut bbox = hier_bbox;
     let mut edges: Vec<Drawing> = Vec::new();
 
-    // All boundaries contribute to the bounding box
     for (_, pts) in &boundaries {
         for pt in pts {
             bbox.expand_point(pt[0], pt[1]);
@@ -1045,6 +1268,22 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
                 width: 0.05,
             });
         }
+    } else if bbox.minx != f64::INFINITY {
+        // Synthesize board outline from bounding box when no boundary exists
+        let corners = [
+            [bbox.minx, bbox.miny],
+            [bbox.maxx, bbox.miny],
+            [bbox.maxx, bbox.maxy],
+            [bbox.minx, bbox.maxy],
+            [bbox.minx, bbox.miny],
+        ];
+        for w in corners.windows(2) {
+            edges.push(Drawing::Segment {
+                start: w[0],
+                end: w[1],
+                width: 0.05,
+            });
+        }
     }
 
     // Build footprints from non-top-level structures that are referenced
@@ -1053,6 +1292,9 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
 
     // Collect SREF instances from the top structure as footprints
     for elem in &structures[top_idx].elements {
+        if footprints.len() >= MAX_FOOTPRINTS {
+            break;
+        }
         if let GdsElement::SRef {
             sname,
             xy,
@@ -1083,6 +1325,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
                     0.0,
                     0,
                     &mut sub_flat,
+                    &mut cache,
                 );
 
                 let sub_boundaries = sub_flat.boundaries;
