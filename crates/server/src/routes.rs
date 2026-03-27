@@ -93,6 +93,7 @@ pub fn router() -> Router<AppState> {
         .route("/b/{id}/data", get(get_bom_data))
         .route("/b/{id}/meta", get(get_meta))
         .route("/b/{id}/thumb.svg", get(get_thumb_svg))
+        .route("/gh-render", get(crate::github::gh_render))
         .route("/health", get(health))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD))
 }

@@ -1,3 +1,4 @@
+mod github;
 mod routes;
 mod s3;
 
@@ -26,10 +27,27 @@ async fn main() {
     let recent = routes::load_recent(&s3_client).await;
     tracing::info!("Loaded {} recent public uploads", recent.len());
 
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    default_headers.insert(
+        "user-agent",
+        reqwest::header::HeaderValue::from_static("pastebom.com"),
+    );
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        if let Ok(val) = format!("Bearer {token}").parse() {
+            default_headers.insert("authorization", val);
+        }
+    }
+    let http_client = reqwest::ClientBuilder::new()
+        .default_headers(default_headers)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build HTTP client");
+
     let state = AppState {
         s3: s3_client,
         viewer_dir: viewer_dir.clone(),
         recent: Arc::new(RwLock::new(recent)),
+        http_client,
     };
 
     let app = Router::new()
@@ -50,4 +68,5 @@ pub struct AppState {
     pub s3: s3::S3Client,
     pub viewer_dir: PathBuf,
     pub recent: Arc<RwLock<Vec<routes::RecentEntry>>>,
+    pub http_client: reqwest::Client,
 }
