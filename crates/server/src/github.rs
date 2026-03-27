@@ -1,0 +1,323 @@
+use axum::{
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+};
+use pcb_extract::ExtractOptions;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::AppState;
+
+#[derive(Deserialize)]
+pub struct GhRenderParams {
+    repo: String,
+    path: String,
+    #[serde(rename = "ref", default = "default_ref")]
+    git_ref: String,
+}
+
+fn default_ref() -> String {
+    "main".to_string()
+}
+
+#[derive(Serialize, Deserialize)]
+struct GhCacheEntry {
+    sha: String,
+    bom_id: String,
+}
+
+/// GET /gh-render?repo=owner/repo&path=path/to/file.kicad_pcb&ref=main
+pub async fn gh_render(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<GhRenderParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Validate repo format: must be "owner/repo" with no extra slashes
+    let parts: Vec<&str> = params.repo.split('/').collect();
+    if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) || params.repo.contains("..") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid repo format. Use owner/repo".to_string(),
+        ));
+    }
+
+    // Validate path: no traversal
+    if params.path.contains("..") || params.path.starts_with('/') || params.path.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Invalid file path".to_string()));
+    }
+
+    // Validate the file has a recognized PCB extension
+    let file_path = std::path::Path::new(&params.path);
+    if pcb_extract::detect_format(file_path).is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Unsupported file format".to_string(),
+        ));
+    }
+
+    let cache_key = build_cache_key(&params.repo, &params.git_ref, &params.path);
+
+    // Check GitHub for current file SHA
+    let gh_info = fetch_file_info(
+        &state.http_client,
+        &params.repo,
+        &params.path,
+        &params.git_ref,
+    )
+    .await
+    .map_err(|e| match e {
+        GhError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "File not found on GitHub".to_string(),
+        ),
+        GhError::RateLimited => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GitHub API rate limit exceeded. Try again later.".to_string(),
+        ),
+        GhError::Other(msg) => (StatusCode::BAD_GATEWAY, msg),
+    })?;
+
+    // Check if we have a cached entry with matching SHA
+    if let Ok(cached_bytes) = state.s3.get_object(&cache_key).await {
+        if let Ok(entry) = serde_json::from_slice::<GhCacheEntry>(&cached_bytes) {
+            if entry.sha == gh_info.sha {
+                // Check If-None-Match for 304
+                if let Some(etag) = headers.get("if-none-match") {
+                    if etag.as_bytes() == format!("\"{}\"", entry.sha).as_bytes() {
+                        return Ok((StatusCode::NOT_MODIFIED, HeaderMap::new(), Vec::new()));
+                    }
+                }
+
+                // Serve cached thumbnail
+                let thumb_key = format!("thumbnails/{}.svg", entry.bom_id);
+                if let Ok(svg) = state.s3.get_object(&thumb_key).await {
+                    return Ok((StatusCode::OK, svg_headers(&entry.sha), svg));
+                }
+            }
+        }
+    }
+
+    // Cache miss or stale — download from GitHub
+    let file_bytes = download_raw(
+        &state.http_client,
+        &params.repo,
+        &params.git_ref,
+        &params.path,
+    )
+    .await
+    .map_err(|e| match e {
+        GhError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "File not found on GitHub".to_string(),
+        ),
+        GhError::RateLimited => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GitHub API rate limit exceeded".to_string(),
+        ),
+        GhError::Other(msg) => (StatusCode::BAD_GATEWAY, msg),
+    })?;
+
+    const MAX_SIZE: usize = 50 * 1024 * 1024;
+    if file_bytes.len() > MAX_SIZE {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "File too large (50 MB limit)".to_string(),
+        ));
+    }
+
+    // Detect format with content
+    let format =
+        pcb_extract::detect_format_with_content(file_path, &file_bytes).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Unsupported file format".to_string(),
+            )
+        })?;
+
+    // Parse
+    let opts = ExtractOptions {
+        include_tracks: true,
+        include_nets: true,
+    };
+    let pcb_data = pcb_extract::extract_bytes(&file_bytes, format, &opts).map_err(|e| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("Parse failed: {e}"),
+        )
+    })?;
+
+    let filename = file_path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let bom_id = Uuid::new_v4().to_string();
+    let component_count = pcb_data.footprints.len();
+    let file_size = file_bytes.len();
+
+    // Store through normal upload path
+    let upload_key = format!("uploads/{bom_id}/{filename}");
+    let _ = state
+        .s3
+        .put_object(&upload_key, file_bytes, "application/octet-stream")
+        .await;
+
+    let pcbdata_json = serde_json::to_vec(&pcb_data).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Serialization failed".to_string(),
+        )
+    })?;
+    let bom_key = format!("boms/{bom_id}.json");
+    state
+        .s3
+        .put_object(&bom_key, pcbdata_json, "application/json")
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Storage failed".to_string(),
+            )
+        })?;
+
+    // Store metadata
+    let meta = serde_json::json!({
+        "id": bom_id,
+        "filename": filename,
+        "components": component_count,
+        "file_size": file_size,
+        "github_repo": params.repo,
+        "github_path": params.path,
+        "github_ref": params.git_ref,
+    });
+    let meta_key = format!("boms/{bom_id}.meta.json");
+    if let Ok(meta_json) = serde_json::to_vec(&meta) {
+        let _ = state
+            .s3
+            .put_object(&meta_key, meta_json, "application/json")
+            .await;
+    }
+
+    // Add to recent list
+    let entry = crate::routes::RecentEntry {
+        id: bom_id.clone(),
+        filename: filename.clone(),
+        components: component_count,
+        file_size,
+        created: chrono::Utc::now().to_rfc3339(),
+    };
+    {
+        let mut recent = state.recent.write().await;
+        recent.insert(0, entry);
+        recent.truncate(50);
+        if let Ok(json) = serde_json::to_vec(&*recent) {
+            let _ = state
+                .s3
+                .put_object("recent.json", json, "application/json")
+                .await;
+        }
+    }
+
+    // Render thumbnail
+    let svg = pcb_extract::thumbnail::render_svg(&pcb_data);
+    let svg_bytes = svg.into_bytes();
+
+    // Store thumbnail
+    let thumb_key = format!("thumbnails/{bom_id}.svg");
+    let _ = state
+        .s3
+        .put_object(&thumb_key, svg_bytes.clone(), "image/svg+xml")
+        .await;
+
+    // Store cache entry
+    let cache_entry = GhCacheEntry {
+        sha: gh_info.sha.clone(),
+        bom_id,
+    };
+    if let Ok(cache_json) = serde_json::to_vec(&cache_entry) {
+        let _ = state
+            .s3
+            .put_object(&cache_key, cache_json, "application/json")
+            .await;
+    }
+
+    Ok((StatusCode::OK, svg_headers(&gh_info.sha), svg_bytes))
+}
+
+fn svg_headers(sha: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", "image/svg+xml".parse().unwrap());
+    headers.insert("cache-control", "public, max-age=300".parse().unwrap());
+    headers.insert("etag", format!("\"{sha}\"").parse().unwrap());
+    headers
+}
+
+fn build_cache_key(repo: &str, git_ref: &str, path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    let path_hash = hex::encode(hasher.finalize());
+    format!("gh/{repo}/{git_ref}/{path_hash}.json")
+}
+
+enum GhError {
+    NotFound,
+    RateLimited,
+    Other(String),
+}
+
+#[derive(Deserialize)]
+struct GitHubContentsResponse {
+    sha: String,
+}
+
+async fn fetch_file_info(
+    client: &reqwest::Client,
+    repo: &str,
+    path: &str,
+    git_ref: &str,
+) -> Result<GitHubContentsResponse, GhError> {
+    let url = format!("https://api.github.com/repos/{repo}/contents/{path}?ref={git_ref}");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| GhError::Other(format!("GitHub API request failed: {e}")))?;
+
+    match resp.status().as_u16() {
+        200 => resp
+            .json::<GitHubContentsResponse>()
+            .await
+            .map_err(|e| GhError::Other(format!("Failed to parse GitHub response: {e}"))),
+        404 => Err(GhError::NotFound),
+        403 | 429 => Err(GhError::RateLimited),
+        status => Err(GhError::Other(format!(
+            "GitHub API returned status {status}"
+        ))),
+    }
+}
+
+async fn download_raw(
+    client: &reqwest::Client,
+    repo: &str,
+    git_ref: &str,
+    path: &str,
+) -> Result<Vec<u8>, GhError> {
+    let url = format!("https://raw.githubusercontent.com/{repo}/{git_ref}/{path}");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| GhError::Other(format!("Download failed: {e}")))?;
+
+    match resp.status().as_u16() {
+        200 => resp
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| GhError::Other(format!("Failed to read response body: {e}"))),
+        404 => Err(GhError::NotFound),
+        403 | 429 => Err(GhError::RateLimited),
+        status => Err(GhError::Other(format!("GitHub returned status {status}"))),
+    }
+}
