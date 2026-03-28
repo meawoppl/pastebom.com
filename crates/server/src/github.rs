@@ -12,14 +12,11 @@ use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct GhRenderParams {
-    repo: String,
-    path: String,
-    #[serde(rename = "ref", default = "default_ref")]
-    git_ref: String,
-}
-
-fn default_ref() -> String {
-    "main".to_string()
+    /// Single path: owner/repo/path/to/file.kicad_pcb
+    file: String,
+    /// Optional branch/tag override
+    #[serde(rename = "ref")]
+    git_ref: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -28,7 +25,7 @@ struct GhCacheEntry {
     bom_id: String,
 }
 
-/// GET /gh-render?repo=owner/repo&path=path/to/file.kicad_pcb&ref=main
+/// GET /gh-render?file=owner/repo/path/to/file.kicad_pcb&ref=main
 pub async fn gh_render(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -45,38 +42,42 @@ async fn gh_render_inner(
     headers: HeaderMap,
     params: GhRenderParams,
 ) -> Result<(StatusCode, HeaderMap, Vec<u8>), String> {
-    // Validate repo format: must be "owner/repo" with no extra slashes
-    let parts: Vec<&str> = params.repo.split('/').collect();
-    if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) || params.repo.contains("..") {
-        return Err("Invalid repo format — use owner/repo".to_string());
+    // Parse file param: owner/repo/path/to/file.ext
+    let file = params.file.trim_matches('/');
+    if file.contains("..") {
+        return Err("Invalid path".to_string());
     }
 
-    // Validate path: no traversal
-    if params.path.contains("..") || params.path.starts_with('/') || params.path.is_empty() {
-        return Err("Invalid file path".to_string());
+    let parts: Vec<&str> = file.splitn(3, '/').collect();
+    if parts.len() < 3 || parts.iter().any(|p| p.is_empty()) {
+        return Err("Use: ?file=owner/repo/path/to/file".to_string());
     }
+    let repo = format!("{}/{}", parts[0], parts[1]);
+    let path = parts[2].to_string();
 
     // Validate the file has a recognized PCB extension
-    let file_path = std::path::Path::new(&params.path);
+    let file_path = std::path::Path::new(&path);
     if pcb_extract::detect_format(file_path).is_none() {
         return Err("Unsupported file format".to_string());
     }
 
-    let cache_key = build_cache_key(&params.repo, &params.git_ref, &params.path);
+    // Resolve git ref: explicit, or try main then master
+    let git_ref = if let Some(r) = params.git_ref {
+        r
+    } else {
+        resolve_default_ref(&state.http_client, &repo, &path).await?
+    };
+
+    let cache_key = build_cache_key(&repo, &git_ref, &path);
 
     // Check GitHub for current file SHA
-    let gh_info = fetch_file_info(
-        &state.http_client,
-        &params.repo,
-        &params.path,
-        &params.git_ref,
-    )
-    .await
-    .map_err(|e| match e {
-        GhError::NotFound => "File not found on GitHub".to_string(),
-        GhError::RateLimited => "GitHub API rate limit exceeded — try again later".to_string(),
-        GhError::Other(msg) => format!("GitHub error: {msg}"),
-    })?;
+    let gh_info = fetch_file_info(&state.http_client, &repo, &path, &git_ref)
+        .await
+        .map_err(|e| match e {
+            GhError::NotFound => "File not found on GitHub".to_string(),
+            GhError::RateLimited => "GitHub API rate limit exceeded — try again later".to_string(),
+            GhError::Other(msg) => format!("GitHub error: {msg}"),
+        })?;
 
     // Check if we have a cached entry with matching SHA
     if let Ok(cached_bytes) = state.s3.get_object(&cache_key).await {
@@ -99,18 +100,13 @@ async fn gh_render_inner(
     }
 
     // Cache miss or stale — download from GitHub
-    let file_bytes = download_raw(
-        &state.http_client,
-        &params.repo,
-        &params.git_ref,
-        &params.path,
-    )
-    .await
-    .map_err(|e| match e {
-        GhError::NotFound => "File not found on GitHub".to_string(),
-        GhError::RateLimited => "GitHub API rate limit exceeded — try again later".to_string(),
-        GhError::Other(msg) => format!("Download failed: {msg}"),
-    })?;
+    let file_bytes = download_raw(&state.http_client, &repo, &git_ref, &path)
+        .await
+        .map_err(|e| match e {
+            GhError::NotFound => "File not found on GitHub".to_string(),
+            GhError::RateLimited => "GitHub API rate limit exceeded — try again later".to_string(),
+            GhError::Other(msg) => format!("Download failed: {msg}"),
+        })?;
 
     const MAX_SIZE: usize = 50 * 1024 * 1024;
     if file_bytes.len() > MAX_SIZE {
@@ -159,9 +155,9 @@ async fn gh_render_inner(
         "filename": filename,
         "components": component_count,
         "file_size": file_size,
-        "github_repo": params.repo,
-        "github_path": params.path,
-        "github_ref": params.git_ref,
+        "github_repo": repo,
+        "github_path": path,
+        "github_ref": git_ref,
     });
     let meta_key = format!("boms/{bom_id}.meta.json");
     if let Ok(meta_json) = serde_json::to_vec(&meta) {
@@ -270,6 +266,20 @@ fn error_svg(message: &str) -> Vec<u8> {
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 {height}" width="400" height="{height}"><rect width="400" height="{height}" fill="{bg}" rx="8"/><text x="200" y="30" text-anchor="middle" fill="{accent}" font-family="monospace" font-size="16" font-weight="bold">pastebom.com</text>{text_elements}</svg>"#
     ).into_bytes()
+}
+
+async fn resolve_default_ref(
+    client: &reqwest::Client,
+    repo: &str,
+    path: &str,
+) -> Result<String, String> {
+    // Try "main" first, then "master"
+    for branch in &["main", "master"] {
+        if fetch_file_info(client, repo, path, branch).await.is_ok() {
+            return Ok(branch.to_string());
+        }
+    }
+    Err("File not found on main or master branch".to_string())
 }
 
 fn build_cache_key(repo: &str, git_ref: &str, path: &str) -> String {
