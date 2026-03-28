@@ -33,28 +33,33 @@ pub async fn gh_render(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<GhRenderParams>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+) -> impl IntoResponse {
+    match gh_render_inner(state, headers, params).await {
+        Ok(response) => response,
+        Err(msg) => (StatusCode::OK, svg_headers("error"), error_svg(&msg)),
+    }
+}
+
+async fn gh_render_inner(
+    state: AppState,
+    headers: HeaderMap,
+    params: GhRenderParams,
+) -> Result<(StatusCode, HeaderMap, Vec<u8>), String> {
     // Validate repo format: must be "owner/repo" with no extra slashes
     let parts: Vec<&str> = params.repo.split('/').collect();
     if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) || params.repo.contains("..") {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Invalid repo format. Use owner/repo".to_string(),
-        ));
+        return Err("Invalid repo format — use owner/repo".to_string());
     }
 
     // Validate path: no traversal
     if params.path.contains("..") || params.path.starts_with('/') || params.path.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "Invalid file path".to_string()));
+        return Err("Invalid file path".to_string());
     }
 
     // Validate the file has a recognized PCB extension
     let file_path = std::path::Path::new(&params.path);
     if pcb_extract::detect_format(file_path).is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Unsupported file format".to_string(),
-        ));
+        return Err("Unsupported file format".to_string());
     }
 
     let cache_key = build_cache_key(&params.repo, &params.git_ref, &params.path);
@@ -68,15 +73,9 @@ pub async fn gh_render(
     )
     .await
     .map_err(|e| match e {
-        GhError::NotFound => (
-            StatusCode::NOT_FOUND,
-            "File not found on GitHub".to_string(),
-        ),
-        GhError::RateLimited => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "GitHub API rate limit exceeded. Try again later.".to_string(),
-        ),
-        GhError::Other(msg) => (StatusCode::BAD_GATEWAY, msg),
+        GhError::NotFound => "File not found on GitHub".to_string(),
+        GhError::RateLimited => "GitHub API rate limit exceeded — try again later".to_string(),
+        GhError::Other(msg) => format!("GitHub error: {msg}"),
     })?;
 
     // Check if we have a cached entry with matching SHA
@@ -108,45 +107,27 @@ pub async fn gh_render(
     )
     .await
     .map_err(|e| match e {
-        GhError::NotFound => (
-            StatusCode::NOT_FOUND,
-            "File not found on GitHub".to_string(),
-        ),
-        GhError::RateLimited => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "GitHub API rate limit exceeded".to_string(),
-        ),
-        GhError::Other(msg) => (StatusCode::BAD_GATEWAY, msg),
+        GhError::NotFound => "File not found on GitHub".to_string(),
+        GhError::RateLimited => "GitHub API rate limit exceeded — try again later".to_string(),
+        GhError::Other(msg) => format!("Download failed: {msg}"),
     })?;
 
     const MAX_SIZE: usize = 50 * 1024 * 1024;
     if file_bytes.len() > MAX_SIZE {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "File too large (50 MB limit)".to_string(),
-        ));
+        return Err("File too large (50 MB limit)".to_string());
     }
 
     // Detect format with content
-    let format =
-        pcb_extract::detect_format_with_content(file_path, &file_bytes).ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                "Unsupported file format".to_string(),
-            )
-        })?;
+    let format = pcb_extract::detect_format_with_content(file_path, &file_bytes)
+        .ok_or_else(|| "Unsupported file format".to_string())?;
 
     // Parse
     let opts = ExtractOptions {
         include_tracks: true,
         include_nets: true,
     };
-    let pcb_data = pcb_extract::extract_bytes(&file_bytes, format, &opts).map_err(|e| {
-        (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("Parse failed: {e}"),
-        )
-    })?;
+    let pcb_data = pcb_extract::extract_bytes(&file_bytes, format, &opts)
+        .map_err(|e| format!("Failed to parse PCB file: {e}"))?;
 
     let filename = file_path
         .file_name()
@@ -163,23 +144,14 @@ pub async fn gh_render(
         .put_object(&upload_key, file_bytes, "application/octet-stream")
         .await;
 
-    let pcbdata_json = serde_json::to_vec(&pcb_data).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Serialization failed".to_string(),
-        )
-    })?;
+    let pcbdata_json =
+        serde_json::to_vec(&pcb_data).map_err(|_| "Serialization failed".to_string())?;
     let bom_key = format!("boms/{bom_id}.json");
     state
         .s3
         .put_object(&bom_key, pcbdata_json, "application/json")
         .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Storage failed".to_string(),
-            )
-        })?;
+        .map_err(|_| "Storage failed".to_string())?;
 
     // Store metadata
     let meta = serde_json::json!({
@@ -251,6 +223,53 @@ fn svg_headers(sha: &str) -> HeaderMap {
     headers.insert("cache-control", "public, max-age=300".parse().unwrap());
     headers.insert("etag", format!("\"{sha}\"").parse().unwrap());
     headers
+}
+
+fn error_svg(message: &str) -> Vec<u8> {
+    // Escape XML special characters
+    let escaped = message
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+
+    // Word-wrap long messages into lines of ~40 chars
+    let mut lines: Vec<String> = Vec::new();
+    let mut current_line = String::new();
+    for word in escaped.split_whitespace() {
+        if !current_line.is_empty() && current_line.len() + word.len() + 1 > 40 {
+            lines.push(current_line);
+            current_line = word.to_string();
+        } else {
+            if !current_line.is_empty() {
+                current_line.push(' ');
+            }
+            current_line.push_str(word);
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    let line_height = 18;
+    let text_block_height = lines.len() as u32 * line_height;
+    let height = 120.max(60 + text_block_height);
+
+    let err_color = "#ff6b6b";
+    let mut text_elements = String::new();
+    let start_y = (height - text_block_height) / 2 + 14;
+    for (i, line) in lines.iter().enumerate() {
+        let y = start_y + i as u32 * line_height;
+        text_elements.push_str(&format!(
+            r#"<text x="200" y="{y}" text-anchor="middle" fill="{err_color}" font-family="monospace" font-size="14">{line}</text>"#
+        ));
+    }
+
+    let bg = "#1a1a2e";
+    let accent = "#4ecca3";
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 {height}" width="400" height="{height}"><rect width="400" height="{height}" fill="{bg}" rx="8"/><text x="200" y="30" text-anchor="middle" fill="{accent}" font-family="monospace" font-size="16" font-weight="bold">pastebom.com</text>{text_elements}</svg>"#
+    ).into_bytes()
 }
 
 fn build_cache_key(repo: &str, git_ref: &str, path: &str) -> String {
