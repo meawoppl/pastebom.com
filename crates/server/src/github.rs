@@ -340,3 +340,79 @@ async fn download_raw(
         status => Err(GhError::Other(format!("GitHub returned status {status}"))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_svg_is_valid_svg() {
+        let svg = error_svg("File not found on GitHub");
+        let text = String::from_utf8(svg).unwrap();
+        assert!(text.starts_with("<svg"));
+        assert!(text.ends_with("</svg>"));
+        assert!(text.contains("pastebom.com"));
+    }
+
+    #[test]
+    fn test_error_svg_contains_message() {
+        let svg = error_svg("File not found on GitHub");
+        let text = String::from_utf8(svg).unwrap();
+        assert!(text.contains("File not found on GitHub"));
+    }
+
+    #[test]
+    fn test_error_svg_escapes_xml() {
+        let svg = error_svg("Error: <script>alert(1)</script> & stuff");
+        let text = String::from_utf8(svg).unwrap();
+        assert!(!text.contains("<script>"));
+        assert!(text.contains("&lt;script&gt;"));
+        assert!(text.contains("&amp;"));
+    }
+
+    #[test]
+    fn test_error_svg_wraps_long_messages() {
+        let svg = error_svg(
+            "This is a very long error message that should be wrapped across multiple lines",
+        );
+        let text = String::from_utf8(svg).unwrap();
+        // Should have multiple <text> elements for the message (plus the header)
+        let text_count = text.matches("<text").count();
+        assert!(text_count >= 3); // header + at least 2 wrapped lines
+    }
+
+    #[test]
+    fn test_error_svg_minimum_height() {
+        let svg = error_svg("Short");
+        let text = String::from_utf8(svg).unwrap();
+        assert!(text.contains(r#"height="120""#));
+    }
+
+    #[test]
+    fn test_cache_key_deterministic() {
+        let a = build_cache_key("owner/repo", "main", "path/to/file.kicad_pcb");
+        let b = build_cache_key("owner/repo", "main", "path/to/file.kicad_pcb");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_cache_key_varies_by_ref() {
+        let a = build_cache_key("owner/repo", "main", "file.kicad_pcb");
+        let b = build_cache_key("owner/repo", "dev", "file.kicad_pcb");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_cache_key_varies_by_path() {
+        let a = build_cache_key("owner/repo", "main", "a.kicad_pcb");
+        let b = build_cache_key("owner/repo", "main", "b.kicad_pcb");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_cache_key_format() {
+        let key = build_cache_key("owner/repo", "main", "board.kicad_pcb");
+        assert!(key.starts_with("gh/owner/repo/main/"));
+        assert!(key.ends_with(".json"));
+    }
+}
