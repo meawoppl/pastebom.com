@@ -398,7 +398,7 @@ impl Interpreter {
                         points.push([px + r * angle.cos(), py + r * angle.sin()]);
                     }
                     self.push_drawing(Drawing::Polygon {
-                        pos: [px, py],
+                        pos: [0.0, 0.0],
                         angle: 0.0,
                         polygons: vec![points],
                         filled: Some(1),
