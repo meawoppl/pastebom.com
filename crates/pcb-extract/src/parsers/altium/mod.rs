@@ -348,8 +348,8 @@ fn extract_board_edges(
                 edges.push(Drawing::Arc {
                     start: center,
                     radius,
-                    startangle: sa,
-                    endangle: ea,
+                    startangle: -ea,
+                    endangle: -sa,
                     width: 0.05,
                 });
             } else {
@@ -589,8 +589,8 @@ fn convert_arc_drawing(
         drawing: FootprintDrawingItem::Shape(Drawing::Arc {
             start: center,
             radius,
-            startangle: arc.start_angle,
-            endangle: arc.end_angle,
+            startangle: -arc.end_angle,
+            endangle: -arc.start_angle,
             width,
         }),
     })
@@ -704,8 +704,8 @@ fn categorize_drawings(
         let drawing = Drawing::Arc {
             start: center,
             radius,
-            startangle: a.start_angle,
-            endangle: a.end_angle,
+            startangle: -a.end_angle,
+            endangle: -a.start_angle,
             width,
         };
         match layer_map.category(a.layer) {
@@ -800,8 +800,8 @@ fn build_track_data(
             .filter(|n| !n.is_empty());
         let track = Track::Arc {
             center,
-            startangle: a.start_angle,
-            endangle: a.end_angle,
+            startangle: -a.end_angle,
+            endangle: -a.start_angle,
             radius,
             width,
             net,
