@@ -43,15 +43,22 @@ async fn main() {
         .build()
         .expect("Failed to build HTTP client");
 
+    let max_upload_bytes: usize = std::env::var("MAX_UPLOAD_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50 * 1024 * 1024);
+    tracing::info!("Max upload size: {} MB", max_upload_bytes / (1024 * 1024));
+
     let state = AppState {
         s3: s3_client,
         viewer_dir: viewer_dir.clone(),
         recent: Arc::new(RwLock::new(recent)),
         http_client,
+        max_upload_bytes,
     };
 
     let app = Router::new()
-        .merge(routes::router())
+        .merge(routes::router(max_upload_bytes))
         .nest_service("/viewer", ServeDir::new(&viewer_dir))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -69,4 +76,5 @@ pub struct AppState {
     pub viewer_dir: PathBuf,
     pub recent: Arc<RwLock<Vec<routes::RecentEntry>>>,
     pub http_client: reqwest::Client,
+    pub max_upload_bytes: usize,
 }

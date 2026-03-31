@@ -83,8 +83,7 @@ async fn reconstruct_recent(s3: &crate::s3::S3Client) -> Vec<RecentEntry> {
     entries
 }
 
-pub fn router() -> Router<AppState> {
-    const MAX_UPLOAD: usize = 50 * 1024 * 1024;
+pub fn router(max_upload_bytes: usize) -> Router<AppState> {
     Router::new()
         .route("/", get(index))
         .route("/terms", get(terms))
@@ -96,7 +95,7 @@ pub fn router() -> Router<AppState> {
         .route("/b/{id}/thumb.svg", get(get_thumb_svg))
         .route("/gh-render", get(crate::github::gh_render))
         .route("/health", get(health))
-        .layer(DefaultBodyLimit::max(MAX_UPLOAD))
+        .layer(DefaultBodyLimit::max(max_upload_bytes))
 }
 
 async fn index() -> Html<&'static str> {
@@ -168,11 +167,11 @@ async fn upload(
     let (filename, data) =
         file_data.ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "No file uploaded"))?;
 
-    const MAX_SIZE: usize = 50 * 1024 * 1024;
-    if data.len() > MAX_SIZE {
+    if data.len() > state.max_upload_bytes {
+        let limit_mb = state.max_upload_bytes / (1024 * 1024);
         return Err(error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "File too large (50 MB limit)",
+            &format!("File too large ({limit_mb} MB limit)"),
         ));
     }
 
