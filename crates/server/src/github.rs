@@ -108,9 +108,9 @@ async fn gh_render_inner(
             GhError::Other(msg) => format!("Download failed: {msg}"),
         })?;
 
-    const MAX_SIZE: usize = 50 * 1024 * 1024;
-    if file_bytes.len() > MAX_SIZE {
-        return Err("File too large (50 MB limit)".to_string());
+    if file_bytes.len() > state.max_upload_bytes {
+        let limit_mb = state.max_upload_bytes / (1024 * 1024);
+        return Err(format!("File too large ({limit_mb} MB limit)"));
     }
 
     // Detect format with content
