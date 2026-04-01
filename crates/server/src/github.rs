@@ -3,7 +3,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use pcb_extract::ExtractOptions;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -117,13 +116,8 @@ async fn gh_render_inner(
     let format = pcb_extract::detect_format_with_content(file_path, &file_bytes)
         .ok_or_else(|| "Unsupported file format".to_string())?;
 
-    // Parse
-    let opts = ExtractOptions {
-        include_tracks: true,
-        include_nets: true,
-    };
-    let pcb_data = pcb_extract::extract_bytes(&file_bytes, format, &opts)
-        .map_err(|e| format!("Failed to parse PCB file: {e}"))?;
+    // Parse with concurrency limit
+    let pcb_data = crate::routes::parse_pcb_guarded(&state, file_bytes.clone(), format).await?;
 
     let filename = file_path
         .file_name()
@@ -168,27 +162,22 @@ async fn gh_render_inner(
     }
 
     // Add to recent list
-    let entry = crate::routes::RecentEntry {
-        id: bom_id.clone(),
-        filename: filename.clone(),
-        components: component_count,
-        file_size,
-        created: chrono::Utc::now().to_rfc3339(),
-    };
-    {
-        let mut recent = state.recent.write().await;
-        recent.insert(0, entry);
-        recent.truncate(50);
-        if let Ok(json) = serde_json::to_vec(&*recent) {
-            let _ = state
-                .s3
-                .put_object("recent.json", json, "application/json")
-                .await;
-        }
-    }
+    crate::routes::add_recent(
+        &state,
+        crate::routes::RecentEntry {
+            id: bom_id.clone(),
+            filename: filename.clone(),
+            components: component_count,
+            file_size,
+            created: chrono::Utc::now().to_rfc3339(),
+        },
+    )
+    .await;
 
     // Render thumbnail
-    let svg = pcb_extract::thumbnail::render_svg(&pcb_data);
+    let svg = tokio::task::spawn_blocking(move || pcb_extract::thumbnail::render_svg(&pcb_data))
+        .await
+        .map_err(|_| "Thumbnail render failed".to_string())?;
     let svg_bytes = svg.into_bytes();
 
     // Store thumbnail

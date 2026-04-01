@@ -2,12 +2,15 @@ mod github;
 mod routes;
 mod s3;
 
+use axum::http::StatusCode;
 use axum::Router;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::time::Duration;
+use tokio::sync::{RwLock, Semaphore};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 #[tokio::main]
@@ -49,18 +52,29 @@ async fn main() {
         .unwrap_or(50 * 1024 * 1024);
     tracing::info!("Max upload size: {} MB", max_upload_bytes / (1024 * 1024));
 
+    let max_concurrent_parses: usize = std::env::var("MAX_CONCURRENT_PARSES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+    tracing::info!("Max concurrent parses: {max_concurrent_parses}");
+
     let state = AppState {
         s3: s3_client,
         viewer_dir: viewer_dir.clone(),
         recent: Arc::new(RwLock::new(recent)),
         http_client,
         max_upload_bytes,
+        parse_semaphore: Arc::new(Semaphore::new(max_concurrent_parses)),
     };
 
     let app = Router::new()
         .merge(routes::router(max_upload_bytes))
         .nest_service("/viewer", ServeDir::new(&viewer_dir))
         .layer(CorsLayer::permissive())
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(120),
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -77,4 +91,5 @@ pub struct AppState {
     pub recent: Arc<RwLock<Vec<routes::RecentEntry>>>,
     pub http_client: reqwest::Client,
     pub max_upload_bytes: usize,
+    pub parse_semaphore: Arc<Semaphore>,
 }

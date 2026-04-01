@@ -13,6 +13,43 @@ use crate::AppState;
 
 const MAX_RECENT: usize = 50;
 const RECENT_KEY: &str = "recent.json";
+const SEMAPHORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Acquire parse semaphore (with timeout) and run PCB extraction off the async runtime.
+pub async fn parse_pcb_guarded(
+    state: &AppState,
+    data: Vec<u8>,
+    format: pcb_extract::PcbFormat,
+) -> Result<pcb_extract::types::PcbData, String> {
+    let _permit = tokio::time::timeout(SEMAPHORE_TIMEOUT, state.parse_semaphore.acquire())
+        .await
+        .map_err(|_| "Server busy — try again later".to_string())?
+        .map_err(|_| "Server busy".to_string())?;
+    let result = tokio::task::spawn_blocking(move || {
+        let opts = ExtractOptions {
+            include_tracks: true,
+            include_nets: true,
+        };
+        pcb_extract::extract_bytes(&data, format, &opts)
+    })
+    .await
+    .map_err(|_| "Parse task failed".to_string())?
+    .map_err(|e| format!("Failed to parse PCB file: {e}"))?;
+    Ok(result)
+}
+
+/// Prepend an entry to the recent list and persist to storage.
+pub async fn add_recent(state: &AppState, entry: RecentEntry) {
+    let mut recent = state.recent.write().await;
+    recent.insert(0, entry);
+    recent.truncate(MAX_RECENT);
+    if let Ok(json) = serde_json::to_vec(&*recent) {
+        let _ = state
+            .s3
+            .put_object(RECENT_KEY, json, "application/json")
+            .await;
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RecentEntry {
@@ -149,15 +186,27 @@ async fn upload(
     let mut file_data: Option<(String, Vec<u8>)> = None;
     let mut secret = false;
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Ok(Some(mut field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         if name == "file" {
             let filename = field.file_name().unwrap_or("upload.bin").to_string();
-            let data = field
-                .bytes()
+            let limit = state.max_upload_bytes;
+            let mut data = Vec::new();
+            while let Some(chunk) = field
+                .chunk()
                 .await
-                .map_err(|_| error_response(StatusCode::BAD_REQUEST, "Failed to read upload"))?;
-            file_data = Some((filename, data.to_vec()));
+                .map_err(|_| error_response(StatusCode::BAD_REQUEST, "Failed to read upload"))?
+            {
+                data.extend_from_slice(&chunk);
+                if data.len() > limit {
+                    let limit_mb = limit / (1024 * 1024);
+                    return Err(error_response(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        &format!("File too large ({limit_mb} MB limit)"),
+                    ));
+                }
+            }
+            file_data = Some((filename, data));
         } else if name == "secret" {
             let val = field.text().await.unwrap_or_default();
             secret = val == "true";
@@ -166,14 +215,6 @@ async fn upload(
 
     let (filename, data) =
         file_data.ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "No file uploaded"))?;
-
-    if data.len() > state.max_upload_bytes {
-        let limit_mb = state.max_upload_bytes / (1024 * 1024);
-        return Err(error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("File too large ({limit_mb} MB limit)"),
-        ));
-    }
 
     let path = std::path::Path::new(&filename);
     let format = pcb_extract::detect_format_with_content(path, &data)
@@ -189,20 +230,10 @@ async fn upload(
         .put_object(&upload_key, data.clone(), "application/octet-stream")
         .await;
 
-    let opts = ExtractOptions {
-        include_tracks: true,
-        include_nets: true,
-    };
-    let pcb_data = match pcb_extract::extract_bytes(&data, format, &opts) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!("Parse error for {filename}: {e}");
-            return Err(error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "Failed to parse PCB file",
-            ));
-        }
-    };
+    let pcb_data = parse_pcb_guarded(&state, data, format).await.map_err(|e| {
+        tracing::error!("Parse error for {filename}: {e}");
+        error_response(StatusCode::UNPROCESSABLE_ENTITY, &e)
+    })?;
 
     let component_count = pcb_data.footprints.len();
 
@@ -236,22 +267,17 @@ async fn upload(
     }
 
     if !secret {
-        let entry = RecentEntry {
-            id: id.clone(),
-            filename: filename.clone(),
-            components: component_count,
-            file_size,
-            created: chrono::Utc::now().to_rfc3339(),
-        };
-        let mut recent = state.recent.write().await;
-        recent.insert(0, entry);
-        recent.truncate(MAX_RECENT);
-        if let Ok(json) = serde_json::to_vec(&*recent) {
-            let _ = state
-                .s3
-                .put_object(RECENT_KEY, json, "application/json")
-                .await;
-        }
+        add_recent(
+            &state,
+            RecentEntry {
+                id: id.clone(),
+                filename: filename.clone(),
+                components: component_count,
+                file_size,
+                created: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
     }
 
     let base_url =
@@ -358,7 +384,9 @@ async fn get_thumb_svg(
             )
         })?;
 
-    let svg = pcb_extract::thumbnail::render_svg(&pcb_data);
+    let svg = tokio::task::spawn_blocking(move || pcb_extract::thumbnail::render_svg(&pcb_data))
+        .await
+        .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Render failed"))?;
     let svg_bytes = svg.into_bytes();
 
     // Store in cache (fire and forget)
