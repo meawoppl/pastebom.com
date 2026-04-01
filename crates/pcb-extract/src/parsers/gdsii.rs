@@ -233,6 +233,10 @@ fn parse_records(data: &[u8]) -> Result<Vec<Record>, ExtractError> {
         });
 
         offset += length;
+
+        if record_type == ENDLIB {
+            break;
+        }
     }
 
     Ok(records)
@@ -2087,6 +2091,29 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("GDSII"), "Expected GDSII error, got: {}", err);
+    }
+
+    #[test]
+    fn test_null_padding_after_endlib() {
+        let mut data = build_gds_bytes(
+            1e-9,
+            1e-3,
+            &[(
+                "TOP",
+                &[GdsTestElement::Boundary {
+                    layer: 0,
+                    xy: vec![(0, 0), (1000, 0), (1000, 1000), (0, 1000), (0, 0)],
+                }],
+            )],
+        );
+        // Append 2048 null bytes (simulating disk block padding)
+        data.extend_from_slice(&[0u8; 2048]);
+        let result = parse(&data, &ExtractOptions::default());
+        assert!(
+            result.is_ok(),
+            "Null-padded GDSII should parse: {:?}",
+            result.err()
+        );
     }
 
     #[test]
