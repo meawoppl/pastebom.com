@@ -20,26 +20,44 @@ use self::layers::GerberLayerType;
 
 /// Parse a zip file containing Gerber files into PcbData.
 pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
+    parse_with_limit(data, opts, crate::MAX_DECOMPRESSED_BYTES)
+}
+
+fn parse_with_limit(
+    data: &[u8],
+    opts: &ExtractOptions,
+    max_decompressed: u64,
+) -> Result<PcbData, ExtractError> {
     let cursor = Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor)?;
 
     let mut layer_outputs: Vec<(GerberLayerType, GerberLayerOutput)> = Vec::new();
     let mut had_gerber = false;
+    let mut total_decompressed: u64 = 0;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
+        let file = archive.by_index(i)?;
         if file.is_dir() {
             continue;
         }
 
         let filename = file.name().to_string();
 
-        // Read file content
+        // Read file content with decompression bomb protection
+        let remaining = max_decompressed.saturating_sub(total_decompressed);
         let mut content = String::new();
         use std::io::Read;
-        if file.read_to_string(&mut content).is_err() {
+        if file
+            .take(remaining + 1)
+            .read_to_string(&mut content)
+            .is_err()
+        {
             // Binary file or encoding error — skip
             continue;
+        }
+        total_decompressed += content.len() as u64;
+        if total_decompressed > max_decompressed {
+            return Err(ExtractError::DecompressionBomb);
         }
 
         // Try to parse as Gerber first, then fall back to Excellon drill
@@ -604,5 +622,40 @@ M30
             }
             _ => panic!("Expected Circle"),
         }
+    }
+
+    #[test]
+    fn test_decompression_bomb_rejected() {
+        // Create a ZIP whose decompressed content exceeds a small limit.
+        let content = "X".repeat(2048); // 2 KB of text
+        let zip_data = make_test_zip(&[("bomb.gtl", &content)]);
+        let opts = ExtractOptions::default();
+        // Use a limit smaller than the content to trigger bomb detection
+        let result = parse_with_limit(&zip_data, &opts, 1024);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExtractError::DecompressionBomb),
+            "expected DecompressionBomb error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decompression_within_limit_succeeds() {
+        // Same content but with a generous limit should not trigger bomb detection
+        let gerber = "\
+%FSLAX24Y24*%
+%MOMM*%
+%ADD10C,0.200*%
+G01*
+D10*
+X10000Y10000D02*
+X40000Y10000D01*
+M02*
+";
+        let zip_data = make_test_zip(&[("board.GTL", gerber)]);
+        let opts = ExtractOptions::default();
+        let result = parse_with_limit(&zip_data, &opts, 1024 * 1024);
+        assert!(result.is_ok());
     }
 }
