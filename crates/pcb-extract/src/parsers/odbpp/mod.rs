@@ -564,26 +564,39 @@ fn compute_bbox(edges: &[Drawing]) -> BBox {
 
 /// Try extracting as .tgz first, then fall back to .zip.
 fn extract_archive(data: &[u8]) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
-    extract_tar_gz(data).or_else(|_| extract_zip(data))
+    let limit = crate::MAX_DECOMPRESSED_BYTES;
+    extract_tar_gz(data, limit).or_else(|_| extract_zip(data, limit))
 }
 
 /// Extract all files from a .zip archive into memory.
-fn extract_zip(data: &[u8]) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
+fn extract_zip(
+    data: &[u8],
+    max_decompressed: u64,
+) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
     let reader = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(reader)
         .map_err(|e| ExtractError::ParseError(format!("Failed to read ZIP archive: {e}")))?;
     let mut files = HashMap::new();
+    let mut total_decompressed: u64 = 0;
 
     for i in 0..archive.len() {
-        let mut entry = archive
+        let entry = archive
             .by_index(i)
             .map_err(|e| ExtractError::ParseError(format!("Failed to read ZIP entry: {e}")))?;
         if entry.is_file() {
             let name = entry.name().to_string();
+            let remaining = max_decompressed.saturating_sub(total_decompressed);
             let mut content = Vec::new();
-            entry.read_to_end(&mut content).map_err(|e| {
-                ExtractError::ParseError(format!("Failed to read ZIP entry content: {e}"))
-            })?;
+            entry
+                .take(remaining + 1)
+                .read_to_end(&mut content)
+                .map_err(|e| {
+                    ExtractError::ParseError(format!("Failed to read ZIP entry content: {e}"))
+                })?;
+            total_decompressed += content.len() as u64;
+            if total_decompressed > max_decompressed {
+                return Err(ExtractError::DecompressionBomb);
+            }
             files.insert(name, content);
         }
     }
@@ -592,10 +605,14 @@ fn extract_zip(data: &[u8]) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
 }
 
 /// Extract all files from a .tgz archive into memory.
-fn extract_tar_gz(data: &[u8]) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
+fn extract_tar_gz(
+    data: &[u8],
+    max_decompressed: u64,
+) -> Result<HashMap<String, Vec<u8>>, ExtractError> {
     let gz = flate2::read::GzDecoder::new(data);
     let mut archive = tar::Archive::new(gz);
     let mut files = HashMap::new();
+    let mut total_decompressed: u64 = 0;
 
     for entry in archive
         .entries()
@@ -610,10 +627,18 @@ fn extract_tar_gz(data: &[u8]) -> Result<HashMap<String, Vec<u8>>, ExtractError>
             .to_string();
 
         if entry.header().entry_type().is_file() {
+            let remaining = max_decompressed.saturating_sub(total_decompressed);
             let mut content = Vec::new();
-            entry.read_to_end(&mut content).map_err(|e| {
-                ExtractError::ParseError(format!("Failed to read tar entry content: {e}"))
-            })?;
+            (&mut entry)
+                .take(remaining + 1)
+                .read_to_end(&mut content)
+                .map_err(|e| {
+                    ExtractError::ParseError(format!("Failed to read tar entry content: {e}"))
+                })?;
+            total_decompressed += content.len() as u64;
+            if total_decompressed > max_decompressed {
+                return Err(ExtractError::DecompressionBomb);
+            }
             files.insert(path, content);
         }
     }

@@ -8,6 +8,10 @@ use error::ExtractError;
 use std::path::Path;
 use types::PcbData;
 
+/// Maximum total decompressed size for archive contents (500 MB).
+/// Prevents ZIP/tar bomb attacks where a small compressed file expands to exhaust memory.
+pub const MAX_DECOMPRESSED_BYTES: u64 = 500 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PcbFormat {
     KiCad,

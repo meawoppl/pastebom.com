@@ -19,4 +19,7 @@ pub enum ExtractError {
 
     #[error("ZIP error: {0}")]
     Zip(#[from] zip::result::ZipError),
+
+    #[error("decompression bomb detected: decompressed content exceeds safe size limit")]
+    DecompressionBomb,
 }
