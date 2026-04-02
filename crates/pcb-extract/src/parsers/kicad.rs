@@ -513,33 +513,7 @@ fn parse_footprint(
         }
     }
 
-    // Compute bounding box from pads
-    let mut bbox = BBox::empty();
-    for pad in &pads {
-        bbox.expand_point(
-            pad.pos[0] - pad.size[0] / 2.0,
-            pad.pos[1] - pad.size[1] / 2.0,
-        );
-        bbox.expand_point(
-            pad.pos[0] + pad.size[0] / 2.0,
-            pad.pos[1] + pad.size[1] / 2.0,
-        );
-    }
-    if bbox.minx == f64::INFINITY {
-        bbox = BBox {
-            minx: fp_x - 0.5,
-            miny: fp_y - 0.5,
-            maxx: fp_x + 0.5,
-            maxy: fp_y + 0.5,
-        };
-    }
-
-    let fp_bbox = FootprintBBox {
-        pos: [fp_x, fp_y],
-        relpos: [bbox.minx - fp_x, bbox.miny - fp_y],
-        size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
-        angle: fp_angle,
-    };
+    let fp_bbox = FootprintBBox::from_pads(&pads, [fp_x, fp_y], fp_angle);
 
     let comp_side = if side == "B" { Side::Back } else { Side::Front };
 

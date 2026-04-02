@@ -422,38 +422,12 @@ fn build_footprints(
                 }
             }
 
-            // Bounding box
-            let mut bbox = BBox::empty();
-            for pad in &fp_pads {
-                bbox.expand_point(
-                    pad.pos[0] - pad.size[0] / 2.0,
-                    pad.pos[1] - pad.size[1] / 2.0,
-                );
-                bbox.expand_point(
-                    pad.pos[0] + pad.size[0] / 2.0,
-                    pad.pos[1] + pad.size[1] / 2.0,
-                );
-            }
-            if bbox.minx == f64::INFINITY {
-                bbox = BBox {
-                    minx: center[0] - 0.5,
-                    miny: center[1] - 0.5,
-                    maxx: center[0] + 0.5,
-                    maxy: center[1] + 0.5,
-                };
-            }
-
             let side = layer_map.side(comp.layer);
 
             Footprint {
                 ref_: comp.designator.clone(),
                 center,
-                bbox: FootprintBBox {
-                    pos: center,
-                    relpos: [bbox.minx - center[0], bbox.miny - center[1]],
-                    size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
-                    angle: comp.rotation,
-                },
+                bbox: FootprintBBox::from_pads(&fp_pads, center, comp.rotation),
                 pads: fp_pads,
                 drawings: fp_drawings,
                 layer: side.to_string(),

@@ -462,33 +462,7 @@ fn parse_elements(
                 }
             }
 
-            // Bounding box
-            let mut bbox = BBox::empty();
-            for pad in &fp_pads {
-                bbox.expand_point(
-                    pad.pos[0] - pad.size[0] / 2.0,
-                    pad.pos[1] - pad.size[1] / 2.0,
-                );
-                bbox.expand_point(
-                    pad.pos[0] + pad.size[0] / 2.0,
-                    pad.pos[1] + pad.size[1] / 2.0,
-                );
-            }
-            if bbox.minx == f64::INFINITY {
-                bbox = BBox {
-                    minx: x - 0.5,
-                    miny: -y - 0.5,
-                    maxx: x + 0.5,
-                    maxy: -y + 0.5,
-                };
-            }
-
-            let fp_bbox = FootprintBBox {
-                pos: [x, -y],
-                relpos: [bbox.minx - x, bbox.miny - (-y)],
-                size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
-                angle,
-            };
+            let fp_bbox = FootprintBBox::from_pads(&fp_pads, [x, -y], angle);
 
             let idx = footprints.len();
 

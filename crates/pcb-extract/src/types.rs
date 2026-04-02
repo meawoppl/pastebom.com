@@ -294,6 +294,47 @@ pub struct FootprintBBox {
     pub angle: f64,
 }
 
+impl FootprintBBox {
+    /// Build a bbox from absolute pad positions by un-rotating them into the
+    /// footprint's local coordinate frame.  The viewer applies
+    /// `rotate(-angle)` when drawing the highlight, so storing local-frame
+    /// relpos/size avoids double-rotation.
+    pub fn from_pads(pads: &[Pad], center: [f64; 2], angle: f64) -> Self {
+        let mut bbox = BBox::empty();
+        let angle_rad = angle * std::f64::consts::PI / 180.0;
+        let cos_a = angle_rad.cos();
+        let sin_a = angle_rad.sin();
+
+        for pad in pads {
+            let dx = pad.pos[0] - center[0];
+            let dy = pad.pos[1] - center[1];
+            let (lx, ly) = if angle != 0.0 {
+                (dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a)
+            } else {
+                (dx, dy)
+            };
+            bbox.expand_point(lx - pad.size[0] / 2.0, ly - pad.size[1] / 2.0);
+            bbox.expand_point(lx + pad.size[0] / 2.0, ly + pad.size[1] / 2.0);
+        }
+
+        if !bbox.minx.is_finite() {
+            bbox = BBox {
+                minx: -0.5,
+                miny: -0.5,
+                maxx: 0.5,
+                maxy: 0.5,
+            };
+        }
+
+        FootprintBBox {
+            pos: center,
+            relpos: [bbox.minx, bbox.miny],
+            size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
+            angle,
+        }
+    }
+}
+
 // ─── Pad ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
