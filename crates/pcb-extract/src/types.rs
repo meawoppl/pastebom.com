@@ -9,12 +9,15 @@ pub fn round_f64(v: f64, places: u32) -> f64 {
 }
 
 /// Wrapper that rounds f64 to 6 decimal places on serialization.
+/// Non-finite values (infinity, NaN) are serialized as 0.0 to avoid JSON nulls.
 fn serialize_f64_rounded<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_f64(round_f64(*v, 6))
+    let val = if v.is_finite() { round_f64(*v, 6) } else { 0.0 };
+    s.serialize_f64(val)
 }
 
 fn serialize_point<S: Serializer>(p: &[f64; 2], s: S) -> Result<S::Ok, S::Error> {
-    let rounded = [round_f64(p[0], 6), round_f64(p[1], 6)];
+    let clamp = |v: f64| if v.is_finite() { round_f64(v, 6) } else { 0.0 };
+    let rounded = [clamp(p[0]), clamp(p[1])];
     rounded.serialize(s)
 }
 
