@@ -45,6 +45,8 @@ pub struct PcbData {
     pub footprints: Vec<Footprint>,
     pub metadata: Metadata,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<crate::PcbFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bom: Option<BomData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ibom_version: Option<String>,

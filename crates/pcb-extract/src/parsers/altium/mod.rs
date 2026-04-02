@@ -142,6 +142,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         drawings,
         footprints,
         metadata: extract_metadata(&board_records),
+        format: None,
         bom,
         ibom_version: None,
         tracks: track_data,

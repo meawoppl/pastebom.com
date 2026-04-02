@@ -86,6 +86,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             company: String::new(),
             date: String::new(),
         },
+        format: None,
         bom,
         ibom_version: None,
         tracks,

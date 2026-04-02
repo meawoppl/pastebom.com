@@ -311,6 +311,7 @@ fn assemble_pcb_data(
             company: String::new(),
             date: String::new(),
         },
+        format: None,
         bom: None,
         ibom_version: None,
         tracks,

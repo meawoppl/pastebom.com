@@ -114,6 +114,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         },
         footprints,
         metadata,
+        format: None,
         bom,
         ibom_version: None,
         tracks,

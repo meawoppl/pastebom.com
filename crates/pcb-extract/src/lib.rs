@@ -5,6 +5,7 @@ pub mod thumbnail;
 pub mod types;
 
 use error::ExtractError;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use types::PcbData;
 
@@ -12,7 +13,8 @@ use types::PcbData;
 /// Prevents ZIP/tar bomb attacks where a small compressed file expands to exhaust memory.
 pub const MAX_DECOMPRESSED_BYTES: u64 = 500 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PcbFormat {
     KiCad,
     EasyEda,
@@ -20,6 +22,7 @@ pub enum PcbFormat {
     Altium,
     Gerber,
     Gdsii,
+    #[serde(rename = "odbpp")]
     OdbPlusPlus,
 }
 
@@ -127,7 +130,7 @@ pub fn extract_bytes(
         return Err(ExtractError::MacosResourceFork);
     }
 
-    match format {
+    let mut pcb = match format {
         PcbFormat::KiCad => parsers::kicad::parse(data, opts),
         PcbFormat::EasyEda => parsers::easyeda::parse(data, opts),
         PcbFormat::Eagle => parsers::eagle::parse(data, opts),
@@ -135,7 +138,9 @@ pub fn extract_bytes(
         PcbFormat::Gerber => parsers::gerber::parse(data, opts),
         PcbFormat::Gdsii => parsers::gdsii::parse(data, opts),
         PcbFormat::OdbPlusPlus => parsers::odbpp::parse(data, opts),
-    }
+    }?;
+    pcb.format = Some(format);
+    Ok(pcb)
 }
 
 #[cfg(test)]

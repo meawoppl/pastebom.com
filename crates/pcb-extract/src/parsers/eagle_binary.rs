@@ -409,6 +409,7 @@ fn extract_board(
             company: String::new(),
             date: String::new(),
         },
+        format: None,
         bom,
         ibom_version: None,
         tracks,
