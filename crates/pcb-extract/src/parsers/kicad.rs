@@ -95,7 +95,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     };
 
     // Compute edges bounding box
-    let edges_bbox = compute_edges_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
 
     Ok(PcbData {
         edges_bbox,
@@ -1190,57 +1190,4 @@ fn arc_from_three_points(
     let end_angle = (cy - uy).atan2(cx - ux) * 180.0 / PI;
 
     Some(([ux, uy], radius, start_angle, end_angle))
-}
-
-fn compute_edges_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for edge in edges {
-        match edge {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Rect { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Circle { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            Drawing::Arc { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            Drawing::Curve {
-                start,
-                end,
-                cpa,
-                cpb,
-                ..
-            } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-                bbox.expand_point(cpa[0], cpa[1]);
-                bbox.expand_point(cpb[0], cpb[1]);
-            }
-            Drawing::Polygon { polygons, .. } => {
-                for poly in polygons {
-                    for pt in poly {
-                        bbox.expand_point(pt[0], pt[1]);
-                    }
-                }
-            }
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        }
-    } else {
-        bbox
-    }
 }

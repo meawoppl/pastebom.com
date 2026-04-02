@@ -109,7 +109,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
 
     // 7. Board edges
     let edges = extract_board_edges(&board_records, units_per_mil, scale);
-    let edges_bbox = compute_edges_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
 
     // 8. Categorize board-level drawings (silkscreen, fabrication)
     let drawings = categorize_drawings(&tracks, &arcs, &fills, &layer_map, scale);
@@ -856,34 +856,5 @@ fn extract_metadata(board_records: &[HashMap<String, String>]) -> Metadata {
         revision: String::new(),
         company: String::new(),
         date: String::new(),
-    }
-}
-
-// ─── Bbox ────────────────────────────────────────────────────────────
-
-fn compute_edges_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for edge in edges {
-        match edge {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Arc { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            _ => {}
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        }
-    } else {
-        bbox
     }
 }

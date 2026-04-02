@@ -47,7 +47,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         (Vec::new(), Vec::new())
     };
 
-    let edges_bbox = compute_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
     let bom = Some(generate_bom(
         &footprints,
         &components,
@@ -733,36 +733,5 @@ fn mirror_eagle_layer(layer: u32) -> u32 {
         51 => 52,
         52 => 51,
         _ => layer,
-    }
-}
-
-fn compute_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for edge in edges {
-        match edge {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Rect { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Circle { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            _ => {}
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        }
-    } else {
-        bbox
     }
 }

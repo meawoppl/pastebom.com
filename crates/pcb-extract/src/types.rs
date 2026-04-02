@@ -9,15 +9,12 @@ pub fn round_f64(v: f64, places: u32) -> f64 {
 }
 
 /// Wrapper that rounds f64 to 6 decimal places on serialization.
-/// Non-finite values (infinity, NaN) are serialized as 0.0 to avoid JSON nulls.
 fn serialize_f64_rounded<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
-    let val = if v.is_finite() { round_f64(*v, 6) } else { 0.0 };
-    s.serialize_f64(val)
+    s.serialize_f64(round_f64(*v, 6))
 }
 
 fn serialize_point<S: Serializer>(p: &[f64; 2], s: S) -> Result<S::Ok, S::Error> {
-    let clamp = |v: f64| if v.is_finite() { round_f64(v, 6) } else { 0.0 };
-    let rounded = [clamp(p[0]), clamp(p[1])];
+    let rounded = [round_f64(p[0], 6), round_f64(p[1], 6)];
     rounded.serialize(s)
 }
 
@@ -92,6 +89,53 @@ impl BBox {
         self.miny = self.miny.min(y);
         self.maxx = self.maxx.max(x);
         self.maxy = self.maxy.max(y);
+    }
+
+    /// Compute a bounding box from a slice of drawings.
+    /// Returns a default 100x100 box if no drawings contribute points.
+    pub fn from_drawings(edges: &[Drawing]) -> Self {
+        let mut bbox = Self::empty();
+        for edge in edges {
+            match edge {
+                Drawing::Segment { start, end, .. } | Drawing::Rect { start, end, .. } => {
+                    bbox.expand_point(start[0], start[1]);
+                    bbox.expand_point(end[0], end[1]);
+                }
+                Drawing::Circle { start, radius, .. } | Drawing::Arc { start, radius, .. } => {
+                    bbox.expand_point(start[0] - radius, start[1] - radius);
+                    bbox.expand_point(start[0] + radius, start[1] + radius);
+                }
+                Drawing::Curve {
+                    start,
+                    end,
+                    cpa,
+                    cpb,
+                    ..
+                } => {
+                    bbox.expand_point(start[0], start[1]);
+                    bbox.expand_point(end[0], end[1]);
+                    bbox.expand_point(cpa[0], cpa[1]);
+                    bbox.expand_point(cpb[0], cpb[1]);
+                }
+                Drawing::Polygon { polygons, .. } => {
+                    for poly in polygons {
+                        for pt in poly {
+                            bbox.expand_point(pt[0], pt[1]);
+                        }
+                    }
+                }
+            }
+        }
+        if !bbox.minx.is_finite() {
+            Self {
+                minx: 0.0,
+                miny: 0.0,
+                maxx: 100.0,
+                maxy: 100.0,
+            }
+        } else {
+            bbox
+        }
     }
 }
 
