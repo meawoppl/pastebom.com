@@ -1,5 +1,6 @@
 pub mod altium;
 pub mod eagle;
+pub mod eagle_binary;
 pub mod easyeda;
 pub mod gdsii;
 pub mod gerber;
