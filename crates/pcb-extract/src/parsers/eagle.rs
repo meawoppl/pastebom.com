@@ -5,11 +5,17 @@ use crate::ExtractOptions;
 use std::collections::HashMap;
 
 /// Parse an Eagle/Fusion360 .brd/.fbrd file into PcbData.
+///
+/// Supports both Eagle XML (6.0+) and Eagle binary (pre-6.0) formats.
 pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
+    if super::eagle_binary::is_eagle_binary(data) {
+        return super::eagle_binary::parse(data, opts);
+    }
+
     let text = std::str::from_utf8(data).map_err(|_| {
         ExtractError::ParseError(
             "File appears to be a binary PCB format (possibly Cadence Allegro). \
-             Only Eagle XML .brd files are supported."
+             Only Eagle XML and Eagle binary .brd files are supported."
                 .to_string(),
         )
     })?;
