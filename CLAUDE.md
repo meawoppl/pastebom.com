@@ -64,6 +64,7 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 | `S3_BUCKET` | — | Enables S3 storage backend |
 | `S3_PREFIX` | — | Key prefix for S3 objects |
 | `MAX_UPLOAD_SIZE` | `52428800` (50 MB) | Max upload size in bytes |
+| `MAX_CONCURRENT_PARSES` | `4` | Max simultaneous PCB parse operations |
 | `BASE_URL` | `http://localhost:8000` | Base URL for generated links |
 
 ## Code Style Guidelines
