@@ -11,7 +11,10 @@ const MARGIN: f64 = 2.0;
 
 /// Render a PcbData into an SVG string suitable for use as a thumbnail.
 pub fn render_svg(data: &PcbData) -> String {
-    let bbox = &data.edges_bbox;
+    let bbox = match &data.edges_bbox {
+        Some(b) => b,
+        None => return empty_svg(),
+    };
     let w = bbox.maxx - bbox.minx;
     let h = bbox.maxy - bbox.miny;
 
@@ -234,16 +237,10 @@ fn render_arc(
 }
 
 fn render_pads(svg: &mut String, fp: &crate::types::Footprint) {
-    let cx = fp.center[0];
-    let cy = fp.center[1];
-    let angle_rad = fp.bbox.angle.to_radians();
-
     for pad in &fp.pads {
-        // Transform pad position from component-local to world coordinates
-        let cos_a = angle_rad.cos();
-        let sin_a = angle_rad.sin();
-        let px = pad.pos[0] * cos_a - pad.pos[1] * sin_a + cx;
-        let py = pad.pos[0] * sin_a + pad.pos[1] * cos_a + cy;
+        // Pad positions are already in absolute world coordinates
+        let px = pad.pos[0];
+        let py = pad.pos[1];
 
         let w = pad.size[0];
         let h = pad.size[1];
@@ -259,13 +256,25 @@ fn render_pads(svg: &mut String, fp: &crate::types::Footprint) {
             }
             _ => {
                 // rect, roundrect, chamfrect, custom → rectangle
-                write!(
-                    svg,
-                    r#"<rect x="{:.4}" y="{:.4}" width="{w:.4}" height="{h:.4}" fill="{PAD_COLOR}"/>"#,
-                    px - w / 2.0,
-                    py - h / 2.0,
-                )
-                .unwrap();
+                let angle = pad.angle.unwrap_or(0.0);
+                if angle.abs() > 0.01 {
+                    write!(
+                        svg,
+                        r#"<rect x="{:.4}" y="{:.4}" width="{w:.4}" height="{h:.4}" fill="{PAD_COLOR}" transform="rotate({:.4} {px:.4} {py:.4})"/>"#,
+                        px - w / 2.0,
+                        py - h / 2.0,
+                        -angle,
+                    )
+                    .unwrap();
+                } else {
+                    write!(
+                        svg,
+                        r#"<rect x="{:.4}" y="{:.4}" width="{w:.4}" height="{h:.4}" fill="{PAD_COLOR}"/>"#,
+                        px - w / 2.0,
+                        py - h / 2.0,
+                    )
+                    .unwrap();
+                }
             }
         }
     }
@@ -333,12 +342,12 @@ mod tests {
 
     fn minimal_pcbdata() -> PcbData {
         PcbData {
-            edges_bbox: BBox {
+            edges_bbox: Some(BBox {
                 minx: 0.0,
                 miny: 0.0,
                 maxx: 50.0,
                 maxy: 30.0,
-            },
+            }),
             edges: vec![
                 Drawing::Segment {
                     start: [0.0, 0.0],
@@ -434,12 +443,20 @@ mod tests {
     #[test]
     fn test_empty_bbox() {
         let mut data = minimal_pcbdata();
-        data.edges_bbox = BBox {
+        data.edges_bbox = Some(BBox {
             minx: 0.0,
             miny: 0.0,
             maxx: 0.0,
             maxy: 0.0,
-        };
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("viewBox=\"0 0 100 100\""));
+    }
+
+    #[test]
+    fn test_none_bbox() {
+        let mut data = minimal_pcbdata();
+        data.edges_bbox = None;
         let svg = render_svg(&data);
         assert!(svg.contains("viewBox=\"0 0 100 100\""));
     }
@@ -447,12 +464,12 @@ mod tests {
     #[test]
     fn test_negative_bbox() {
         let mut data = minimal_pcbdata();
-        data.edges_bbox = BBox {
+        data.edges_bbox = Some(BBox {
             minx: 0.0,
             miny: 0.0,
             maxx: -5.0,
             maxy: -5.0,
-        };
+        });
         let svg = render_svg(&data);
         assert!(svg.contains("viewBox=\"0 0 100 100\""));
     }
@@ -468,12 +485,12 @@ mod tests {
     #[test]
     fn test_aspect_ratio_preserved() {
         let mut data = minimal_pcbdata();
-        data.edges_bbox = BBox {
+        data.edges_bbox = Some(BBox {
             minx: 0.0,
             miny: 0.0,
             maxx: 100.0,
             maxy: 50.0,
-        };
+        });
         let svg = render_svg(&data);
         // width=400, height should be 400 * (54/104) ≈ 207.69 (with margin)
         assert!(svg.contains("width=\"400\""));
@@ -499,12 +516,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rotated_pad_position() {
+    fn test_pad_absolute_position() {
         let mut data = minimal_pcbdata();
-        data.footprints[0].bbox.angle = 90.0;
-        data.footprints[0].pads[0].pos = [1.0, 0.0];
+        // Pad positions are stored in absolute world coordinates
+        data.footprints[0].pads[0].pos = [10.0, 5.0];
         let svg = render_svg(&data);
-        assert!(svg.contains("<circle"));
+        assert!(svg.contains(r#"cx="10.0000" cy="5.0000""#));
     }
 
     #[test]
@@ -895,5 +912,11 @@ mod tests {
         assert!(svg.contains("<circle"));
         assert!(svg.contains("<rect"));
         assert!(svg.contains("<path"));
+    }
+
+    #[test]
+    fn test_empty_edges_produce_none_bbox() {
+        let bbox = BBox::from_drawings(&[]);
+        assert!(bbox.is_none());
     }
 }
