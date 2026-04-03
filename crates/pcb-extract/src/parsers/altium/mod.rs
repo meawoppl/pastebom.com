@@ -109,7 +109,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
 
     // 7. Board edges
     let edges = extract_board_edges(&board_records, units_per_mil, scale);
-    let edges_bbox = compute_edges_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
 
     // 8. Categorize board-level drawings (silkscreen, fabrication)
     let drawings = categorize_drawings(&tracks, &arcs, &fills, &layer_map, scale);
@@ -142,6 +142,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         drawings,
         footprints,
         metadata: extract_metadata(&board_records),
+        format: None,
         bom,
         parser_version: None,
         ibom_version: None,
@@ -423,38 +424,12 @@ fn build_footprints(
                 }
             }
 
-            // Bounding box
-            let mut bbox = BBox::empty();
-            for pad in &fp_pads {
-                bbox.expand_point(
-                    pad.pos[0] - pad.size[0] / 2.0,
-                    pad.pos[1] - pad.size[1] / 2.0,
-                );
-                bbox.expand_point(
-                    pad.pos[0] + pad.size[0] / 2.0,
-                    pad.pos[1] + pad.size[1] / 2.0,
-                );
-            }
-            if bbox.minx == f64::INFINITY {
-                bbox = BBox {
-                    minx: center[0] - 0.5,
-                    miny: center[1] - 0.5,
-                    maxx: center[0] + 0.5,
-                    maxy: center[1] + 0.5,
-                };
-            }
-
             let side = layer_map.side(comp.layer);
 
             Footprint {
                 ref_: comp.designator.clone(),
                 center,
-                bbox: FootprintBBox {
-                    pos: center,
-                    relpos: [bbox.minx - center[0], bbox.miny - center[1]],
-                    size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
-                    angle: comp.rotation,
-                },
+                bbox: FootprintBBox::from_pads(&fp_pads, center, comp.rotation),
                 pads: fp_pads,
                 drawings: fp_drawings,
                 layer: side.to_string(),
@@ -857,34 +832,5 @@ fn extract_metadata(board_records: &[HashMap<String, String>]) -> Metadata {
         revision: String::new(),
         company: String::new(),
         date: String::new(),
-    }
-}
-
-// ─── Bbox ────────────────────────────────────────────────────────────
-
-fn compute_edges_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for edge in edges {
-        match edge {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Arc { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            _ => {}
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        }
-    } else {
-        bbox
     }
 }

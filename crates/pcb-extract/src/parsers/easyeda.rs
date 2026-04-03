@@ -92,7 +92,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         }
     }
 
-    let edges_bbox = compute_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
     let bom = Some(generate_bom(
         &footprints,
         &components,
@@ -131,6 +131,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             company: String::new(),
             date: String::new(),
         },
+        format: None,
         bom,
         parser_version: None,
         ibom_version: None,
@@ -547,32 +548,5 @@ fn easyeda_layer_to_side(layer_id: u32) -> &'static str {
         2 | 4 | 6 | 13 => "B",
         11 => "F", // Multi-layer, treat as front
         _ => "F",
-    }
-}
-
-fn compute_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for edge in edges {
-        match edge {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Circle { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            _ => {}
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        }
-    } else {
-        bbox
     }
 }

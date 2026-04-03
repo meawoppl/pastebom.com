@@ -4,7 +4,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct PcbData {
-    pub edges_bbox: BBox,
+    #[serde(default)]
+    pub edges_bbox: Option<BBox>,
     pub edges: Vec<Drawing>,
     pub drawings: Drawings,
     pub footprints: Vec<Footprint>,

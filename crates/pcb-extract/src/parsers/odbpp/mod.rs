@@ -56,7 +56,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         }
     }
 
-    let edges_bbox = compute_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
 
     // Parse silkscreen layers
     let mut silk_front = Vec::new();
@@ -487,6 +487,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             company: String::new(),
             date: String::new(),
         },
+        format: None,
         bom,
         parser_version: None,
         ibom_version: None,
@@ -508,59 +509,6 @@ fn find_nearest_pad(pads: &[PadFeature], x_mm: f64, y_mm: f64, tol: f64) -> Opti
         }
     }
     best.map(|(_, p)| p.clone())
-}
-
-/// Compute bounding box from edge drawings.
-fn compute_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for d in edges {
-        match d {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Polygon { polygons, .. } => {
-                for poly in polygons {
-                    for pt in poly {
-                        bbox.expand_point(pt[0], pt[1]);
-                    }
-                }
-            }
-            Drawing::Circle { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            Drawing::Arc { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            Drawing::Rect { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Curve {
-                start,
-                end,
-                cpa,
-                cpb,
-                ..
-            } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-                bbox.expand_point(cpa[0], cpa[1]);
-                bbox.expand_point(cpb[0], cpb[1]);
-            }
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        bbox = BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        };
-    }
-    bbox
 }
 
 /// Try extracting as .tgz first, then fall back to .zip.
@@ -738,7 +686,7 @@ mod tests {
             end: [100.0, 50.0],
             width: 0.0,
         }];
-        let bbox = compute_bbox(&edges);
+        let bbox = BBox::from_drawings(&edges).expect("Expected bounding box");
         assert_abs_diff_eq!(bbox.minx, 0.0, epsilon = 1e-6);
         assert_abs_diff_eq!(bbox.miny, 0.0, epsilon = 1e-6);
         assert_abs_diff_eq!(bbox.maxx, 100.0, epsilon = 1e-6);

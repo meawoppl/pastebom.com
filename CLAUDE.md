@@ -108,6 +108,10 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 - The server exposes the version via `/health` and the upload page displays it
 - When releasing a new version: bump `version` in root `Cargo.toml` and add a new entry to `CHANGELOG.md`
 
+## Rendering
+
+- The interactive viewer (`crates/viewer/src/render.rs`) and the SVG thumbnail generator (`crates/pcb-extract/src/thumbnail.rs`) are separate rendering paths over the same PcbData JSON. When fixing rendering bugs in the viewer, check whether the thumbnail has the same issue and fix it there too.
+
 ## Build Notes
 
 - Viewer requires `wasm32-unknown-unknown` target and `trunk` installed

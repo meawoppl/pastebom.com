@@ -9,12 +9,15 @@ pub fn round_f64(v: f64, places: u32) -> f64 {
 }
 
 /// Wrapper that rounds f64 to 6 decimal places on serialization.
+/// Non-finite values (infinity, NaN) are clamped to 0.0 to avoid JSON nulls.
 fn serialize_f64_rounded<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_f64(round_f64(*v, 6))
+    let val = if v.is_finite() { round_f64(*v, 6) } else { 0.0 };
+    s.serialize_f64(val)
 }
 
 fn serialize_point<S: Serializer>(p: &[f64; 2], s: S) -> Result<S::Ok, S::Error> {
-    let rounded = [round_f64(p[0], 6), round_f64(p[1], 6)];
+    let clamp = |v: f64| if v.is_finite() { round_f64(v, 6) } else { 0.0 };
+    let rounded = [clamp(p[0]), clamp(p[1])];
     rounded.serialize(s)
 }
 
@@ -39,13 +42,16 @@ fn serialize_opt_point<S: Serializer>(p: &Option<[f64; 2]>, s: S) -> Result<S::O
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcbData {
-    pub edges_bbox: BBox,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges_bbox: Option<BBox>,
     pub edges: Vec<Drawing>,
     pub drawings: Drawings,
     pub footprints: Vec<Footprint>,
     pub metadata: Metadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parser_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<crate::PcbFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bom: Option<BomData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,6 +97,48 @@ impl BBox {
         self.miny = self.miny.min(y);
         self.maxx = self.maxx.max(x);
         self.maxy = self.maxy.max(y);
+    }
+
+    /// Compute a bounding box from a slice of drawings.
+    /// Returns `None` if no drawings contribute points.
+    pub fn from_drawings(edges: &[Drawing]) -> Option<Self> {
+        let mut bbox = Self::empty();
+        for edge in edges {
+            match edge {
+                Drawing::Segment { start, end, .. } | Drawing::Rect { start, end, .. } => {
+                    bbox.expand_point(start[0], start[1]);
+                    bbox.expand_point(end[0], end[1]);
+                }
+                Drawing::Circle { start, radius, .. } | Drawing::Arc { start, radius, .. } => {
+                    bbox.expand_point(start[0] - radius, start[1] - radius);
+                    bbox.expand_point(start[0] + radius, start[1] + radius);
+                }
+                Drawing::Curve {
+                    start,
+                    end,
+                    cpa,
+                    cpb,
+                    ..
+                } => {
+                    bbox.expand_point(start[0], start[1]);
+                    bbox.expand_point(end[0], end[1]);
+                    bbox.expand_point(cpa[0], cpa[1]);
+                    bbox.expand_point(cpb[0], cpb[1]);
+                }
+                Drawing::Polygon { polygons, .. } => {
+                    for poly in polygons {
+                        for pt in poly {
+                            bbox.expand_point(pt[0], pt[1]);
+                        }
+                    }
+                }
+            }
+        }
+        if bbox.minx.is_finite() {
+            Some(bbox)
+        } else {
+            None
+        }
     }
 }
 
@@ -247,6 +295,47 @@ pub struct FootprintBBox {
     pub size: [f64; 2],
     #[serde(serialize_with = "serialize_f64_rounded")]
     pub angle: f64,
+}
+
+impl FootprintBBox {
+    /// Build a bbox from absolute pad positions by un-rotating them into the
+    /// footprint's local coordinate frame.  The viewer applies
+    /// `rotate(-angle)` when drawing the highlight, so storing local-frame
+    /// relpos/size avoids double-rotation.
+    pub fn from_pads(pads: &[Pad], center: [f64; 2], angle: f64) -> Self {
+        let mut bbox = BBox::empty();
+        let angle_rad = angle * std::f64::consts::PI / 180.0;
+        let cos_a = angle_rad.cos();
+        let sin_a = angle_rad.sin();
+
+        for pad in pads {
+            let dx = pad.pos[0] - center[0];
+            let dy = pad.pos[1] - center[1];
+            let (lx, ly) = if angle != 0.0 {
+                (dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a)
+            } else {
+                (dx, dy)
+            };
+            bbox.expand_point(lx - pad.size[0] / 2.0, ly - pad.size[1] / 2.0);
+            bbox.expand_point(lx + pad.size[0] / 2.0, ly + pad.size[1] / 2.0);
+        }
+
+        if !bbox.minx.is_finite() {
+            bbox = BBox {
+                minx: -0.5,
+                miny: -0.5,
+                maxx: 0.5,
+                maxy: 0.5,
+            };
+        }
+
+        FootprintBBox {
+            pos: center,
+            relpos: [bbox.minx, bbox.miny],
+            size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
+            angle,
+        }
+    }
 }
 
 // ─── Pad ─────────────────────────────────────────────────────────────

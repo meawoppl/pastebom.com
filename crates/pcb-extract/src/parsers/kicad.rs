@@ -95,7 +95,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     };
 
     // Compute edges bounding box
-    let edges_bbox = compute_edges_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
 
     Ok(PcbData {
         edges_bbox,
@@ -114,6 +114,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         },
         footprints,
         metadata,
+        format: None,
         bom,
         parser_version: None,
         ibom_version: None,
@@ -514,33 +515,7 @@ fn parse_footprint(
         }
     }
 
-    // Compute bounding box from pads
-    let mut bbox = BBox::empty();
-    for pad in &pads {
-        bbox.expand_point(
-            pad.pos[0] - pad.size[0] / 2.0,
-            pad.pos[1] - pad.size[1] / 2.0,
-        );
-        bbox.expand_point(
-            pad.pos[0] + pad.size[0] / 2.0,
-            pad.pos[1] + pad.size[1] / 2.0,
-        );
-    }
-    if bbox.minx == f64::INFINITY {
-        bbox = BBox {
-            minx: fp_x - 0.5,
-            miny: fp_y - 0.5,
-            maxx: fp_x + 0.5,
-            maxy: fp_y + 0.5,
-        };
-    }
-
-    let fp_bbox = FootprintBBox {
-        pos: [fp_x, fp_y],
-        relpos: [bbox.minx - fp_x, bbox.miny - fp_y],
-        size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
-        angle: fp_angle,
-    };
+    let fp_bbox = FootprintBBox::from_pads(&pads, [fp_x, fp_y], fp_angle);
 
     let comp_side = if side == "B" { Side::Back } else { Side::Front };
 
@@ -1191,57 +1166,4 @@ fn arc_from_three_points(
     let end_angle = (cy - uy).atan2(cx - ux) * 180.0 / PI;
 
     Some(([ux, uy], radius, start_angle, end_angle))
-}
-
-fn compute_edges_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for edge in edges {
-        match edge {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Rect { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Circle { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            Drawing::Arc { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            Drawing::Curve {
-                start,
-                end,
-                cpa,
-                cpb,
-                ..
-            } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-                bbox.expand_point(cpa[0], cpa[1]);
-                bbox.expand_point(cpb[0], cpb[1]);
-            }
-            Drawing::Polygon { polygons, .. } => {
-                for poly in polygons {
-                    for pt in poly {
-                        bbox.expand_point(pt[0], pt[1]);
-                    }
-                }
-            }
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        }
-    } else {
-        bbox
-    }
 }

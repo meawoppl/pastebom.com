@@ -47,7 +47,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         (Vec::new(), Vec::new())
     };
 
-    let edges_bbox = compute_bbox(&edges);
+    let edges_bbox = BBox::from_drawings(&edges);
     let bom = Some(generate_bom(
         &footprints,
         &components,
@@ -86,6 +86,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
             company: String::new(),
             date: String::new(),
         },
+        format: None,
         bom,
         parser_version: None,
         ibom_version: None,
@@ -463,33 +464,7 @@ fn parse_elements(
                 }
             }
 
-            // Bounding box
-            let mut bbox = BBox::empty();
-            for pad in &fp_pads {
-                bbox.expand_point(
-                    pad.pos[0] - pad.size[0] / 2.0,
-                    pad.pos[1] - pad.size[1] / 2.0,
-                );
-                bbox.expand_point(
-                    pad.pos[0] + pad.size[0] / 2.0,
-                    pad.pos[1] + pad.size[1] / 2.0,
-                );
-            }
-            if bbox.minx == f64::INFINITY {
-                bbox = BBox {
-                    minx: x - 0.5,
-                    miny: -y - 0.5,
-                    maxx: x + 0.5,
-                    maxy: -y + 0.5,
-                };
-            }
-
-            let fp_bbox = FootprintBBox {
-                pos: [x, -y],
-                relpos: [bbox.minx - x, bbox.miny - (-y)],
-                size: [bbox.maxx - bbox.minx, bbox.maxy - bbox.miny],
-                angle,
-            };
+            let fp_bbox = FootprintBBox::from_pads(&fp_pads, [x, -y], angle);
 
             let idx = footprints.len();
 
@@ -734,36 +709,5 @@ fn mirror_eagle_layer(layer: u32) -> u32 {
         51 => 52,
         52 => 51,
         _ => layer,
-    }
-}
-
-fn compute_bbox(edges: &[Drawing]) -> BBox {
-    let mut bbox = BBox::empty();
-    for edge in edges {
-        match edge {
-            Drawing::Segment { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Rect { start, end, .. } => {
-                bbox.expand_point(start[0], start[1]);
-                bbox.expand_point(end[0], end[1]);
-            }
-            Drawing::Circle { start, radius, .. } => {
-                bbox.expand_point(start[0] - radius, start[1] - radius);
-                bbox.expand_point(start[0] + radius, start[1] + radius);
-            }
-            _ => {}
-        }
-    }
-    if bbox.minx == f64::INFINITY {
-        BBox {
-            minx: 0.0,
-            miny: 0.0,
-            maxx: 100.0,
-            maxy: 100.0,
-        }
-    } else {
-        bbox
     }
 }
