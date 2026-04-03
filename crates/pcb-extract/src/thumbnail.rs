@@ -409,6 +409,7 @@ mod tests {
                 company: String::new(),
                 date: String::new(),
             },
+            parser_version: None,
             bom: None,
             ibom_version: None,
             tracks: None,
