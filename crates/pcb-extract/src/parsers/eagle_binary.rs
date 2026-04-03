@@ -410,6 +410,7 @@ fn extract_board(
             date: String::new(),
         },
         bom,
+        parser_version: None,
         ibom_version: None,
         tracks,
         copper_pads: None,

@@ -312,6 +312,7 @@ fn assemble_pcb_data(
             date: String::new(),
         },
         bom: None,
+        parser_version: None,
         ibom_version: None,
         tracks,
         copper_pads,
