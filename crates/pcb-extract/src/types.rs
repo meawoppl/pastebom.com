@@ -9,12 +9,15 @@ pub fn round_f64(v: f64, places: u32) -> f64 {
 }
 
 /// Wrapper that rounds f64 to 6 decimal places on serialization.
+/// Non-finite values (infinity, NaN) are clamped to 0.0 to avoid JSON nulls.
 fn serialize_f64_rounded<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_f64(round_f64(*v, 6))
+    let val = if v.is_finite() { round_f64(*v, 6) } else { 0.0 };
+    s.serialize_f64(val)
 }
 
 fn serialize_point<S: Serializer>(p: &[f64; 2], s: S) -> Result<S::Ok, S::Error> {
-    let rounded = [round_f64(p[0], 6), round_f64(p[1], 6)];
+    let clamp = |v: f64| if v.is_finite() { round_f64(v, 6) } else { 0.0 };
+    let rounded = [clamp(p[0]), clamp(p[1])];
     rounded.serialize(s)
 }
 
@@ -39,7 +42,8 @@ fn serialize_opt_point<S: Serializer>(p: &Option<[f64; 2]>, s: S) -> Result<S::O
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PcbData {
-    pub edges_bbox: BBox,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges_bbox: Option<BBox>,
     pub edges: Vec<Drawing>,
     pub drawings: Drawings,
     pub footprints: Vec<Footprint>,
@@ -94,8 +98,8 @@ impl BBox {
     }
 
     /// Compute a bounding box from a slice of drawings.
-    /// Returns a default 100x100 box if no drawings contribute points.
-    pub fn from_drawings(edges: &[Drawing]) -> Self {
+    /// Returns `None` if no drawings contribute points.
+    pub fn from_drawings(edges: &[Drawing]) -> Option<Self> {
         let mut bbox = Self::empty();
         for edge in edges {
             match edge {
@@ -128,15 +132,10 @@ impl BBox {
                 }
             }
         }
-        if !bbox.minx.is_finite() {
-            Self {
-                minx: 0.0,
-                miny: 0.0,
-                maxx: 100.0,
-                maxy: 100.0,
-            }
+        if bbox.minx.is_finite() {
+            Some(bbox)
         } else {
-            bbox
+            None
         }
     }
 }

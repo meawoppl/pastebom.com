@@ -1196,7 +1196,14 @@ pub fn recalc_layer_scale(
     settings: &Settings,
 ) {
     let flip = layer.layer == "B";
-    let bbox = apply_rotation(&pcbdata.edges_bbox, flip, settings);
+    let default_bbox = BBox {
+        minx: 0.0,
+        miny: 0.0,
+        maxx: 100.0,
+        maxy: 100.0,
+    };
+    let edges_bbox = pcbdata.edges_bbox.as_ref().unwrap_or(&default_bbox);
+    let bbox = apply_rotation(edges_bbox, flip, settings);
     let mut scalefactor =
         0.98 * (width / (bbox.maxx - bbox.minx)).min(height / (bbox.maxy - bbox.miny));
     if scalefactor < 0.1 {

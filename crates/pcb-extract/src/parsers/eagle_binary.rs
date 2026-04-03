@@ -1159,13 +1159,14 @@ mod tests {
         let has_pads = pcb.footprints.iter().any(|fp| !fp.pads.is_empty());
         assert!(has_pads, "Expected at least one footprint with pads");
 
-        // Check bbox is reasonable (not degenerate)
-        let bb = &pcb.edges_bbox;
-        assert!(
-            bb.maxx > bb.minx && bb.maxy > bb.miny,
-            "Expected non-degenerate bounding box, got {:?}",
-            bb
-        );
+        // Check bbox if edges were found
+        if let Some(bb) = &pcb.edges_bbox {
+            assert!(
+                bb.maxx > bb.minx && bb.maxy > bb.miny,
+                "Expected non-degenerate bounding box, got {:?}",
+                bb
+            );
+        }
     }
 
     #[test]

@@ -685,7 +685,7 @@ mod tests {
             end: [100.0, 50.0],
             width: 0.0,
         }];
-        let bbox = BBox::from_drawings(&edges);
+        let bbox = BBox::from_drawings(&edges).expect("Expected bounding box");
         assert_abs_diff_eq!(bbox.minx, 0.0, epsilon = 1e-6);
         assert_abs_diff_eq!(bbox.miny, 0.0, epsilon = 1e-6);
         assert_abs_diff_eq!(bbox.maxx, 100.0, epsilon = 1e-6);

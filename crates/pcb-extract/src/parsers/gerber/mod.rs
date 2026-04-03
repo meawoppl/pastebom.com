@@ -277,7 +277,11 @@ fn assemble_pcb_data(
     };
 
     Ok(PcbData {
-        edges_bbox: bbox,
+        edges_bbox: if bbox.minx.is_finite() {
+            Some(bbox)
+        } else {
+            None
+        },
         edges,
         drawings: Drawings {
             silkscreen: LayerData {
@@ -441,9 +445,10 @@ M02*
         assert_eq!(pcb.edges.len(), 4);
 
         // Bounding box should be ~50x30mm (Y is negated: 0 to -30)
-        assert_abs_diff_eq!(pcb.edges_bbox.maxx, 50.0, epsilon = 0.1);
-        assert_abs_diff_eq!(pcb.edges_bbox.miny, -30.0, epsilon = 0.1);
-        assert_abs_diff_eq!(pcb.edges_bbox.maxy, 0.0, epsilon = 0.1);
+        let bb = pcb.edges_bbox.as_ref().expect("Expected bounding box");
+        assert_abs_diff_eq!(bb.maxx, 50.0, epsilon = 0.1);
+        assert_abs_diff_eq!(bb.miny, -30.0, epsilon = 0.1);
+        assert_abs_diff_eq!(bb.maxy, 0.0, epsilon = 0.1);
 
         // Copper top: 1 track segment
         let tracks = pcb.tracks.unwrap();

@@ -1524,7 +1524,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     };
 
     Ok(PcbData {
-        edges_bbox: bbox,
+        edges_bbox: Some(bbox),
         edges,
         drawings: Drawings {
             silkscreen: LayerData {
@@ -1837,14 +1837,15 @@ mod tests {
 
         // Bounding box should be approximately 50mm x 30mm
         // Y is negated, so miny=-30, maxy=0
-        let width = pcb.edges_bbox.maxx - pcb.edges_bbox.minx;
+        let bb = pcb.edges_bbox.as_ref().expect("Expected bounding box");
+        let width = bb.maxx - bb.minx;
         assert!(
             (width - 50.0).abs() < 0.1,
             "Expected width ~50mm, got {}",
             width
         );
 
-        let height = pcb.edges_bbox.maxy - pcb.edges_bbox.miny;
+        let height = bb.maxy - bb.miny;
         assert!(
             (height - 30.0).abs() < 0.1,
             "Expected height ~30mm, got {}",
