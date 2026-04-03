@@ -141,14 +141,14 @@ async fn check_and_reparse(s3: &S3Client, id: &str) -> ReparseResult {
         Err(_) => return ReparseResult::Failed("parse task panicked".into()),
     };
 
-    // Store updated pcbdata
-    let pcbdata_json = match serde_json::to_vec(&pcb_data) {
-        Ok(j) => j,
+    // Serialize to tempfile and stream to storage
+    let tempfile = match crate::routes::serialize_to_tempfile(&pcb_data) {
+        Ok(f) => f,
         Err(_) => return ReparseResult::Failed("json serialization failed".into()),
     };
 
     if let Err(e) = s3
-        .put_object(&bom_key, pcbdata_json, "application/json")
+        .put_object_from_file(&bom_key, tempfile.path(), "application/json")
         .await
     {
         return ReparseResult::Failed(format!("could not store updated bom: {e}"));

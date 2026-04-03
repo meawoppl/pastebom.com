@@ -166,6 +166,47 @@ impl S3Client {
         }
     }
 
+    /// Upload a local file to storage, streaming from disk instead of loading into memory.
+    pub async fn put_object_from_file(
+        &self,
+        path: &str,
+        file_path: &std::path::Path,
+        content_type: &str,
+    ) -> Result<(), S3Error> {
+        match &self.backend {
+            StorageBackend::S3 {
+                client,
+                bucket,
+                prefix,
+            } => {
+                let key = s3_key(prefix, path);
+                let body = aws_sdk_s3::primitives::ByteStream::from_path(file_path)
+                    .await
+                    .map_err(|e| S3Error(format!("failed to open file for upload: {e}")))?;
+                client
+                    .put_object()
+                    .bucket(bucket)
+                    .key(key)
+                    .body(body)
+                    .content_type(content_type)
+                    .send()
+                    .await
+                    .map_err(|e| S3Error(e.to_string()))?;
+                Ok(())
+            }
+            StorageBackend::Filesystem { root } => {
+                let dest = root.join(path);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| S3Error(format!("mkdir failed: {e}")))?;
+                }
+                std::fs::copy(file_path, &dest)
+                    .map_err(|e| S3Error(format!("copy failed: {e}")))?;
+                Ok(())
+            }
+        }
+    }
+
     pub async fn delete_object(&self, path: &str) -> Result<(), S3Error> {
         match &self.backend {
             StorageBackend::S3 {

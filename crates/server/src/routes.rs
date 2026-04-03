@@ -237,17 +237,17 @@ async fn upload(
 
     let component_count = pcb_data.footprints.len();
 
-    // Store pcbdata as JSON
-    let pcbdata_json = serde_json::to_vec(&pcb_data).map_err(|_| {
+    // Serialize pcbdata to a tempfile, then stream to storage
+    let bom_key = format!("boms/{id}.json");
+    let tempfile = serialize_to_tempfile(&pcb_data).map_err(|_| {
         error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "JSON serialization failed",
         )
     })?;
-    let bom_key = format!("boms/{id}.json");
     state
         .s3
-        .put_object(&bom_key, pcbdata_json, "application/json")
+        .put_object_from_file(&bom_key, tempfile.path(), "application/json")
         .await
         .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to store BOM"))?;
 
@@ -416,4 +416,15 @@ fn error_response(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorRespo
             error: msg.to_string(),
         }),
     )
+}
+
+/// Serialize PcbData to a tempfile using streaming JSON serialization.
+/// This avoids holding the full JSON bytes in memory.
+pub fn serialize_to_tempfile(
+    data: &pcb_extract::types::PcbData,
+) -> Result<tempfile::NamedTempFile, std::io::Error> {
+    let tmpfile = tempfile::NamedTempFile::new()?;
+    let writer = std::io::BufWriter::new(tmpfile.reopen()?);
+    serde_json::to_writer(writer, data).map_err(std::io::Error::other)?;
+    Ok(tmpfile)
 }
