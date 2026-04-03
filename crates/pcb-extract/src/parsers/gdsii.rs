@@ -99,6 +99,12 @@ const MAX_FLATTEN_ELEMENTS: usize = 500_000;
 /// Maximum number of footprints to generate.
 const MAX_FOOTPRINTS: usize = 5_000;
 
+/// Maximum number of drawings per individual footprint.
+const MAX_FOOTPRINT_DRAWINGS: usize = 5_000;
+
+/// Maximum total drawings across all footprints.
+const MAX_TOTAL_DRAWINGS: usize = 200_000;
+
 /// A parsed GDSII record.
 struct Record {
     record_type: u8,
@@ -1295,6 +1301,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     let mut components: Vec<Component> = Vec::new();
 
     // Collect SREF instances from the top structure as footprints
+    let mut total_drawings: usize = 0;
     for elem in &structures[top_idx].elements {
         if footprints.len() >= MAX_FOOTPRINTS {
             break;
@@ -1365,43 +1372,49 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
                 let size = [fp_bbox.maxx - fp_bbox.minx, fp_bbox.maxy - fp_bbox.miny];
                 let relpos = [fp_bbox.minx, fp_bbox.miny];
 
-                // Build drawings for this footprint
+                // Build drawings for this footprint, skipping if global cap reached
                 let mut fp_drawings: Vec<FootprintDrawing> = Vec::new();
-                for (layer, pts) in &sub_boundaries {
-                    if pts.len() >= 3 {
-                        let transformed: Vec<[f64; 2]> = pts
-                            .iter()
-                            .map(|pt| {
-                                transform_point(*pt, [0.0, 0.0], mirror_x, *ref_mag, *ref_angle)
-                            })
-                            .collect();
-                        fp_drawings.push(FootprintDrawing {
-                            layer: layer_name(*layer),
-                            drawing: FootprintDrawingItem::Shape(Drawing::Polygon {
-                                pos: [0.0, 0.0],
-                                angle: 0.0,
-                                polygons: vec![transformed],
-                                filled: Some(1),
-                                width: 0.0,
-                            }),
-                        });
+                if total_drawings < MAX_TOTAL_DRAWINGS {
+                    for (layer, pts) in &sub_boundaries {
+                        if pts.len() >= 3 {
+                            let transformed: Vec<[f64; 2]> = pts
+                                .iter()
+                                .map(|pt| {
+                                    transform_point(*pt, [0.0, 0.0], mirror_x, *ref_mag, *ref_angle)
+                                })
+                                .collect();
+                            fp_drawings.push(FootprintDrawing {
+                                layer: layer_name(*layer),
+                                drawing: FootprintDrawingItem::Shape(Drawing::Polygon {
+                                    pos: [0.0, 0.0],
+                                    angle: 0.0,
+                                    polygons: vec![transformed],
+                                    filled: Some(1),
+                                    width: 0.0,
+                                }),
+                            });
+                        }
                     }
-                }
-                for (layer, width_db, pts) in &sub_paths {
-                    let width_mm = (*width_db as f64 * scale).abs();
-                    let width_mm = if width_mm < 0.001 { 0.05 } else { width_mm };
-                    for w in pts.windows(2) {
-                        let s = transform_point(w[0], [0.0, 0.0], mirror_x, *ref_mag, *ref_angle);
-                        let e = transform_point(w[1], [0.0, 0.0], mirror_x, *ref_mag, *ref_angle);
-                        fp_drawings.push(FootprintDrawing {
-                            layer: layer_name(*layer),
-                            drawing: FootprintDrawingItem::Shape(Drawing::Segment {
-                                start: s,
-                                end: e,
-                                width: width_mm,
-                            }),
-                        });
+                    for (layer, width_db, pts) in &sub_paths {
+                        let width_mm = (*width_db as f64 * scale).abs();
+                        let width_mm = if width_mm < 0.001 { 0.05 } else { width_mm };
+                        for w in pts.windows(2) {
+                            let s =
+                                transform_point(w[0], [0.0, 0.0], mirror_x, *ref_mag, *ref_angle);
+                            let e =
+                                transform_point(w[1], [0.0, 0.0], mirror_x, *ref_mag, *ref_angle);
+                            fp_drawings.push(FootprintDrawing {
+                                layer: layer_name(*layer),
+                                drawing: FootprintDrawingItem::Shape(Drawing::Segment {
+                                    start: s,
+                                    end: e,
+                                    width: width_mm,
+                                }),
+                            });
+                        }
                     }
+                    fp_drawings.truncate(MAX_FOOTPRINT_DRAWINGS);
+                    total_drawings += fp_drawings.len();
                 }
 
                 let layer_str = layer_side(0).to_string();
