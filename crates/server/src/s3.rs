@@ -166,6 +166,34 @@ impl S3Client {
         }
     }
 
+    pub async fn delete_object(&self, path: &str) -> Result<(), S3Error> {
+        match &self.backend {
+            StorageBackend::S3 {
+                client,
+                bucket,
+                prefix,
+            } => {
+                let key = s3_key(prefix, path);
+                client
+                    .delete_object()
+                    .bucket(bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map_err(|e| S3Error(e.to_string()))?;
+                Ok(())
+            }
+            StorageBackend::Filesystem { root } => {
+                let file_path = root.join(path);
+                if file_path.exists() {
+                    std::fs::remove_file(&file_path)
+                        .map_err(|e| S3Error(format!("delete failed: {e}")))?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub async fn get_object(&self, path: &str) -> Result<Vec<u8>, S3Error> {
         match &self.backend {
             StorageBackend::S3 {

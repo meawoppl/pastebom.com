@@ -419,6 +419,7 @@ mod tests {
                 date: String::new(),
             },
             format: None,
+            parser_version: None,
             bom: None,
             ibom_version: None,
             tracks: None,

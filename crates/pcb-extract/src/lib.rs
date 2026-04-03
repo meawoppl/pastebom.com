@@ -130,7 +130,7 @@ pub fn extract_bytes(
         return Err(ExtractError::MacosResourceFork);
     }
 
-    let mut pcb = match format {
+    let mut pcbdata = match format {
         PcbFormat::KiCad => parsers::kicad::parse(data, opts),
         PcbFormat::EasyEda => parsers::easyeda::parse(data, opts),
         PcbFormat::Eagle => parsers::eagle::parse(data, opts),
@@ -139,8 +139,9 @@ pub fn extract_bytes(
         PcbFormat::Gdsii => parsers::gdsii::parse(data, opts),
         PcbFormat::OdbPlusPlus => parsers::odbpp::parse(data, opts),
     }?;
-    pcb.format = Some(format);
-    Ok(pcb)
+    pcbdata.format = Some(format);
+    pcbdata.parser_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    Ok(pcbdata)
 }
 
 #[cfg(test)]

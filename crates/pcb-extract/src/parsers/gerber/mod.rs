@@ -317,6 +317,7 @@ fn assemble_pcb_data(
         },
         format: None,
         bom: None,
+        parser_version: None,
         ibom_version: None,
         tracks,
         copper_pads,

@@ -48,6 +48,8 @@ pub struct PcbData {
     pub drawings: Drawings,
     pub footprints: Vec<Footprint>,
     pub metadata: Metadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<crate::PcbFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]

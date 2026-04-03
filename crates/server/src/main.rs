@@ -1,4 +1,5 @@
 mod github;
+mod reparse;
 mod routes;
 mod s3;
 
@@ -66,6 +67,12 @@ async fn main() {
         max_upload_bytes,
         parse_semaphore: Arc::new(Semaphore::new(max_concurrent_parses)),
     };
+
+    // Spawn background re-parse of stale boards
+    let reparse_s3 = state.s3.clone();
+    tokio::spawn(async move {
+        reparse::reparse_stale_boards(reparse_s3).await;
+    });
 
     let app = Router::new()
         .merge(routes::router(max_upload_bytes))
