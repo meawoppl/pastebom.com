@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "pcb-extract", about = "Extract PCB data to JSON")]
 struct Cli {
-    /// Input PCB file (.kicad_pcb, .json, .brd, .pcbdoc, .zip, .gds, .gds2, .tgz)
+    /// Input PCB file (.kicad_pcb, .json, .brd, .pcbdoc, .zip, .tgz)
     input: PathBuf,
 
     /// Output JSON file (stdout if not specified)
