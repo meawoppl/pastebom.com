@@ -88,6 +88,7 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 - **NEVER use `git commit --amend`** — Create new commits instead
 - **NEVER use `--no-verify` to skip pre-commit hooks** — Fix the underlying issue instead
 - **Strongly prefer `git merge` over `git rebase`**
+- **Always squash merge PRs** — Use `gh pr merge --squash`, never `--merge` or `--rebase`, never `--admin`
 - Do NOT include attribution in commit messages
 - Follow the project commit style: short subject line (10 words max), blank line, body with bullet points
 - Focus on explaining the WHY (purpose) not just the WHAT (changes)
