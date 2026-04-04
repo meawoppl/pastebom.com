@@ -4,11 +4,13 @@ use std::path::Path;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// A lightweight struct to check parser_version without deserializing full PcbData.
+/// A lightweight struct to check parser_version/format without deserializing full PcbData.
 #[derive(serde::Deserialize)]
 struct VersionProbe {
     #[serde(default)]
     parser_version: Option<String>,
+    #[serde(default)]
+    format: Option<pcb_extract::PcbFormat>,
 }
 
 /// Scan all stored boards and re-parse any with a stale or missing parser_version.
@@ -87,6 +89,11 @@ async fn check_and_reparse(s3: &S3Client, id: &str) -> ReparseResult {
         Ok(p) => p,
         Err(_) => return ReparseResult::Failed("could not parse bom json".into()),
     };
+
+    // Skip formats no longer supported on the site
+    if probe.format == Some(pcb_extract::PcbFormat::Gdsii) {
+        return ReparseResult::Current;
+    }
 
     if probe.parser_version.as_deref() == Some(CURRENT_VERSION) {
         return ReparseResult::Current;
