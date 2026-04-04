@@ -44,7 +44,6 @@ pub fn detect_format(path: &Path) -> Option<PcbFormat> {
         Some("json") => Some(PcbFormat::EasyEda),
         Some("brd") | Some("fbrd") => Some(PcbFormat::Eagle),
         Some("pcbdoc") => Some(PcbFormat::Altium),
-        Some("gds") | Some("gds2") => Some(PcbFormat::Gdsii),
         Some("tgz") => Some(PcbFormat::OdbPlusPlus),
         Some("zip") => Some(PcbFormat::Gerber),
         Some("gz") => {
