@@ -61,11 +61,20 @@ pub struct RecentEntry {
     pub created: String,
 }
 
+fn is_supported_format(filename: &str) -> bool {
+    let name = filename.to_lowercase();
+    !name.ends_with(".gds") && !name.ends_with(".gds2")
+}
+
 pub async fn load_recent(s3: &crate::s3::S3Client) -> Vec<RecentEntry> {
     if let Ok(bytes) = s3.get_object(RECENT_KEY).await {
         if let Ok(entries) = serde_json::from_slice::<Vec<RecentEntry>>(&bytes) {
-            if !entries.is_empty() {
-                return entries;
+            let filtered: Vec<_> = entries
+                .into_iter()
+                .filter(|e| is_supported_format(&e.filename))
+                .collect();
+            if !filtered.is_empty() {
+                return filtered;
             }
         }
     }
@@ -106,13 +115,15 @@ async fn reconstruct_recent(s3: &crate::s3::S3Client) -> Vec<RecentEntry> {
     for obj in meta_objects {
         if let Ok(bytes) = s3.get_object(&obj.key).await {
             if let Ok(meta) = serde_json::from_slice::<BomMeta>(&bytes) {
-                entries.push(RecentEntry {
-                    id: meta.id,
-                    filename: meta.filename,
-                    components: meta.components,
-                    file_size: meta.file_size,
-                    created: obj.last_modified.to_rfc3339(),
-                });
+                if is_supported_format(&meta.filename) {
+                    entries.push(RecentEntry {
+                        id: meta.id,
+                        filename: meta.filename,
+                        components: meta.components,
+                        file_size: meta.file_size,
+                        created: obj.last_modified.to_rfc3339(),
+                    });
+                }
             }
         }
     }
