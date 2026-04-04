@@ -1,0 +1,42 @@
+name: Security Audit
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run audit
+        id: audit
+        run: cargo audit 2>&1 | tee audit-output.txt
+        continue-on-error: true
+
+      - name: Open issue on failure
+        if: steps.audit.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY=$(cat audit-output.txt)
+          gh issue create \
+            --title "Security audit failed $(date +%Y-%m-%d)" \
+            --body "\`\`\`
+          ${BODY}
+          \`\`\`" \
+            --label "security"
