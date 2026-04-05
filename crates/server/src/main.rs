@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, Semaphore};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use tower_http::timeout::TimeoutLayer;
@@ -77,6 +78,7 @@ async fn main() {
     let app = Router::new()
         .merge(routes::router(max_upload_bytes))
         .nest_service("/viewer", ServeDir::new(&viewer_dir))
+        .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
