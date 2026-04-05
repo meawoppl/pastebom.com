@@ -236,13 +236,13 @@ body {
 }
 
 .dark .pull-tab {
-  background: rgba(30, 36, 40, 0.75);
-  color: #888;
-  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(55, 65, 75, 0.85);
+  color: #bbb;
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
 .dark .pull-tab:hover {
-  background: rgba(40, 48, 54, 0.95);
+  background: rgba(70, 82, 94, 0.95);
   color: #eee;
 }
 
