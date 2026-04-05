@@ -1,9 +1,11 @@
+mod compressed_assets;
 mod github;
 mod reparse;
 mod routes;
 mod s3;
 
 use axum::http::StatusCode;
+use axum::routing::get;
 use axum::Router;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,7 +13,6 @@ use std::time::Duration;
 use tokio::sync::{RwLock, Semaphore};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -69,6 +70,9 @@ async fn main() {
         parse_semaphore: Arc::new(Semaphore::new(max_concurrent_parses)),
     };
 
+    // Pre-compress viewer assets at startup
+    compressed_assets::init_cache(&viewer_dir);
+
     // Spawn background re-parse of stale boards
     let reparse_s3 = state.s3.clone();
     tokio::spawn(async move {
@@ -77,7 +81,8 @@ async fn main() {
 
     let app = Router::new()
         .merge(routes::router(max_upload_bytes))
-        .nest_service("/viewer", ServeDir::new(&viewer_dir))
+        .route("/viewer/*path", get(compressed_assets::serve_viewer))
+        .route("/viewer/", get(compressed_assets::serve_viewer))
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         .layer(TimeoutLayer::with_status_code(
