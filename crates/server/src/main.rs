@@ -79,9 +79,18 @@ async fn main() {
         reparse::reparse_stale_boards(reparse_s3).await;
     });
 
-    let app = Router::new()
-        .merge(routes::router(max_upload_bytes))
-        .route("/viewer/*path", get(compressed_assets::serve_viewer))
+    let app = build_app(state);
+
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8000".to_string());
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
+    tracing::info!("Listening on {bind_addr}");
+    axum::serve(listener, app).await.unwrap();
+}
+
+pub fn build_app(state: AppState) -> Router {
+    Router::new()
+        .merge(routes::router(state.max_upload_bytes))
+        .route("/viewer/{*path}", get(compressed_assets::serve_viewer))
         .route("/viewer/", get(compressed_assets::serve_viewer))
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
@@ -90,12 +99,7 @@ async fn main() {
             Duration::from_secs(120),
         ))
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
-
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8000".to_string());
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-    tracing::info!("Listening on {bind_addr}");
-    axum::serve(listener, app).await.unwrap();
+        .with_state(state)
 }
 
 #[derive(Clone)]
@@ -106,4 +110,77 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub max_upload_bytes: usize,
     pub parse_semaphore: Arc<Semaphore>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn test_state() -> AppState {
+        let s3 = s3::S3Client::from_env().await;
+        let viewer_dir = PathBuf::from("crates/viewer/dist");
+        compressed_assets::init_cache(&viewer_dir);
+        AppState {
+            s3,
+            viewer_dir,
+            recent: Arc::new(RwLock::new(Vec::new())),
+            http_client: reqwest::Client::new(),
+            max_upload_bytes: 50 * 1024 * 1024,
+            parse_semaphore: Arc::new(Semaphore::new(4)),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_index_returns_html() {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("html"), "Expected HTML content-type, got {ct}");
+    }
+
+    #[tokio::test]
+    async fn test_recent_api() {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(Request::get("/api/recent").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_missing_bom_returns_404() {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(
+                Request::get("/b/00000000-0000-0000-0000-000000000000/data")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
 }
