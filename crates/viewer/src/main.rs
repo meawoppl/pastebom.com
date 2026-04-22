@@ -820,11 +820,17 @@ fn app() -> Html {
 
     let has_nets = data.nets.is_some();
     let has_tracks = data.tracks.is_some();
-    let inner_layer_names: Vec<String> = data
-        .tracks
-        .as_ref()
-        .map(|t| t.inner_layer_names().into_iter().cloned().collect())
-        .unwrap_or_default();
+    let inner_layer_names: Vec<String> = {
+        use std::collections::BTreeSet;
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        if let Some(ref t) = data.tracks {
+            names.extend(t.inner_layer_names().into_iter().cloned());
+        }
+        if let Some(ref z) = data.zones {
+            names.extend(z.inner_layer_names().into_iter().cloned());
+        }
+        names.into_iter().collect()
+    };
 
     let bom_entries = get_bom_entries(&data, &settings, &filter);
 

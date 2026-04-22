@@ -1074,6 +1074,26 @@ pub fn draw_nets(
             highlighted_net,
             zone_cache,
         );
+        // Dimmed inner-layer zones, gated by the same hidden_layers toggle as inner tracks.
+        if let Some(ref zones) = pcbdata.zones {
+            let ctx = get_ctx(canvas);
+            ctx.save();
+            ctx.set_global_alpha(0.25);
+            for name in zones.inner_layer_names() {
+                if !settings.hidden_layers.contains(name.as_str()) {
+                    draw_zones(
+                        canvas,
+                        name,
+                        zone_color,
+                        highlight,
+                        pcbdata,
+                        highlighted_net,
+                        zone_cache,
+                    );
+                }
+            }
+            ctx.restore();
+        }
     }
     if settings.render_tracks {
         draw_tracks(
