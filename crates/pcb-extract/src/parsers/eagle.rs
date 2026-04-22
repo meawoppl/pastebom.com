@@ -12,6 +12,14 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         return super::eagle_binary::parse(data, opts);
     }
 
+    if is_boardview_ascii(data) {
+        return Err(ExtractError::ParseError(
+            "File is an OpenBoardView ASCII .brd (debug/diagnostic export), not an Eagle design file. \
+             This format is not supported."
+                .to_string(),
+        ));
+    }
+
     let text = std::str::from_utf8(data).map_err(|_| {
         ExtractError::ParseError(
             "File appears to be a binary PCB format (possibly Cadence Allegro). \
@@ -109,6 +117,19 @@ enum EagleLayerCat {
     FabB,
     Edge,
     Other,
+}
+
+/// Detect OpenBoardView ASCII `.brd` files, which share the `.brd` extension
+/// with Eagle but have a completely different format. The first section
+/// keyword (`BRDOUT:`, `NETS:`, `PARTS:`, `PINS:`, `NAILS:`, or `FORMAT:`)
+/// appears within the first few lines.
+fn is_boardview_ascii(data: &[u8]) -> bool {
+    let prefix_len = data.len().min(512);
+    let Ok(head) = std::str::from_utf8(&data[..prefix_len]) else {
+        return false;
+    };
+    const MARKERS: &[&str] = &["BRDOUT:", "NETS:", "PARTS:", "PINS:", "NAILS:", "FORMAT:"];
+    MARKERS.iter().any(|m| head.contains(m))
 }
 
 fn categorize_eagle_layer(layer: u32) -> EagleLayerCat {
@@ -709,5 +730,36 @@ fn mirror_eagle_layer(layer: u32) -> u32 {
         51 => 52,
         52 => 51,
         _ => layer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_boardview_ascii_brdout() {
+        let data = b"0\r\nBRDOUT: 73 5118 4724\r\n4968 1929\r\n";
+        assert!(is_boardview_ascii(data));
+    }
+
+    #[test]
+    fn detects_boardview_ascii_other_sections() {
+        assert!(is_boardview_ascii(b"NETS: 12\nGND\n"));
+        assert!(is_boardview_ascii(b"PARTS: 5\n"));
+    }
+
+    #[test]
+    fn does_not_flag_eagle_xml_as_boardview() {
+        let data = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<eagle version=\"9.6.2\">\n";
+        assert!(!is_boardview_ascii(data));
+    }
+
+    #[test]
+    fn rejects_boardview_with_clear_error() {
+        let data = b"0\r\nBRDOUT: 73 5118 4724\r\n";
+        let err = parse(data, &ExtractOptions::default()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("OpenBoardView"), "unexpected error: {msg}");
     }
 }
