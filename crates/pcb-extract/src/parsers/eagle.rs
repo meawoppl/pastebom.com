@@ -40,11 +40,11 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
     // 3. Parse plain → board edges, drawings
     let (edges, silk_f, silk_b, fab_f, fab_b) = parse_plain(&board);
 
-    // 4. Parse signals → tracks
-    let (track_f, track_b) = if opts.include_tracks {
+    // 4. Parse signals → tracks and copper-pour zones
+    let (track_f, track_b, zones_f, zones_b) = if opts.include_tracks {
         parse_signals(&board)
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
     };
 
     let edges_bbox = BBox::from_drawings(&edges);
@@ -58,6 +58,16 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         Some(LayerData {
             front: track_f,
             back: track_b,
+            inner: HashMap::new(),
+        })
+    } else {
+        None
+    };
+
+    let zones = if opts.include_tracks && !(zones_f.is_empty() && zones_b.is_empty()) {
+        Some(LayerData {
+            front: zones_f,
+            back: zones_b,
             inner: HashMap::new(),
         })
     } else {
@@ -92,7 +102,7 @@ pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError
         ibom_version: None,
         tracks,
         copper_pads: None,
-        zones: None,
+        zones,
         nets: None,
         font_data: None,
     })
@@ -585,9 +595,11 @@ fn parse_plain(
 
 // ─── Parse signals (tracks/vias) ─────────────────────────────────────
 
-fn parse_signals(board: &roxmltree::Node) -> (Vec<Track>, Vec<Track>) {
+fn parse_signals(board: &roxmltree::Node) -> (Vec<Track>, Vec<Track>, Vec<Zone>, Vec<Zone>) {
     let mut front = Vec::new();
     let mut back = Vec::new();
+    let mut zones_f = Vec::new();
+    let mut zones_b = Vec::new();
 
     for signals in board.children().filter(|n| n.has_tag_name("signals")) {
         for signal in signals.children().filter(|n| n.has_tag_name("signal")) {
@@ -641,13 +653,37 @@ fn parse_signals(board: &roxmltree::Node) -> (Vec<Track>, Vec<Track>) {
                             drillsize: Some(drill),
                         });
                     }
+                    "polygon" => {
+                        let layer = parse_u32(&child, "layer");
+                        let width = parse_f64(&child, "width");
+                        let ring: Vec<[f64; 2]> = child
+                            .children()
+                            .filter(|n| n.has_tag_name("vertex"))
+                            .map(|v| [parse_f64(&v, "x"), -parse_f64(&v, "y")])
+                            .collect();
+                        if ring.len() < 3 {
+                            continue;
+                        }
+                        let zone = Zone {
+                            polygons: Some(vec![ring]),
+                            svgpath: None,
+                            width: Some(width),
+                            net: net.clone(),
+                            fillrule: None,
+                        };
+                        match categorize_eagle_layer(layer) {
+                            EagleLayerCat::CopperF => zones_f.push(zone),
+                            EagleLayerCat::CopperB => zones_b.push(zone),
+                            _ => {}
+                        }
+                    }
                     _ => {}
                 }
             }
         }
     }
 
-    (front, back)
+    (front, back, zones_f, zones_b)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -709,5 +745,119 @@ fn mirror_eagle_layer(layer: u32) -> u32 {
         51 => 52,
         52 => 51,
         _ => layer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_tracks() -> ExtractOptions {
+        ExtractOptions {
+            include_tracks: true,
+            ..ExtractOptions::default()
+        }
+    }
+
+    fn minimal_board_with_signal(signal_xml: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<eagle version="9.6.2">
+<drawing><board>
+<libraries/><elements/><plain/>
+<signals>
+{signal_xml}
+</signals>
+</board></drawing></eagle>"#
+        )
+    }
+
+    #[test]
+    fn extracts_gnd_copper_pour_on_front() {
+        let xml = minimal_board_with_signal(
+            r#"<signal name="GND">
+                <polygon width="0.254" layer="1" pour="solid">
+                  <vertex x="0" y="0"/>
+                  <vertex x="10" y="0"/>
+                  <vertex x="10" y="5"/>
+                  <vertex x="0" y="5"/>
+                </polygon>
+              </signal>"#,
+        );
+        let pcb = parse(xml.as_bytes(), &with_tracks()).unwrap();
+        let zones = pcb.zones.expect("zones should be populated");
+        assert_eq!(zones.back.len(), 0);
+        assert_eq!(zones.front.len(), 1);
+
+        let z = &zones.front[0];
+        assert_eq!(z.net.as_deref(), Some("GND"));
+        assert_eq!(z.width, Some(0.254));
+        let polys = z.polygons.as_ref().expect("polygon vertices");
+        assert_eq!(polys.len(), 1);
+        assert_eq!(polys[0].len(), 4);
+        // Y should be flipped from Eagle's Y-up to pastebom's Y-down.
+        assert_eq!(polys[0][0], [0.0, -0.0]);
+        assert_eq!(polys[0][2], [10.0, -5.0]);
+    }
+
+    #[test]
+    fn routes_bottom_copper_pour_to_back_layer() {
+        let xml = minimal_board_with_signal(
+            r#"<signal name="GND">
+                <polygon width="0.3" layer="16">
+                  <vertex x="0" y="0"/>
+                  <vertex x="1" y="0"/>
+                  <vertex x="1" y="1"/>
+                </polygon>
+              </signal>"#,
+        );
+        let pcb = parse(xml.as_bytes(), &with_tracks()).unwrap();
+        let zones = pcb.zones.unwrap();
+        assert_eq!(zones.front.len(), 0);
+        assert_eq!(zones.back.len(), 1);
+    }
+
+    #[test]
+    fn degenerate_polygon_is_skipped() {
+        let xml = minimal_board_with_signal(
+            r#"<signal name="GND">
+                <polygon width="0.3" layer="1">
+                  <vertex x="0" y="0"/>
+                  <vertex x="1" y="1"/>
+                </polygon>
+              </signal>"#,
+        );
+        let pcb = parse(xml.as_bytes(), &with_tracks()).unwrap();
+        assert!(pcb.zones.is_none());
+    }
+
+    #[test]
+    fn boards_without_pours_emit_no_zones_field() {
+        let xml = minimal_board_with_signal(
+            r#"<signal name="N$1">
+                <wire x1="0" y1="0" x2="5" y2="0" width="0.2" layer="1"/>
+              </signal>"#,
+        );
+        let pcb = parse(xml.as_bytes(), &with_tracks()).unwrap();
+        assert!(pcb.zones.is_none());
+    }
+
+    #[test]
+    fn zones_respect_include_tracks_flag() {
+        let xml = minimal_board_with_signal(
+            r#"<signal name="GND">
+                <polygon width="0.3" layer="1">
+                  <vertex x="0" y="0"/>
+                  <vertex x="1" y="0"/>
+                  <vertex x="1" y="1"/>
+                </polygon>
+              </signal>"#,
+        );
+        let opts = ExtractOptions {
+            include_tracks: false,
+            ..ExtractOptions::default()
+        };
+        let pcb = parse(xml.as_bytes(), &opts).unwrap();
+        assert!(pcb.zones.is_none());
     }
 }
