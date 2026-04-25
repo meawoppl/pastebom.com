@@ -218,15 +218,19 @@ fn render_arc(
     let x2 = center[0] + radius * e_rad.cos();
     let y2 = center[1] + radius * e_rad.sin();
 
-    let mut sweep = end_deg - start_deg;
-    while sweep < -180.0 {
-        sweep += 360.0;
-    }
-    while sweep > 180.0 {
-        sweep -= 360.0;
-    }
-    let large = if sweep.abs() > 180.0 { 1 } else { 0 };
-    let sweep_flag = if sweep > 0.0 { 1 } else { 0 };
+    // Match the viewer's canvas-default sweep: forward (increasing angle) from
+    // start to end, normalized into [0, 360). large_arc_flag is set when that
+    // sweep exceeds a half-turn so SVG traces the same path the canvas does.
+    let forward_sweep = {
+        let s = (end_deg - start_deg) % 360.0;
+        if s < 0.0 {
+            s + 360.0
+        } else {
+            s
+        }
+    };
+    let large = if forward_sweep > 180.0 { 1 } else { 0 };
+    let sweep_flag = 1;
 
     let sw = if width < 0.1 { 0.1 } else { width };
     write!(
@@ -591,6 +595,37 @@ mod tests {
         let svg = render_svg(&data);
         assert!(svg.contains("<path d=\"M"));
         assert!(svg.contains("A5.0000"));
+    }
+
+    #[test]
+    fn test_short_arc_uses_small_arc_flag() {
+        // 0° → 90° forward sweep is 90°, so SVG large_arc_flag must be 0
+        // and sweep_flag is fixed at 1 (matches viewer's canvas-default sweep).
+        let mut data = minimal_pcbdata();
+        data.edges.push(Drawing::Arc {
+            start: [0.0, 0.0],
+            radius: 5.0,
+            startangle: 0.0,
+            endangle: 90.0,
+            width: 0.2,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("0 1 "), "expected large=0 sweep=1 in: {svg}");
+    }
+
+    #[test]
+    fn test_long_arc_sets_large_arc_flag() {
+        // start=180°, end=90° wraps forward through 360° → 90°, sweep=270°.
+        let mut data = minimal_pcbdata();
+        data.edges.push(Drawing::Arc {
+            start: [0.0, 0.0],
+            radius: 5.0,
+            startangle: 180.0,
+            endangle: 90.0,
+            width: 0.2,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("1 1 "), "expected large=1 sweep=1 in: {svg}");
     }
 
     #[test]
