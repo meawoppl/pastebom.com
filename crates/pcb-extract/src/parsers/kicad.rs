@@ -1133,13 +1133,16 @@ fn rotate_and_translate(lx: f64, ly: f64, tx: f64, ty: f64, angle_deg: f64) -> (
     (rx + tx, ry + ty)
 }
 
-/// Compute arc center, radius, start angle, end angle from three points.
+/// Compute arc center, radius, start angle, end angle from three points
+/// (start, mid, end). The returned (start, end) angles are ordered so that the
+/// HTML canvas default sweep direction (increasing angle, i.e. clockwise in the
+/// Y-down canvas) traces the arc through the mid point — swapped when the
+/// natural increasing-angle sweep would go the wrong way around the circle.
 fn arc_from_three_points(
     p1: [f64; 2],
     p2: [f64; 2],
     p3: [f64; 2],
 ) -> Option<([f64; 2], f64, f64, f64)> {
-    // Find circumcenter of three points
     let ax = p1[0];
     let ay = p1[1];
     let bx = p2[0];
@@ -1163,7 +1166,122 @@ fn arc_from_three_points(
 
     let radius = ((ax - ux).powi(2) + (ay - uy).powi(2)).sqrt();
     let start_angle = (ay - uy).atan2(ax - ux) * 180.0 / PI;
+    let mid_angle = (by - uy).atan2(bx - ux) * 180.0 / PI;
     let end_angle = (cy - uy).atan2(cx - ux) * 180.0 / PI;
 
-    Some(([ux, uy], radius, start_angle, end_angle))
+    // Forward offsets (in [0, 360)) measure how far we travel in the
+    // increasing-angle direction starting from `start_angle`. If the mid lies
+    // *after* the end on that path, the natural sweep skips the mid and we
+    // need to swap start/end so the canvas draws the arc the other way around.
+    let forward = |a: f64| -> f64 {
+        let v = (a - start_angle) % 360.0;
+        if v < 0.0 {
+            v + 360.0
+        } else {
+            v
+        }
+    };
+    let mid_offset = forward(mid_angle);
+    let end_offset = forward(end_angle);
+    if mid_offset > end_offset {
+        Some(([ux, uy], radius, end_angle, start_angle))
+    } else {
+        Some(([ux, uy], radius, start_angle, end_angle))
+    }
+}
+
+#[cfg(test)]
+mod arc_tests {
+    use super::*;
+
+    /// In Y-down canvas, the default `arc(..., false)` sweep covers angles in
+    /// the increasing direction (with wrap to keep `end >= start`). This helper
+    /// returns that traced sweep magnitude in degrees.
+    fn forward_sweep(start: f64, end: f64) -> f64 {
+        let s = (end - start) % 360.0;
+        if s < 0.0 {
+            s + 360.0
+        } else {
+            s
+        }
+    }
+
+    fn pt_on_circle(cx: f64, cy: f64, r: f64, deg: f64) -> [f64; 2] {
+        let rad = deg * std::f64::consts::PI / 180.0;
+        [cx + r * rad.cos(), cy + r * rad.sin()]
+    }
+
+    #[test]
+    fn short_arc_through_mid_drives_direction() {
+        // Circle centered at origin, radius 1, going from -135° through -180°
+        // (= +180°) to +180° — a tight 45° arc the "short way" around.
+        let c = [0.0, 0.0];
+        let r = 1.0;
+        let start = pt_on_circle(c[0], c[1], r, -135.0);
+        let mid = pt_on_circle(c[0], c[1], r, -157.5);
+        let end = pt_on_circle(c[0], c[1], r, 180.0);
+        let (_, _, sa, ea) = arc_from_three_points(start, mid, end).unwrap();
+        // Canvas-default sweep should be the small one (~45°), not 315°.
+        assert!(
+            (forward_sweep(sa, ea) - 45.0).abs() < 0.01,
+            "sweep was {}°, expected 45°",
+            forward_sweep(sa, ea)
+        );
+    }
+
+    #[test]
+    fn long_arc_through_mid_keeps_long_sweep() {
+        // Same endpoints as above but mid pushed to the other side — the
+        // canvas should now sweep the long way (~315°) through the mid.
+        let c = [0.0, 0.0];
+        let r = 1.0;
+        let start = pt_on_circle(c[0], c[1], r, -135.0);
+        let mid = pt_on_circle(c[0], c[1], r, 0.0);
+        let end = pt_on_circle(c[0], c[1], r, 180.0);
+        let (_, _, sa, ea) = arc_from_three_points(start, mid, end).unwrap();
+        assert!(
+            (forward_sweep(sa, ea) - 315.0).abs() < 0.01,
+            "sweep was {}°, expected 315°",
+            forward_sweep(sa, ea)
+        );
+    }
+
+    #[test]
+    fn quarter_arc_first_quadrant() {
+        // 0° → 90° via 45° — the natural forward sweep direction is correct.
+        let c = [10.0, 5.0];
+        let r = 2.0;
+        let start = pt_on_circle(c[0], c[1], r, 0.0);
+        let mid = pt_on_circle(c[0], c[1], r, 45.0);
+        let end = pt_on_circle(c[0], c[1], r, 90.0);
+        let (center, radius, sa, ea) = arc_from_three_points(start, mid, end).unwrap();
+        assert!((center[0] - c[0]).abs() < 1e-6);
+        assert!((center[1] - c[1]).abs() < 1e-6);
+        assert!((radius - r).abs() < 1e-6);
+        assert!((forward_sweep(sa, ea) - 90.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn collinear_returns_none() {
+        let p1 = [0.0, 0.0];
+        let p2 = [1.0, 0.0];
+        let p3 = [2.0, 0.0];
+        assert!(arc_from_three_points(p1, p2, p3).is_none());
+    }
+
+    #[test]
+    fn mid_through_zero_crossing() {
+        // 350° → 0° → 10° — a 20° arc that wraps across the 0/360 seam.
+        let c = [0.0, 0.0];
+        let r = 1.0;
+        let start = pt_on_circle(c[0], c[1], r, 350.0);
+        let mid = pt_on_circle(c[0], c[1], r, 0.0);
+        let end = pt_on_circle(c[0], c[1], r, 10.0);
+        let (_, _, sa, ea) = arc_from_three_points(start, mid, end).unwrap();
+        assert!(
+            (forward_sweep(sa, ea) - 20.0).abs() < 0.01,
+            "sweep was {}°, expected 20°",
+            forward_sweep(sa, ea)
+        );
+    }
 }
