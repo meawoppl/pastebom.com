@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.9.0
+
+- Fix KiCad arc direction by honouring the (start, mid, end) point convention; thumbnail and viewer now trace the same sweep
+- Extract copper-pour zones from Eagle XML (`<polygon>` under `<signal>`)
+- Render inner-layer copper zones in the viewer with the existing layer toggle
+- Reject OpenBoardView ASCII `.brd` files with a clear error instead of a misleading XML parse failure
+- Support Eagle binary `.brd` format (pre-6.0)
+- Pre-compress viewer assets at startup and serve gzip/brotli responses
+- Re-parse stale boards on deploy when `parser_version` is older than the current build (so this release reprocesses previously-stored arcs and zones)
+- Reconstruct recent uploads list from S3 when `recent.json` is missing
+- Add SVG thumbnail endpoint with S3 cache
+- Mobile sidebars and per-layer toggles; trackpad two-finger scroll pans instead of zooming
+- Match viewer dark theme to landing page; brighten pull-tab handles in dark mode
+- Reject macOS resource fork files and malformed GDSII archives early; ZIP/tar bomb detection for archive uploads
+- Filter GDSII boards from the recent uploads list and remove GDSII from the supported-format display
+- Prevent large uploads from locking up the server (parse semaphore)
+- Configurable max upload size via `MAX_UPLOAD_SIZE` env var
+- Clamp non-finite f64 values to 0.0 during serialization
+
 ## 1.8.0
 
 - Add ODB++ file format support (.tgz and .zip archives)

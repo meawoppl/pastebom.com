@@ -2709,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "pastebom-server"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "pastebom-viewer"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "gloo 0.11.0",
  "js-sys",
@@ -2760,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-extract"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "approx",
  "cfb",
