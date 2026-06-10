@@ -17,6 +17,7 @@ WORKDIR /build
 
 # Cache dependencies by copying manifests first
 COPY Cargo.toml Cargo.toml
+COPY Cargo.lock Cargo.lock
 COPY crates/pcb-extract/Cargo.toml crates/pcb-extract/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/viewer/Cargo.toml crates/viewer/Cargo.toml
@@ -30,7 +31,7 @@ RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crate
     && echo "fn main() {}" > crates/viewer/src/main.rs
 
 # Build dependencies only (cached layer)
-RUN cargo build --release 2>/dev/null || true
+RUN cargo build --release --locked 2>/dev/null || true
 
 # Copy actual source code
 COPY crates/ crates/
@@ -42,7 +43,7 @@ RUN touch crates/pcb-extract/src/main.rs \
     crates/viewer/src/main.rs
 
 # Build release binaries
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # Build viewer WASM
 RUN cd crates/viewer && trunk build --release
