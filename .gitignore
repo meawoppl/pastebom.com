@@ -4,6 +4,9 @@
 *.swp
 *.swo
 
+# Claude Code agent state
+.claude/
+
 # Local development
 .env
 data/
