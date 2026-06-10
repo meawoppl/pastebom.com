@@ -22,8 +22,14 @@ Shareable interactive PCB BOM viewer. Upload a PCB design file, get a link to an
 |----------|-----------|-------|
 | KiCad | `.kicad_pcb` | S-expression format |
 | EasyEDA | `.json` | Exported JSON |
-| Eagle | `.brd`, `.fbrd` | XML board files |
+| Eagle | `.brd`, `.fbrd` | XML and legacy binary board files |
 | Altium | `.pcbdoc` | Binary compound document |
+| Gerber | `.zip` | Zipped Gerber + Excellon drill set |
+| ODB++ | `.tgz`, `.tar.gz`, `.zip` | Archived ODB++ job |
+
+`.zip` archives are inspected to distinguish Gerber from ODB++. GDSII (`.gds`) is
+supported by the `pcb-extract` CLI via an explicit `--format gdsii`, but is not
+auto-detected for web upload.
 
 ## Architecture
 
@@ -66,11 +72,15 @@ STORAGE_PATH=./localdata cargo run -p pastebom-server
 | Method | Route | Description |
 |--------|-------|-------------|
 | `GET` | `/` | Upload form |
+| `GET` | `/terms` | Terms of service |
 | `POST` | `/upload` | Parse PCB file, store, return viewer link |
+| `GET` | `/api/recent` | Recently uploaded boards |
+| `GET` | `/gh-render` | Render a board straight from a GitHub raw URL |
 | `GET` | `/b/{id}` | Interactive viewer |
 | `GET` | `/b/{id}/data` | Parsed PCB data (JSON) |
 | `GET` | `/b/{id}/meta` | Upload metadata |
-| `GET` | `/health` | Health check |
+| `GET` | `/b/{id}/thumb.svg` | SVG thumbnail of the board |
+| `GET` | `/health` | Health check (reports version) |
 
 ## Environment Variables
 
@@ -82,6 +92,9 @@ STORAGE_PATH=./localdata cargo run -p pastebom-server
 | `S3_BUCKET` | — | S3 bucket name; enables S3 backend when set |
 | `S3_PREFIX` | — | Key prefix for S3 objects |
 | `BASE_URL` | `http://localhost:8000` | Base URL for generated sharing links |
+| `MAX_UPLOAD_SIZE` | `52428800` (50 MB) | Max upload size in bytes |
+| `MAX_CONCURRENT_PARSES` | `4` | Max simultaneous PCB parse operations |
+| `GITHUB_TOKEN` | — | Optional token for `/gh-render` GitHub fetches |
 
 ## Build
 
