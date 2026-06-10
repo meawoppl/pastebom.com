@@ -116,7 +116,7 @@ fn group_components(
     groups
         .into_iter()
         .map(|(_, _, mut refs)| {
-            refs.sort_by(|a, b| natural_sort_key(&a.0).cmp(&natural_sort_key(&b.0)));
+            refs.sort_by_key(|r| natural_sort_key(&r.0));
             refs
         })
         .collect()

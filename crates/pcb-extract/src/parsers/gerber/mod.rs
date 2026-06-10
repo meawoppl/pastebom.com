@@ -224,16 +224,14 @@ fn assemble_pcb_data(
                     }
                 }
             }
-            GerberLayerType::CopperInner(ref name) => {
-                if opts.include_tracks {
-                    let inner_tracks = tracks_inner.entry(name.clone()).or_default();
-                    let inner_pads = pads_inner.entry(name.clone()).or_default();
-                    for d in &output.drawings {
-                        if let Some(track) = drawing_to_track(d) {
-                            inner_tracks.push(track);
-                        } else {
-                            inner_pads.push(d.clone());
-                        }
+            GerberLayerType::CopperInner(ref name) if opts.include_tracks => {
+                let inner_tracks = tracks_inner.entry(name.clone()).or_default();
+                let inner_pads = pads_inner.entry(name.clone()).or_default();
+                for d in &output.drawings {
+                    if let Some(track) = drawing_to_track(d) {
+                        inner_tracks.push(track);
+                    } else {
+                        inner_pads.push(d.clone());
                     }
                 }
             }

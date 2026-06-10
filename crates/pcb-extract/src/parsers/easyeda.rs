@@ -379,26 +379,24 @@ fn parse_easyeda_component(
                     }
                 }
             }
-            "CIRCLE" => {
-                if parts.len() >= 6 {
-                    let cx = mil_to_mm(parts[1].parse::<f64>().unwrap_or(0.0) - origin_x);
-                    let cy = mil_to_mm(parts[2].parse::<f64>().unwrap_or(0.0) - origin_y);
-                    let radius = mil_to_mm(parts[3].parse::<f64>().unwrap_or(0.0));
-                    let width = mil_to_mm(parts[4].parse::<f64>().unwrap_or(0.0));
-                    let layer_id: u32 = parts[5].parse().unwrap_or(0);
-                    let side = easyeda_layer_to_side(layer_id);
-                    bbox.expand_point(cx - radius, cy - radius);
-                    bbox.expand_point(cx + radius, cy + radius);
-                    drawings.push(FootprintDrawing {
-                        layer: side.to_string(),
-                        drawing: FootprintDrawingItem::Shape(Drawing::Circle {
-                            start: [cx, cy],
-                            radius,
-                            width,
-                            filled: None,
-                        }),
-                    });
-                }
+            "CIRCLE" if parts.len() >= 6 => {
+                let cx = mil_to_mm(parts[1].parse::<f64>().unwrap_or(0.0) - origin_x);
+                let cy = mil_to_mm(parts[2].parse::<f64>().unwrap_or(0.0) - origin_y);
+                let radius = mil_to_mm(parts[3].parse::<f64>().unwrap_or(0.0));
+                let width = mil_to_mm(parts[4].parse::<f64>().unwrap_or(0.0));
+                let layer_id: u32 = parts[5].parse().unwrap_or(0);
+                let side = easyeda_layer_to_side(layer_id);
+                bbox.expand_point(cx - radius, cy - radius);
+                bbox.expand_point(cx + radius, cy + radius);
+                drawings.push(FootprintDrawing {
+                    layer: side.to_string(),
+                    drawing: FootprintDrawingItem::Shape(Drawing::Circle {
+                        start: [cx, cy],
+                        radius,
+                        width,
+                        filled: None,
+                    }),
+                });
             }
             _ => {}
         }

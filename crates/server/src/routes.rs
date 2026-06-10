@@ -108,7 +108,7 @@ async fn reconstruct_recent(s3: &crate::s3::S3Client) -> Vec<RecentEntry> {
         .into_iter()
         .filter(|o| o.key.ends_with(".meta.json"))
         .collect();
-    meta_objects.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    meta_objects.sort_by_key(|o| std::cmp::Reverse(o.last_modified));
     meta_objects.truncate(MAX_RECENT);
 
     let mut entries = Vec::new();
