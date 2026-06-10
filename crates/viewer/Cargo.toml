@@ -9,9 +9,9 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 gloo = { version = "0.11", features = ["net", "events", "storage", "timers", "utils"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-log = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
 wasm-logger = "0.2"
 
 [dependencies.web-sys]
