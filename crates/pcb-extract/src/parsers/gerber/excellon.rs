@@ -211,8 +211,8 @@ fn parse_coordinate_line(
     zero_sup: ZeroSuppression,
     format: CoordFormat,
 ) -> Option<(f64, f64)> {
-    let mut x_str: Option<&str> = None;
-    let mut y_str: Option<&str> = None;
+    let mut x_str: Option<String> = None;
+    let mut y_str: Option<String> = None;
 
     let mut i = 0;
     let chars: Vec<char> = line.chars().collect();
@@ -221,21 +221,21 @@ fn parse_coordinate_line(
             'X' => {
                 let start = i + 1;
                 let end = find_next_letter(&chars, start);
-                x_str = Some(&line[start..end]);
+                x_str = Some(chars[start..end].iter().collect());
                 i = end;
             }
             'Y' => {
                 let start = i + 1;
                 let end = find_next_letter(&chars, start);
-                y_str = Some(&line[start..end]);
+                y_str = Some(chars[start..end].iter().collect());
                 i = end;
             }
             _ => i += 1,
         }
     }
 
-    let x = parse_coord_value(x_str?, units, zero_sup, format)?;
-    let y = parse_coord_value(y_str?, units, zero_sup, format)?;
+    let x = parse_coord_value(&x_str?, units, zero_sup, format)?;
+    let y = parse_coord_value(&y_str?, units, zero_sup, format)?;
     Some((x, y))
 }
 
@@ -539,5 +539,22 @@ M30
             }
             _ => panic!("Expected Circle"),
         }
+    }
+
+    #[test]
+    fn test_multibyte_coordinate_does_not_panic() {
+        // A stray multibyte character in a coordinate line must not trigger a
+        // char-boundary slicing panic.
+        let content = "\
+M48
+METRIC,TZ,000.000
+T01C0.300
+%
+T01
+X1°Y2
+M30
+";
+        // The malformed hit is dropped; the parser must not panic.
+        let _ = parse_excellon(content);
     }
 }

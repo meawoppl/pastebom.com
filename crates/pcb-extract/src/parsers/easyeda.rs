@@ -198,7 +198,7 @@ fn parse_shape(
                 .split_whitespace()
                 .filter_map(|s| s.parse().ok())
                 .collect();
-            for i in (0..coords.len().saturating_sub(2)).step_by(2) {
+            for i in (0..coords.len().saturating_sub(3)).step_by(2) {
                 let start = [
                     mil_to_mm(coords[i] - origin_x),
                     mil_to_mm(coords[i + 1] - origin_y),
@@ -357,7 +357,7 @@ fn parse_easyeda_component(
                         .split_whitespace()
                         .filter_map(|c| c.parse().ok())
                         .collect();
-                    for i in (0..coords.len().saturating_sub(2)).step_by(2) {
+                    for i in (0..coords.len().saturating_sub(3)).step_by(2) {
                         let start = [
                             mil_to_mm(coords[i] - origin_x),
                             mil_to_mm(coords[i + 1] - origin_y),
@@ -546,5 +546,22 @@ fn easyeda_layer_to_side(layer_id: u32) -> &'static str {
         2 | 4 | 6 | 13 => "B",
         11 => "F", // Multi-layer, treat as front
         _ => "F",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn odd_length_track_coords_do_not_panic() {
+        // A TRACK with an odd number of coordinate values must not index past
+        // the end of the coordinate list.
+        let json = br#"{"shape":["TRACK~1~1~0 0 5"]}"#;
+        let opts = ExtractOptions {
+            include_tracks: true,
+            include_nets: true,
+        };
+        assert!(parse(json, &opts).is_ok());
     }
 }
