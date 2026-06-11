@@ -6,6 +6,10 @@ use std::collections::HashMap;
 
 // ─── Constants ──────────────────────────────────────────────────────
 
+/// Maximum section nesting depth. Guards the recursive section parser against
+/// a stack overflow on a crafted chain of nested sections.
+const MAX_SECTION_DEPTH: usize = 1000;
+
 const SEC_START: u8 = 0x10;
 const SEC_LIBRARY: u8 = 0x15;
 const SEC_PACKAGES: u8 = 0x19;
@@ -265,7 +269,7 @@ fn build_section_tree(records: &[RawRecord]) -> Result<Section, ExtractError> {
     }
 
     let mut idx = 0;
-    let root = parse_section_recursive(records, &mut idx)?;
+    let root = parse_section_recursive(records, &mut idx, 0)?;
     Ok(root)
 }
 
@@ -311,7 +315,13 @@ fn subsection_counts(rec: &RawRecord) -> Vec<usize> {
 fn parse_section_recursive(
     records: &[RawRecord],
     idx: &mut usize,
+    depth: usize,
 ) -> Result<Section, ExtractError> {
+    if depth >= MAX_SECTION_DEPTH {
+        return Err(ExtractError::ParseError(
+            "Eagle binary: section nesting too deep".to_string(),
+        ));
+    }
     if *idx >= records.len() {
         return Err(ExtractError::ParseError(
             "Eagle binary: unexpected end of sections".to_string(),
@@ -330,7 +340,7 @@ fn parse_section_recursive(
     let mut consumed = 0;
     while consumed < budget && *idx < records.len() {
         let before = *idx;
-        children.push(parse_section_recursive(records, idx)?);
+        children.push(parse_section_recursive(records, idx, depth + 1)?);
         consumed += *idx - before;
     }
 

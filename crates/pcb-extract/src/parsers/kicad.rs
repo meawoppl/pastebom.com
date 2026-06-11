@@ -198,10 +198,17 @@ fn layer_is_copper(name: &str) -> bool {
 
 // ─── Nets ────────────────────────────────────────────────────────────
 
+/// Upper bound on net ids. KiCad assigns sequential ids, so a value beyond this
+/// is malformed; the cap prevents a crafted id from forcing a huge allocation.
+const MAX_NET_ID: usize = 1_000_000;
+
 fn parse_nets(root: &SExpr) -> Vec<String> {
     let mut nets = Vec::new();
     for child in root.find_all("net") {
         let id = child.f64_at(0).unwrap_or(0.0) as usize;
+        if id > MAX_NET_ID {
+            continue;
+        }
         let name = child.atom_at(1).unwrap_or("").to_string();
         while nets.len() <= id {
             nets.push(String::new());

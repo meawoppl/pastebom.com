@@ -1,11 +1,15 @@
-/// S-expression parser for KiCad files.
-///
-/// Grammar:
-///   sexpr  = '(' atom_or_sexpr* ')'
-///   atom   = string | number | symbol
-///   string = '"' [^"]* '"'  (with escape handling)
-///   number = [-]?[0-9]+[.[0-9]*]?
-///   symbol = [^ \t\n\r()"]+
+//! S-expression parser for KiCad files.
+//!
+//! Grammar:
+//!   sexpr  = '(' atom_or_sexpr* ')'
+//!   atom   = string | number | symbol
+//!   string = '"' [^"]* '"'  (with escape handling)
+//!   number = [-]?[0-9]+[.[0-9]*]?
+//!   symbol = [^ \t\n\r()"]+
+
+/// Maximum S-expression nesting depth. Guards the recursive parser against a
+/// stack overflow on crafted, deeply-nested input.
+const MAX_SEXPR_DEPTH: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SExpr {
@@ -164,9 +168,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_sexpr(&mut self) -> Option<SExpr> {
+        self.parse_sexpr_depth(0)
+    }
+
+    fn parse_sexpr_depth(&mut self, depth: usize) -> Option<SExpr> {
         self.skip_whitespace();
         match self.peek()? {
             b'(' => {
+                if depth >= MAX_SEXPR_DEPTH {
+                    // Too deeply nested — abandon parsing rather than risk a
+                    // stack overflow on crafted input.
+                    self.pos = self.input.len();
+                    return None;
+                }
                 self.pos += 1;
                 let mut items = Vec::new();
                 loop {
@@ -178,7 +192,7 @@ impl<'a> Parser<'a> {
                         }
                         None => break,
                         _ => {
-                            if let Some(expr) = self.parse_sexpr() {
+                            if let Some(expr) = self.parse_sexpr_depth(depth + 1) {
                                 items.push(expr);
                             }
                         }
@@ -218,6 +232,14 @@ mod tests {
         assert_eq!(result.tag(), Some("a"));
         assert_eq!(result.value("b"), Some("1"));
         assert_eq!(result.value("c"), Some("2"));
+    }
+
+    #[test]
+    fn deeply_nested_input_does_not_overflow() {
+        // A pathological run of open parens must not blow the stack; the parser
+        // bails at the depth limit and returns without recursing unbounded.
+        let input = "(".repeat(100_000);
+        let _ = parse(input.as_bytes());
     }
 
     #[test]

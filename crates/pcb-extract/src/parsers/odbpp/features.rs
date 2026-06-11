@@ -1,6 +1,10 @@
 use super::symbols;
 use crate::types::Drawing;
 
+/// Upper bound on the ODB++ symbol-table size; indices are sequential, so a
+/// larger value is malformed and would otherwise force a huge allocation.
+const MAX_SYMBOL_TABLE: usize = 1_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Unit {
     Inch,
@@ -83,10 +87,14 @@ pub fn parse_features(content: &str) -> FeatureData {
             if let Some((_idx, name)) = rest.split_once(' ') {
                 let name = name.split_whitespace().next().unwrap_or(name);
                 let idx: usize = _idx.parse().unwrap_or(sym_table.len());
-                while sym_table.len() <= idx {
-                    sym_table.push(String::new());
+                // Bound the table to defend against a crafted index forcing a
+                // huge allocation.
+                if idx < MAX_SYMBOL_TABLE {
+                    while sym_table.len() <= idx {
+                        sym_table.push(String::new());
+                    }
+                    sym_table[idx] = name.to_string();
                 }
-                sym_table[idx] = name.to_string();
             }
             continue;
         }

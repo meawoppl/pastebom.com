@@ -96,6 +96,10 @@ const DT_ASCII: u8 = 0x06;
 /// Maximum number of flattened elements before stopping.
 const MAX_FLATTEN_ELEMENTS: usize = 500_000;
 
+/// Maximum number of AREF array instances. COLROW counts are file-controlled
+/// `i16`s; this bounds the replication loop against crafted values.
+const MAX_AREF_INSTANCES: usize = 1_000_000;
+
 /// Maximum number of footprints to generate.
 const MAX_FOOTPRINTS: usize = 5_000;
 
@@ -1029,8 +1033,13 @@ fn flatten_structure(
                             let p1 = xy_to_mm(xy[1].0, xy[1].1, scale);
                             let p2 = xy_to_mm(xy[2].0, xy[2].1, scale);
 
-                            let ncols = *cols as usize;
-                            let nrows = *rows as usize;
+                            let mut ncols = (*cols).max(0) as usize;
+                            let mut nrows = (*rows).max(0) as usize;
+                            // Reject negative (sign-extended) or oversized arrays.
+                            if ncols.saturating_mul(nrows) > MAX_AREF_INSTANCES {
+                                ncols = 0;
+                                nrows = 0;
+                            }
 
                             let col_dx = if ncols > 1 {
                                 (p1[0] - p0[0]) / ncols as f64
@@ -1055,10 +1064,10 @@ fn flatten_structure(
 
                             let ref_mirror = (strans & 0x8000) != 0;
 
-                            for r in 0..nrows {
+                            'rows: for r in 0..nrows {
                                 for c in 0..ncols {
                                     if local.element_count() >= MAX_FLATTEN_ELEMENTS {
-                                        break;
+                                        break 'rows;
                                     }
                                     let inst_origin = [
                                         p0[0] + c as f64 * col_dx + r as f64 * row_dx,
