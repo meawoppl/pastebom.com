@@ -98,7 +98,7 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                 width,
                 filled,
             } => {
-                if filled.is_some() {
+                if filled.is_some_and(|f| f != 0) {
                     write!(
                         svg,
                         r#"<circle cx="{:.4}" cy="{:.4}" r="{:.4}" fill="{color}"/>"#,
@@ -122,20 +122,13 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                 let y = start[1].min(end[1]);
                 let rw = (end[0] - start[0]).abs();
                 let rh = (end[1] - start[1]).abs();
-                if *width < 0.01 {
-                    write!(
-                        svg,
-                        r#"<rect x="{x:.4}" y="{y:.4}" width="{rw:.4}" height="{rh:.4}" fill="{color}"/>"#,
-                    )
-                    .unwrap();
-                } else {
-                    write!(
-                        svg,
-                        r#"<rect x="{x:.4}" y="{y:.4}" width="{rw:.4}" height="{rh:.4}" fill="none" stroke="{color}" stroke-width="{:.4}"/>"#,
-                        width,
-                    )
-                    .unwrap();
-                }
+                // Match the viewer, which always strokes rectangle outlines.
+                let sw = if *width < 0.1 { 0.1 } else { *width };
+                write!(
+                    svg,
+                    r#"<rect x="{x:.4}" y="{y:.4}" width="{rw:.4}" height="{rh:.4}" fill="none" stroke="{color}" stroke-width="{sw:.4}"/>"#,
+                )
+                .unwrap();
             }
             Drawing::Arc {
                 start,
@@ -158,8 +151,9 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                         continue;
                     }
                     let mut d = String::new();
-                    let cos_a = angle.to_radians().cos();
-                    let sin_a = angle.to_radians().sin();
+                    // Match the viewer, which rotates polygons by -angle.
+                    let cos_a = (-*angle).to_radians().cos();
+                    let sin_a = (-*angle).to_radians().sin();
                     for (i, pt) in poly.iter().enumerate() {
                         let rx = pt[0] * cos_a - pt[1] * sin_a + pos[0];
                         let ry = pt[0] * sin_a + pt[1] * cos_a + pos[1];
@@ -170,7 +164,7 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                         }
                     }
                     d.push('Z');
-                    if filled.is_some() {
+                    if filled.is_none_or(|f| f != 0) {
                         write!(svg, r#"<path d="{d}" fill="{color}" fill-rule="evenodd"/>"#)
                             .unwrap();
                     } else {
@@ -557,7 +551,8 @@ mod tests {
     }
 
     #[test]
-    fn test_rect_drawing_filled() {
+    fn test_rect_drawing_zero_width_strokes() {
+        // A zero-width rect strokes (with a minimum width), matching the viewer.
         let mut data = minimal_pcbdata();
         data.edges.push(Drawing::Rect {
             start: [5.0, 5.0],
@@ -568,6 +563,7 @@ mod tests {
         let rect_count = svg.matches("<rect").count();
         // background rect + edge rect
         assert!(rect_count >= 2);
+        assert!(svg.contains(&format!("stroke=\"{EDGE_COLOR}\"")));
     }
 
     #[test]
@@ -660,17 +656,33 @@ mod tests {
 
     #[test]
     fn test_polygon_stroked() {
+        // filled: Some(0) means explicitly not filled — matches the viewer.
         let mut data = minimal_pcbdata();
         data.drawings.silkscreen.front.push(Drawing::Polygon {
             pos: [10.0, 10.0],
             angle: 0.0,
             polygons: vec![vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0]]],
-            filled: None,
+            filled: Some(0),
             width: 0.3,
         });
         let svg = render_svg(&data);
         assert!(svg.contains("fill=\"none\""));
         assert!(svg.contains(&format!("stroke=\"{SILK_COLOR}\"")));
+    }
+
+    #[test]
+    fn test_polygon_none_is_filled() {
+        // filled: None defaults to filled, matching the viewer's is_none_or.
+        let mut data = minimal_pcbdata();
+        data.drawings.silkscreen.front.push(Drawing::Polygon {
+            pos: [10.0, 10.0],
+            angle: 0.0,
+            polygons: vec![vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]],
+            filled: None,
+            width: 0.0,
+        });
+        let svg = render_svg(&data);
+        assert!(svg.contains("fill-rule=\"evenodd\""));
     }
 
     #[test]
@@ -684,8 +696,8 @@ mod tests {
             width: 0.0,
         });
         let svg = render_svg(&data);
-        // After 45° rotation, [1,0] → [cos45, sin45] ≈ [0.7071, 0.7071]
-        assert!(svg.contains("M0.7071 0.7071"));
+        // Viewer rotates by -angle, so [1,0] → [cos45, -sin45] ≈ [0.7071, -0.7071]
+        assert!(svg.contains("M0.7071 -0.7071"));
     }
 
     #[test]
