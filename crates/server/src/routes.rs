@@ -14,6 +14,7 @@ use crate::AppState;
 const MAX_RECENT: usize = 50;
 const RECENT_KEY: &str = "recent.json";
 const SEMAPHORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Acquire parse semaphore (with timeout) and run PCB extraction off the async runtime.
 pub async fn parse_pcb_guarded(
@@ -25,25 +26,35 @@ pub async fn parse_pcb_guarded(
         .await
         .map_err(|_| "Server busy — try again later".to_string())?
         .map_err(|_| "Server busy".to_string())?;
-    let result = tokio::task::spawn_blocking(move || {
+    let handle = tokio::task::spawn_blocking(move || {
         let opts = ExtractOptions {
             include_tracks: true,
             include_nets: true,
         };
         pcb_extract::extract_bytes(&data, format, &opts)
-    })
-    .await
-    .map_err(|_| "Parse task failed".to_string())?
-    .map_err(|e| format!("Failed to parse PCB file: {e}"))?;
+    });
+    // Bound parse wall-clock time so a pathological file can't hold the permit
+    // indefinitely. On timeout the permit is released here; the blocking task
+    // finishes on its own (parser work is itself bounded).
+    let result = tokio::time::timeout(PARSE_TIMEOUT, handle)
+        .await
+        .map_err(|_| "Parsing timed out".to_string())?
+        .map_err(|_| "Parse task failed".to_string())?
+        .map_err(|e| format!("Failed to parse PCB file: {e}"))?;
     Ok(result)
 }
 
 /// Prepend an entry to the recent list and persist to storage.
 pub async fn add_recent(state: &AppState, entry: RecentEntry) {
-    let mut recent = state.recent.write().await;
-    recent.insert(0, entry);
-    recent.truncate(MAX_RECENT);
-    if let Ok(json) = serde_json::to_vec(&*recent) {
+    // Serialize under the lock, then drop it before the S3 round-trip so
+    // uploads and /api/recent readers don't serialize on the network call.
+    let json = {
+        let mut recent = state.recent.write().await;
+        recent.insert(0, entry);
+        recent.truncate(MAX_RECENT);
+        serde_json::to_vec(&*recent)
+    };
+    if let Ok(json) = json {
         let _ = state
             .s3
             .put_object(RECENT_KEY, json, "application/json")
