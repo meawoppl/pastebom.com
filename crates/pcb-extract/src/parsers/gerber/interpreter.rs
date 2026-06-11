@@ -11,6 +11,15 @@ use super::commands::{ApertureTemplate, GerberCommand, Polarity};
 use super::coord::CoordinateConverter;
 use super::macros::{self, MacroTable};
 
+/// Upper bound on regular-polygon vertices. Real polygon apertures have a
+/// handful of vertices; this caps a crafted count before it drives a huge
+/// `Vec::with_capacity`.
+pub(super) const MAX_POLYGON_VERTICES: usize = 1024;
+
+/// Upper bound on the total drawings produced by a single step-and-repeat
+/// block, defending against crafted `%SR%` repeat counts.
+const MAX_SR_DRAWINGS: usize = 2_000_000;
+
 /// Output from interpreting a single Gerber file.
 #[derive(Debug, Default)]
 pub struct GerberLayerOutput {
@@ -276,24 +285,40 @@ impl Interpreter {
 
         let block: Vec<Drawing> = self.drawings[start..].to_vec();
 
-        for yi in 0..self.sr_y_repeat {
-            for xi in 0..self.sr_x_repeat {
-                if xi == 0 && yi == 0 {
-                    continue; // original position already drawn
-                }
-                let dx = xi as f64 * self.sr_x_step;
-                let dy = yi as f64 * self.sr_y_step;
-                for d in &block {
-                    self.drawings.push(offset_drawing(d, dx, dy));
-                }
-            }
-        }
+        let x_repeat = self.sr_x_repeat;
+        let y_repeat = self.sr_y_repeat;
+        let x_step = self.sr_x_step;
+        let y_step = self.sr_y_step;
 
-        // Reset SR state to defaults.
+        // Reset SR state to defaults before replicating.
         self.sr_x_repeat = 1;
         self.sr_y_repeat = 1;
         self.sr_x_step = 0.0;
         self.sr_y_step = 0.0;
+
+        if block.is_empty() {
+            return;
+        }
+
+        // Bound total replicated drawings against crafted repeat counts.
+        let budget = MAX_SR_DRAWINGS.saturating_sub(self.drawings.len());
+        let mut pushed = 0usize;
+        'replicate: for yi in 0..y_repeat {
+            for xi in 0..x_repeat {
+                if xi == 0 && yi == 0 {
+                    continue; // original position already drawn
+                }
+                let dx = xi as f64 * x_step;
+                let dy = yi as f64 * y_step;
+                for d in &block {
+                    if pushed >= budget {
+                        break 'replicate;
+                    }
+                    self.drawings.push(offset_drawing(d, dx, dy));
+                    pushed += 1;
+                }
+            }
+        }
     }
 
     fn do_interpolate(&mut self, old_x: i64, old_y: i64, i: Option<i64>, j: Option<i64>) {
@@ -390,7 +415,7 @@ impl Interpreter {
                     rotation,
                 } => {
                     let r = outer_diameter / 2.0;
-                    let n = *num_vertices as usize;
+                    let n = (*num_vertices as usize).min(MAX_POLYGON_VERTICES);
                     let rot_rad = rotation.to_radians();
                     let mut points = Vec::with_capacity(n);
                     for k in 0..n {

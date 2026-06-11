@@ -4,6 +4,16 @@ use std::f64::consts::PI;
 use crate::error::ExtractError;
 use crate::types::Drawing;
 
+use super::interpreter::MAX_POLYGON_VERTICES;
+
+/// Maximum parenthesis nesting depth in a macro expression. Guards the
+/// recursive-descent parser against stack overflow on crafted input.
+const MAX_EXPR_DEPTH: usize = 256;
+
+/// Maximum token count in a macro expression. Bounds both the parse work and
+/// the depth of `Expr::eval` on a long left-associative chain.
+const MAX_EXPR_TOKENS: usize = 4096;
+
 /// A single primitive within an aperture macro definition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MacroPrimitive {
@@ -135,7 +145,7 @@ pub fn parse_expr(s: &str) -> Result<Expr, ExtractError> {
         return Ok(Expr::Literal(0.0));
     }
     let tokens = tokenize_expr(s)?;
-    let (expr, rest) = parse_add_sub(&tokens)?;
+    let (expr, rest) = parse_add_sub(&tokens, 0)?;
     if !rest.is_empty() {
         return Err(ExtractError::ParseError(format!(
             "AM expr: unexpected tokens after expression: {s}"
@@ -161,6 +171,11 @@ fn tokenize_expr(s: &str) -> Result<Vec<ExprToken>, ExtractError> {
     let mut chars = s.chars().peekable();
 
     while let Some(&ch) = chars.peek() {
+        if tokens.len() >= MAX_EXPR_TOKENS {
+            return Err(ExtractError::ParseError(
+                "AM expr: expression too long".into(),
+            ));
+        }
         match ch {
             ' ' | '\t' => {
                 chars.next();
@@ -252,17 +267,20 @@ fn tokenize_expr(s: &str) -> Result<Vec<ExprToken>, ExtractError> {
 }
 
 // Recursive descent: add/sub -> mul/div -> atom
-fn parse_add_sub(tokens: &[ExprToken]) -> Result<(Expr, &[ExprToken]), ExtractError> {
-    let (mut left, mut rest) = parse_mul_div(tokens)?;
+fn parse_add_sub(tokens: &[ExprToken], depth: usize) -> Result<(Expr, &[ExprToken]), ExtractError> {
+    if depth > MAX_EXPR_DEPTH {
+        return Err(ExtractError::ParseError("AM expr: nesting too deep".into()));
+    }
+    let (mut left, mut rest) = parse_mul_div(tokens, depth)?;
     loop {
         match rest.first() {
             Some(ExprToken::Plus) => {
-                let (right, r) = parse_mul_div(&rest[1..])?;
+                let (right, r) = parse_mul_div(&rest[1..], depth)?;
                 left = Expr::Add(Box::new(left), Box::new(right));
                 rest = r;
             }
             Some(ExprToken::Minus) => {
-                let (right, r) = parse_mul_div(&rest[1..])?;
+                let (right, r) = parse_mul_div(&rest[1..], depth)?;
                 left = Expr::Sub(Box::new(left), Box::new(right));
                 rest = r;
             }
@@ -272,17 +290,17 @@ fn parse_add_sub(tokens: &[ExprToken]) -> Result<(Expr, &[ExprToken]), ExtractEr
     Ok((left, rest))
 }
 
-fn parse_mul_div(tokens: &[ExprToken]) -> Result<(Expr, &[ExprToken]), ExtractError> {
-    let (mut left, mut rest) = parse_atom(tokens)?;
+fn parse_mul_div(tokens: &[ExprToken], depth: usize) -> Result<(Expr, &[ExprToken]), ExtractError> {
+    let (mut left, mut rest) = parse_atom(tokens, depth)?;
     loop {
         match rest.first() {
             Some(ExprToken::Mul) => {
-                let (right, r) = parse_atom(&rest[1..])?;
+                let (right, r) = parse_atom(&rest[1..], depth)?;
                 left = Expr::Mul(Box::new(left), Box::new(right));
                 rest = r;
             }
             Some(ExprToken::Div) => {
-                let (right, r) = parse_atom(&rest[1..])?;
+                let (right, r) = parse_atom(&rest[1..], depth)?;
                 left = Expr::Div(Box::new(left), Box::new(right));
                 rest = r;
             }
@@ -292,12 +310,12 @@ fn parse_mul_div(tokens: &[ExprToken]) -> Result<(Expr, &[ExprToken]), ExtractEr
     Ok((left, rest))
 }
 
-fn parse_atom(tokens: &[ExprToken]) -> Result<(Expr, &[ExprToken]), ExtractError> {
+fn parse_atom(tokens: &[ExprToken], depth: usize) -> Result<(Expr, &[ExprToken]), ExtractError> {
     match tokens.first() {
         Some(ExprToken::Num(v)) => Ok((Expr::Literal(*v), &tokens[1..])),
         Some(ExprToken::Var(idx)) => Ok((Expr::Variable(*idx), &tokens[1..])),
         Some(ExprToken::LParen) => {
-            let (expr, rest) = parse_add_sub(&tokens[1..])?;
+            let (expr, rest) = parse_add_sub(&tokens[1..], depth + 1)?;
             match rest.first() {
                 Some(ExprToken::RParen) => Ok((expr, &rest[1..])),
                 _ => Err(ExtractError::ParseError(
@@ -605,7 +623,7 @@ pub fn evaluate_macro(
                 if exp < 0.5 {
                     continue;
                 }
-                let n = num_vertices.eval(params) as usize;
+                let n = (num_vertices.eval(params) as usize).min(MAX_POLYGON_VERTICES);
                 let cx = center_x.eval(params);
                 let cy = center_y.eval(params);
                 let d = diameter.eval(params);
@@ -720,6 +738,21 @@ mod tests {
     fn test_expr_multiply() {
         let expr = parse_expr("1.08239X$1").unwrap();
         assert_abs_diff_eq!(expr.eval(&[0.1]), 0.108239, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn rejects_deeply_nested_expression() {
+        // Many nested parens must be rejected, not stack-overflow the parser.
+        let deep = format!("{}1{}", "(".repeat(5000), ")".repeat(5000));
+        assert!(parse_expr(&deep).is_err());
+    }
+
+    #[test]
+    fn rejects_overly_long_expression() {
+        // A long left-associative chain is rejected before building a tree that
+        // would overflow the stack during eval.
+        let long = "1+".repeat(10_000) + "1";
+        assert!(parse_expr(&long).is_err());
     }
 
     #[test]
