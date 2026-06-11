@@ -61,6 +61,31 @@ pub struct RecentEntry {
     pub created: String,
 }
 
+/// Reduce a client-supplied filename to a single safe path component for use
+/// in a storage key, preventing traversal (`../`) on the filesystem backend.
+fn safe_filename(name: &str) -> String {
+    let base = std::path::Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | '\0'))
+        .collect();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "upload.bin".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Reject ids that aren't UUIDs so they can't traverse the storage root.
+fn validate_id(id: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    Uuid::parse_str(id)
+        .map(|_| ())
+        .map_err(|_| error_response(StatusCode::NOT_FOUND, "BOM not found"))
+}
+
 fn is_supported_format(filename: &str) -> bool {
     let name = filename.to_lowercase();
     !name.ends_with(".gds") && !name.ends_with(".gds2")
@@ -234,8 +259,9 @@ async fn upload(
     let file_size = data.len();
     let id = Uuid::new_v4().to_string();
 
-    // Always store the original upload first
-    let upload_key = format!("uploads/{id}/{filename}");
+    // Always store the original upload first (sanitize the client filename so
+    // it can't escape the upload directory on the filesystem backend).
+    let upload_key = format!("uploads/{id}/{}", safe_filename(&filename));
     let _ = state
         .s3
         .put_object(&upload_key, data.clone(), "application/octet-stream")
@@ -311,6 +337,7 @@ async fn get_bom(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    validate_id(&id)?;
     // Verify the BOM exists
     let key = format!("boms/{id}.json");
     let _ = state
@@ -332,6 +359,7 @@ async fn get_bom_data(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    validate_id(&id)?;
     let key = format!("boms/{id}.json");
     let json_bytes = state
         .s3
@@ -349,6 +377,7 @@ async fn get_meta(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    validate_id(&id)?;
     let key = format!("boms/{id}.meta.json");
     let meta_bytes = state
         .s3
@@ -365,6 +394,7 @@ async fn get_thumb_svg(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    validate_id(&id)?;
     let thumb_key = format!("thumbnails/{id}.svg");
 
     // Try cache first
@@ -427,4 +457,35 @@ fn error_response(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorRespo
             error: msg.to_string(),
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_filename_strips_traversal() {
+        assert_eq!(safe_filename("../../etc/passwd"), "passwd");
+        assert_eq!(safe_filename("/abs/board.kicad_pcb"), "board.kicad_pcb");
+        assert_eq!(safe_filename("board.kicad_pcb"), "board.kicad_pcb");
+        assert_eq!(safe_filename(".."), "upload.bin");
+        assert_eq!(safe_filename(""), "upload.bin");
+    }
+
+    #[test]
+    fn safe_filename_has_no_separators() {
+        for name in ["../../x", "a/b/c", "x\\y", "..\\..\\y"] {
+            let s = safe_filename(name);
+            assert!(!s.contains('/') && !s.contains('\\'), "{name} -> {s}");
+        }
+    }
+
+    #[test]
+    fn validate_id_accepts_uuid_rejects_traversal() {
+        let id = Uuid::new_v4().to_string();
+        assert!(validate_id(&id).is_ok());
+        assert!(validate_id("../../etc/passwd").is_err());
+        assert!(validate_id("not-a-uuid").is_err());
+        assert!(validate_id("../boms/secret").is_err());
+    }
 }

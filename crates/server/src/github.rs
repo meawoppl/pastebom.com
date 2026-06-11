@@ -16,6 +16,21 @@ pub struct GhRenderParams {
     /// Optional branch/tag override
     #[serde(rename = "ref")]
     git_ref: Option<String>,
+    /// When true, don't add the render to the public recent list.
+    #[serde(default)]
+    secret: bool,
+}
+
+/// Validate a git ref (branch/tag/sha) before it is interpolated into storage
+/// keys and GitHub URLs. Git refs may contain `/` but not `..`.
+fn valid_git_ref(r: &str) -> bool {
+    !r.is_empty()
+        && r.len() <= 256
+        && !r.contains("..")
+        && !r.starts_with('/')
+        && !r.ends_with('/')
+        && r.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -62,6 +77,9 @@ async fn gh_render_inner(
 
     // Resolve git ref: explicit, or try main then master
     let git_ref = if let Some(r) = params.git_ref {
+        if !valid_git_ref(&r) {
+            return Err("Invalid ref".to_string());
+        }
         r
     } else {
         resolve_default_ref(&state.http_client, &repo, &path).await?
@@ -161,18 +179,20 @@ async fn gh_render_inner(
             .await;
     }
 
-    // Add to recent list
-    crate::routes::add_recent(
-        &state,
-        crate::routes::RecentEntry {
-            id: bom_id.clone(),
-            filename: filename.clone(),
-            components: component_count,
-            file_size,
-            created: chrono::Utc::now().to_rfc3339(),
-        },
-    )
-    .await;
+    // Add to recent list unless the caller opted out.
+    if !params.secret {
+        crate::routes::add_recent(
+            &state,
+            crate::routes::RecentEntry {
+                id: bom_id.clone(),
+                filename: filename.clone(),
+                components: component_count,
+                file_size,
+                created: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
+    }
 
     // Render thumbnail
     let svg = tokio::task::spawn_blocking(move || pcb_extract::thumbnail::render_svg(&pcb_data))
@@ -343,6 +363,26 @@ async fn download_raw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_git_ref_accepts_normal_refs() {
+        assert!(valid_git_ref("main"));
+        assert!(valid_git_ref("master"));
+        assert!(valid_git_ref("feature/new-board"));
+        assert!(valid_git_ref("v1.2.3"));
+        assert!(valid_git_ref("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
+    }
+
+    #[test]
+    fn valid_git_ref_rejects_traversal_and_junk() {
+        assert!(!valid_git_ref(""));
+        assert!(!valid_git_ref("../../etc/passwd"));
+        assert!(!valid_git_ref(".."));
+        assert!(!valid_git_ref("/main"));
+        assert!(!valid_git_ref("main/"));
+        assert!(!valid_git_ref("main?ref=x"));
+        assert!(!valid_git_ref("a b"));
+    }
 
     #[test]
     fn test_error_svg_is_valid_svg() {
