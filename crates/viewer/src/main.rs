@@ -273,10 +273,12 @@ fn app() -> Html {
         );
     }
 
-    // Window resize handler
+    // Window resize handler. Re-registered when redraw_trigger changes so the
+    // closure always captures the current value (otherwise it would forever
+    // set 1 and stop triggering redraws after the first resize).
     {
         let redraw_trigger = redraw_trigger.clone();
-        use_effect_with((), move |_| {
+        use_effect_with(*redraw_trigger, move |_| {
             let listener = EventListener::new(&web_sys::window().unwrap(), "resize", move |_| {
                 redraw_trigger.set(*redraw_trigger + 1);
             });
@@ -483,16 +485,22 @@ fn app() -> Html {
                         &settings,
                     );
 
-                    if data.nets.is_some() {
-                        let net =
-                            net_hit_scan(&layer_str, board_pt[0], board_pt[1], data, &settings);
+                    // Decide net vs. component selection from the locally
+                    // computed hit, not the deferred highlighted_net handle.
+                    let net = if data.nets.is_some() {
+                        net_hit_scan(&layer_str, board_pt[0], board_pt[1], data, &settings)
+                    } else {
+                        None
+                    };
+                    if net.is_some() {
+                        // A net is under the cursor — highlight it.
                         if net != *highlighted_net {
-                            highlighted_net.set(net.clone());
+                            highlighted_net.set(net);
                             highlighted_footprints.set(Vec::new());
                             current_row.set(None);
                         }
-                    }
-                    if highlighted_net.is_none() {
+                    } else {
+                        // No net under the cursor — try a component, else clear.
                         let fps = bbox_hit_scan(&layer_str, board_pt[0], board_pt[1], data);
                         if !fps.is_empty() {
                             // Find matching BOM row for the clicked component
@@ -514,6 +522,11 @@ fn app() -> Html {
                             current_row.set(row_id);
                             highlighted_footprints.set(fps);
                             highlighted_net.set(None);
+                        } else if highlighted_net.is_some() {
+                            // Clicked empty space with a net highlighted — clear it.
+                            highlighted_net.set(None);
+                            highlighted_footprints.set(Vec::new());
+                            current_row.set(None);
                         }
                     }
                 } else if !settings.redraw_on_drag {
