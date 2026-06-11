@@ -1226,7 +1226,7 @@ pub fn recalc_layer_scale(
     let bbox = apply_rotation(edges_bbox, flip, settings);
     let mut scalefactor =
         0.98 * (width / (bbox.maxx - bbox.minx)).min(height / (bbox.maxy - bbox.miny));
-    if scalefactor < 0.1 {
+    if !scalefactor.is_finite() || scalefactor < 0.1 {
         scalefactor = 1.0;
     }
     layer.transform.s = scalefactor;
@@ -1344,13 +1344,15 @@ pub fn draw_background(
             ctx.save();
             ctx.set_global_alpha(0.25);
             for name in copper_pads.inner_layer_names() {
-                draw_copper_pads(
-                    &layer.bg,
-                    name,
-                    primary_color,
-                    layer.transform.s * layer.transform.zoom,
-                    pcbdata,
-                );
+                if !settings.hidden_layers.contains(name.as_str()) {
+                    draw_copper_pads(
+                        &layer.bg,
+                        name,
+                        primary_color,
+                        layer.transform.s * layer.transform.zoom,
+                        pcbdata,
+                    );
+                }
             }
             ctx.restore();
         }
@@ -1588,16 +1590,31 @@ fn track_hit_scan(tracks: &[Track], x: f64, y: f64) -> Option<String> {
             }
             Track::Arc {
                 center,
+                startangle,
+                endangle,
                 radius,
                 width,
                 net,
-                ..
             } => {
                 let dx = x - center[0];
                 let dy = y - center[1];
                 let dist = (dx * dx + dy * dy).sqrt();
                 if (dist - radius).abs() <= width / 2.0 {
-                    return net.clone();
+                    // Only hit when the click also falls within the arc's angular
+                    // sweep (canvas default, increasing-angle direction).
+                    let start = deg2rad(*startangle);
+                    let end = deg2rad(*endangle);
+                    let two_pi = std::f64::consts::TAU;
+                    let sweep = (end - start).rem_euclid(two_pi);
+                    let offset = (dy.atan2(dx) - start).rem_euclid(two_pi);
+                    let tol = if *radius > 0.0 {
+                        width / 2.0 / radius
+                    } else {
+                        0.0
+                    };
+                    if offset <= sweep + tol || offset >= two_pi - tol {
+                        return net.clone();
+                    }
                 }
             }
         }
