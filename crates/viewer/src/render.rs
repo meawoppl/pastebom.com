@@ -1048,6 +1048,7 @@ pub fn draw_nets(
     settings: &Settings,
     highlighted_net: &Option<String>,
     zone_cache: &mut HashMap<String, Path2d>,
+    draw_inner: bool,
 ) {
     let track_color = if highlight {
         &colors.track_highlight
@@ -1075,7 +1076,7 @@ pub fn draw_nets(
             zone_cache,
         );
         // Dimmed inner-layer zones, gated by the same hidden_layers toggle as inner tracks.
-        if let Some(ref zones) = pcbdata.zones {
+        if let (true, Some(ref zones)) = (draw_inner, &pcbdata.zones) {
             let ctx = get_ctx(canvas);
             ctx.save();
             ctx.set_global_alpha(0.25);
@@ -1106,7 +1107,7 @@ pub fn draw_nets(
             highlighted_net,
         );
         // Also draw inner copper layer tracks (not zones - those are plane fills)
-        if let Some(ref tracks) = pcbdata.tracks {
+        if let (true, Some(ref tracks)) = (draw_inner, &pcbdata.tracks) {
             let ctx = get_ctx(canvas);
             ctx.save();
             ctx.set_global_alpha(0.25);
@@ -1285,6 +1286,7 @@ pub fn draw_background(
         settings,
         highlighted_net,
         zone_cache,
+        false,
     );
     if settings.render_tracks {
         let opp_color = if opposite == "F" {
@@ -1314,7 +1316,7 @@ pub fn draw_background(
     );
     get_ctx(&layer.bg).restore();
 
-    // Draw primary layer at full opacity
+    // Draw primary layer at full opacity (inner layers drawn once, here)
     draw_nets(
         &layer.bg,
         &layer.layer,
@@ -1324,6 +1326,7 @@ pub fn draw_background(
         settings,
         highlighted_net,
         zone_cache,
+        true,
     );
     if settings.render_tracks {
         let primary_color = if layer.layer == "F" {
@@ -1459,6 +1462,7 @@ pub fn draw_highlights_on_layer(
             settings,
             highlighted_net,
             zone_cache,
+            false,
         );
         draw_nets(
             &layer.highlight,
@@ -1469,6 +1473,7 @@ pub fn draw_highlights_on_layer(
             settings,
             highlighted_net,
             zone_cache,
+            true,
         );
     }
 }
