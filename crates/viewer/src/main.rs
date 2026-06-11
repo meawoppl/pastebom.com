@@ -499,10 +499,10 @@ fn app() -> Html {
                             let bom_entries =
                                 get_bom_entries(data, &settings, &filter.to_lowercase());
                             let row_id = fps.first().and_then(|&fp_idx| {
-                                bom_entries.iter().enumerate().find_map(|(i, entry)| {
+                                bom_entries.iter().find_map(|entry| {
                                     if let BomEntry::Component { refs, .. } = entry {
                                         if refs.iter().any(|r| r.1 == fp_idx) {
-                                            Some(format!("bomrow{}", i + 1))
+                                            Some(bom_row_id(entry))
                                         } else {
                                             None
                                         }
@@ -938,7 +938,7 @@ fn app() -> Html {
                             </thead>
                             <tbody id="bombody">
                                 {for bom_entries.iter().enumerate().map(|(idx, entry)| {
-                                    let row_id = format!("bomrow{}", idx + 1);
+                                    let row_id = bom_row_id(entry);
                                     let is_highlighted = (*current_row).as_deref() == Some(row_id.as_str());
 
                                     let handler = {
@@ -1179,6 +1179,24 @@ enum BomEntry {
     Net {
         name: String,
     },
+}
+
+/// Stable DOM id for a BOM row, derived from the entry's identity rather than
+/// its position in the (filterable) list, so highlighting survives search edits.
+fn bom_row_id(entry: &BomEntry) -> String {
+    match entry {
+        BomEntry::Component { refs, .. } => {
+            let mut idxs: Vec<usize> = refs.iter().map(|r| r.1).collect();
+            idxs.sort_unstable();
+            let key = idxs
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join("_");
+            format!("bomrow-c{key}")
+        }
+        BomEntry::Net { name } => format!("bomrow-n{name}"),
+    }
 }
 
 fn get_bom_entries(data: &PcbData, settings: &Settings, filter: &str) -> Vec<BomEntry> {
