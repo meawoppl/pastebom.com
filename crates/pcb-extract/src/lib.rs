@@ -1,6 +1,7 @@
 pub mod bom;
 pub mod error;
 pub mod parsers;
+pub mod svg;
 pub mod thumbnail;
 pub mod types;
 
