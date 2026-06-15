@@ -4,6 +4,7 @@ use crate::error::ExtractError;
 use crate::types::*;
 use crate::ExtractOptions;
 
+pub mod bsp;
 mod reader;
 pub mod tile;
 
