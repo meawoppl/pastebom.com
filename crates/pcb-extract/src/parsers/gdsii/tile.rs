@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::ExtractError;
 
 use super::reader::{
@@ -30,7 +32,7 @@ const MAX_PLACED_RECORDS: usize = 5_000_000;
 const MAX_AREF_INSTANCES: usize = 1_000_000;
 
 /// Axis-aligned extent in world nanometers (the integer twin of [`crate::types::BBox`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldBox {
     pub minx: i64,
     pub miny: i64,
@@ -78,7 +80,7 @@ impl WorldBox {
 }
 
 /// The GDSII element kind a placed record came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecordKind {
     Boundary,
     Path,
@@ -88,7 +90,7 @@ pub enum RecordKind {
 }
 
 /// Resolved geometry of a placed record, in world nanometers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Geom {
     /// Closed polygon ring(s).
     Poly { rings: Vec<Vec<[i64; 2]>> },
@@ -108,7 +110,7 @@ pub enum Geom {
 }
 
 /// One fully-placed (instanced) geometry element in world nanometers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlacedRecord {
     pub layer: i16,
     pub datatype: i16,
