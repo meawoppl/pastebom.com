@@ -1,0 +1,66 @@
+name: GDSII Corpus
+
+# Downloads real-world .gds files from the catalog and runs the GDSII pipeline
+# over them. The downloads are cached (keyed by the catalog's content) so only
+# the first run (or a catalog change) hits the network; later runs restore the
+# cache and just parse — fast. The schedule below also keeps the cache warm:
+# GitHub evicts caches not read within 7 days, so we touch it twice a week.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Corpus tier to fetch + parse"
+        default: smoke
+        type: choice
+        options: [smoke, standard, stress, all]
+  schedule:
+    # Twice weekly (Mon + Thu, 06:00 UTC) so the cache is read inside the
+    # 7-day eviction window and stays alive.
+    - cron: "0 6 * * 1,4"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/pcb-extract/src/parsers/gdsii/**"
+      - "crates/pcb-extract/tests/gdsii_corpus.*"
+      - "scripts/fetch-gds-corpus.sh"
+      - ".github/workflows/gds-corpus.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  # Auto/scheduled/PR runs use the small "fast default CI subset"; dispatch can
+  # override to standard/stress/all (mind the 10 GB repo cache budget).
+  TIER: ${{ github.event.inputs.tier || 'smoke' }}
+
+jobs:
+  corpus:
+    name: Parse GDSII corpus (${{ github.event.inputs.tier || 'smoke' }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gds-corpus
+
+      - name: Cache corpus downloads
+        uses: actions/cache@v4
+        with:
+          path: gds-corpus-files
+          # Re-download only when the catalog changes (or tier differs).
+          key: gds-corpus-${{ env.TIER }}-${{ hashFiles('crates/pcb-extract/tests/gdsii_corpus.json') }}
+          restore-keys: |
+            gds-corpus-${{ env.TIER }}-
+
+      - name: Fetch corpus (cache miss downloads; hit is a no-op)
+        env:
+          GDS_CORPUS_DIR: ${{ github.workspace }}/gds-corpus-files
+        run: ./scripts/fetch-gds-corpus.sh "$TIER"
+
+      - name: Parse corpus
+        env:
+          GDS_CORPUS_DIR: ${{ github.workspace }}/gds-corpus-files
+          GDS_CORPUS_TIER: ${{ env.TIER }}
+        run: cargo test -p pcb-extract --test gdsii_corpus -- --ignored --nocapture

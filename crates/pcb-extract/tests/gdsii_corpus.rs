@@ -6,8 +6,15 @@
 //! * [`corpus_manifest_is_valid`] — always-on; checks the catalog is
 //!   well-formed (runs in CI, no network).
 //! * [`corpus_parse_local`] — `#[ignore]`; runs the GDSII pipeline over
-//!   pre-fetched corpus files and reports per-case pass/fail. Fetch the files
-//!   first with `scripts/fetch-gds-corpus.sh`, then:
+//!   pre-fetched corpus files and reports per-case pass/fail, grouped by the
+//!   optional `expect` tag. A case may set `"expect": "fail"` (we know it
+//!   should be rejected — e.g. a truncated/malformed file) or `"expect": "ok"`
+//!   (it must parse). Results print in two groups: **Standard** and
+//!   **Expected-fail**, so the intentional failures sort apart from real ones.
+//!   The run fails on any parser panic, any `expect=fail` case that parses
+//!   cleanly (`XPASS`), or any `expect=ok` case that fails. Untagged files that
+//!   error are report-only. Fetch the files first with
+//!   `scripts/fetch-gds-corpus.sh`, then:
 //!
 //!   ```sh
 //!   GDS_CORPUS_DIR=/tmp/gds cargo test -p pcb-extract --test gdsii_corpus -- --ignored --nocapture
@@ -103,8 +110,15 @@ fn corpus_parse_local() {
     let doc = corpus();
     let cases = doc["cases"].as_array().unwrap();
 
-    let (mut tried, mut ok, mut failed, mut missing) = (0u32, 0u32, 0u32, 0u32);
-    let mut failures: Vec<String> = Vec::new();
+    // One row per attempted case; we sort and group these for the report.
+    struct CaseResult {
+        id: String,
+        expect: Option<String>, // "ok" | "fail" | None (untagged)
+        elapsed: std::time::Duration,
+        outcome: Result<(usize, usize, usize), String>,
+    }
+    let mut results: Vec<CaseResult> = Vec::new();
+    let mut missing = 0u32;
 
     for c in cases {
         let tier = c["tier"].as_str().unwrap_or("");
@@ -119,7 +133,6 @@ fn corpus_parse_local() {
             missing += 1;
             continue;
         };
-        tried += 1;
 
         let t = Instant::now();
         // Catch panics so one bad file reports a failure instead of aborting
@@ -140,37 +153,98 @@ fn corpus_parse_local() {
             Err(_) => Err("PANIC".to_string()),
         };
 
-        match (&outcome, c["expect"].as_str()) {
-            (Ok((r, a, t)), _) => {
-                ok += 1;
-                eprintln!("ok   {id}  ({r} recs, {a} arrays, {t} tiles, {elapsed:.2?})");
-            }
-            (Err(msg), expect) => {
-                failed += 1;
-                failures.push(format!("{id}: {msg}"));
-                eprintln!("FAIL {id}  {msg}  ({elapsed:.2?})");
-                // Only assert when the case declares an expectation.
-                if expect == Some("ok") {
-                    panic!("{id} expected ok but failed: {msg}");
+        results.push(CaseResult {
+            id: id.to_string(),
+            expect: c["expect"].as_str().map(str::to_string),
+            elapsed,
+            outcome,
+        });
+    }
+
+    // Split on the `expect: "fail"` tag so the two groups report separately.
+    let (expect_fail, standard): (Vec<&CaseResult>, Vec<&CaseResult>) = results
+        .iter()
+        .partition(|r| r.expect.as_deref() == Some("fail"));
+
+    // Violations that must fail the run, accumulated across both groups.
+    let mut panicked: Vec<String> = Vec::new();
+    let mut xpass: Vec<String> = Vec::new(); // tagged expect=fail but parsed ok
+    let mut expected_ok_failed: Vec<String> = Vec::new(); // tagged expect=ok but failed
+
+    eprintln!("\n=== Standard ({}) ===", standard.len());
+    for r in &standard {
+        match &r.outcome {
+            Ok((recs, arrays, tiles)) => eprintln!(
+                "ok    {}  ({recs} recs, {arrays} arrays, {tiles} tiles, {:.2?})",
+                r.id, r.elapsed
+            ),
+            Err(msg) => {
+                // A panic is always a defect; a file tagged expect=ok that
+                // fails breaks its contract. Untagged errors are report-only.
+                if msg == "PANIC" {
+                    panicked.push(r.id.clone());
+                } else if r.expect.as_deref() == Some("ok") {
+                    expected_ok_failed.push(r.id.clone());
                 }
+                eprintln!("FAIL  {}  {msg}  ({:.2?})", r.id, r.elapsed);
             }
-        }
-        // A case expecting failure that parsed cleanly is also a mismatch.
-        if c["expect"].as_str() == Some("fail") && outcome.is_ok() {
-            panic!("{id} expected failure but parsed ok");
         }
     }
 
-    eprintln!(
-        "\nGDSII corpus ({want_tier}): {tried} parsed, {ok} ok, {failed} failed, {missing} not downloaded"
-    );
-    if !failures.is_empty() {
-        eprintln!("failures:\n  {}", failures.join("\n  "));
+    eprintln!("\n=== Expected-fail ({}) ===", expect_fail.len());
+    for r in &expect_fail {
+        match &r.outcome {
+            // Parsing cleanly despite an expect=fail tag is a mismatch.
+            Ok(_) => {
+                xpass.push(r.id.clone());
+                eprintln!(
+                    "XPASS {}  parsed ok but tagged expect=fail  ({:.2?})",
+                    r.id, r.elapsed
+                );
+            }
+            Err(msg) => {
+                if msg == "PANIC" {
+                    panicked.push(r.id.clone());
+                    eprintln!("PANIC {}  {msg}  ({:.2?})", r.id, r.elapsed);
+                } else {
+                    // Rejected as expected — the good outcome for this group.
+                    eprintln!("xfail {}  {msg}  ({:.2?})", r.id, r.elapsed);
+                }
+            }
+        }
     }
+
+    let tried = results.len();
+    let ok = results.iter().filter(|r| r.outcome.is_ok()).count();
+    eprintln!(
+        "\nGDSII corpus ({want_tier}): {tried} parsed, {ok} ok, {} failed, {missing} not downloaded \
+         [{} expect-fail]",
+        tried - ok,
+        expect_fail.len(),
+    );
     if tried == 0 {
         eprintln!(
             "no corpus files found in {} — run scripts/fetch-gds-corpus.sh",
             dir.display()
         );
     }
+
+    // A panic in the parser is always a defect, and a file tagged expect=fail
+    // that parses cleanly means the tag (or the parser) is wrong. Untagged
+    // parse errors on real-world files stay report-only.
+    assert!(
+        panicked.is_empty(),
+        "parser panicked on {} case(s): {panicked:?}",
+        panicked.len()
+    );
+    assert!(
+        xpass.is_empty(),
+        "{} case(s) tagged expect=fail parsed cleanly: {xpass:?}",
+        xpass.len()
+    );
+    assert!(
+        expected_ok_failed.is_empty(),
+        "{} case(s) tagged expect=ok failed to parse: {expected_ok_failed:?}",
+        expected_ok_failed.len()
+    );
 }
