@@ -59,6 +59,10 @@ body {
     image-rendering: auto;
     pointer-events: none;
     user-select: none;
+    /* Opacity is driven by load state in the inline style; this transition
+       animates the 0 → 1 flip so a tile fades in when its image arrives. */
+    opacity: 0;
+    transition: opacity 0.18s ease-out;
 }
 
 .gds-panel {

@@ -3,7 +3,7 @@ mod state;
 mod transform;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
@@ -67,6 +67,10 @@ fn app() -> Html {
     });
     // Index of the layer row currently being dragged (HTML5 DnD reorder).
     let drag_src: UseStateHandle<Option<usize>> = use_state(|| None);
+    // Keys of tiles whose image has finished loading; drives the fade-in so a
+    // tile only becomes visible once its pixels arrive, not when it mounts.
+    let loaded: UseStateHandle<Rc<RefCell<HashSet<String>>>> =
+        use_state(|| Rc::new(RefCell::new(HashSet::new())));
 
     // ── Fetch manifest once ─────────────────────────────────────────
     {
@@ -322,17 +326,32 @@ fn app() -> Html {
         )
     };
     let z = pyr.level_for_zoom(zoom);
-    let frac = pyr.frac_scale(zoom, z);
 
     let layer_lookup: HashMap<String, &Layer> =
         m.layers.iter().map(|l| (l.tile_key(), l)).collect();
 
+    let loaded_set = (*loaded).clone();
     let surfaces: Html = vs
         .layers
         .iter()
         .enumerate()
         .filter(|(_, l)| l.visible)
-        .map(|(idx, l)| render_surface(&m.id, l, idx, &pyr, z, frac, panx, pany, view_w, view_h))
+        .map(|(idx, l)| {
+            render_surface(
+                &m.id,
+                l,
+                idx,
+                &pyr,
+                z,
+                zoom,
+                panx,
+                pany,
+                view_w,
+                view_h,
+                &loaded_set,
+                &redraw,
+            )
+        })
         .collect();
 
     // ── Layer panel ─────────────────────────────────────────────────
@@ -381,6 +400,12 @@ fn persist_transform(view: &UseStateHandle<Option<ViewState>>, t: &Transform) {
 
 /// Render one layer's surface div with its visible `<img>` tiles. Tiles that
 /// 404 are hidden via an onerror handler so missing tiles simply aren't drawn.
+///
+/// To keep zooming smooth we render the level *below* the active one underneath
+/// it. Tiles are keyed by level, so when the active level changes the previous
+/// level's already-loaded tiles become the coarse backing set with their DOM
+/// elements intact — they stay on screen, filling the gap while the finer tiles
+/// fade in on top, instead of the whole map blanking out.
 #[allow(clippy::too_many_arguments)]
 fn render_surface(
     id: &str,
@@ -388,15 +413,14 @@ fn render_surface(
     z_index: usize,
     pyr: &Pyramid,
     z: u32,
-    frac: f64,
+    zoom: f64,
     panx: f64,
     pany: f64,
     view_w: f64,
     view_h: f64,
+    loaded: &Rc<RefCell<HashSet<String>>>,
+    redraw: &UseStateHandle<u64>,
 ) -> Html {
-    let tile_screen = pyr.tile_px * frac;
-    let range = pyr.visible_tiles(z, panx, pany, frac, view_w, view_h);
-
     let style = format!(
         "z-index:{}; opacity:{};",
         z_index,
@@ -404,6 +428,59 @@ fn render_surface(
     );
 
     let mut tiles: Vec<Html> = Vec::new();
+    // Coarser backing level first, then the active level. Each level carries an
+    // explicit z-index (= its level number) so the finer level always paints on
+    // top regardless of DOM order. Skip the backing level at the coarsest zoom.
+    if z > pyr.min_z {
+        emit_level_tiles(
+            &mut tiles,
+            id,
+            layer,
+            pyr,
+            z - 1,
+            zoom,
+            panx,
+            pany,
+            view_w,
+            view_h,
+            loaded,
+            redraw,
+        );
+    }
+    emit_level_tiles(
+        &mut tiles, id, layer, pyr, z, zoom, panx, pany, view_w, view_h, loaded, redraw,
+    );
+
+    html! {
+        <div class="gds-surface" style={style}>
+            { tiles }
+        </div>
+    }
+}
+
+/// Append the `<img>` tiles for one pyramid level `z` covering the viewport.
+/// Tiles start transparent and fade in (CSS transition on `opacity`) only once
+/// their image has actually loaded — tracked in `loaded` and reflected in the
+/// inline style so pan re-renders never reset the fade.
+#[allow(clippy::too_many_arguments)]
+fn emit_level_tiles(
+    out: &mut Vec<Html>,
+    id: &str,
+    layer: &LayerState,
+    pyr: &Pyramid,
+    z: u32,
+    zoom: f64,
+    panx: f64,
+    pany: f64,
+    view_w: f64,
+    view_h: f64,
+    loaded: &Rc<RefCell<HashSet<String>>>,
+    redraw: &UseStateHandle<u64>,
+) {
+    let frac = pyr.frac_scale(zoom, z);
+    let tile_screen = pyr.tile_px * frac;
+    let range = pyr.visible_tiles(z, panx, pany, frac, view_w, view_h);
+
     // Prefetch one ring beyond the viewport for snappier panning.
     let n = pyr.tiles_per_axis(z) as i64;
     let gx0 = (range.x0 - 1).max(0);
@@ -415,33 +492,45 @@ fn render_surface(
             let left = panx + tx as f64 * tile_screen;
             let top = pany + ty as f64 * tile_screen;
             let src = format!("/g/{}/tiles/{}/{}/{}/{}.svgz", id, z, tx, ty, layer.key);
-            let tile_style = format!(
-                "left:{:.2}px; top:{:.2}px; width:{:.2}px; height:{:.2}px;",
-                left, top, tile_screen, tile_screen
-            );
             let key = format!("{}:{}:{}:{}", z, tx, ty, layer.key);
+            // Loaded (incl. browser-cached) tiles render opaque immediately; the
+            // rest stay transparent until onload flips them, animating the fade.
+            let opacity = if loaded.borrow().contains(&key) {
+                1.0
+            } else {
+                0.0
+            };
+            let tile_style = format!(
+                "left:{:.2}px; top:{:.2}px; width:{:.2}px; height:{:.2}px; z-index:{}; opacity:{};",
+                left, top, tile_screen, tile_screen, z, opacity
+            );
+            let onload = {
+                let loaded = loaded.clone();
+                let redraw = redraw.clone();
+                let key = key.clone();
+                Callback::from(move |_: Event| {
+                    if loaded.borrow_mut().insert(key.clone()) {
+                        redraw.set(*redraw + 1);
+                    }
+                })
+            };
             let onerror = Callback::from(|e: Event| {
                 if let Some(img) = e.target().and_then(|t| t.dyn_into::<HtmlElement>().ok()) {
                     let _ = img.style().set_property("visibility", "hidden");
                 }
             });
-            tiles.push(html! {
+            out.push(html! {
                 <img
                     key={key}
                     class="gds-tile"
                     src={src}
                     style={tile_style}
+                    {onload}
                     {onerror}
                     draggable="false"
                 />
             });
         }
-    }
-
-    html! {
-        <div class="gds-surface" style={style}>
-            { tiles }
-        </div>
     }
 }
 
