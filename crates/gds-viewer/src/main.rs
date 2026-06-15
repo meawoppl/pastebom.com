@@ -322,7 +322,6 @@ fn app() -> Html {
         )
     };
     let z = pyr.level_for_zoom(zoom);
-    let frac = pyr.frac_scale(zoom, z);
 
     let layer_lookup: HashMap<String, &Layer> =
         m.layers.iter().map(|l| (l.tile_key(), l)).collect();
@@ -332,7 +331,7 @@ fn app() -> Html {
         .iter()
         .enumerate()
         .filter(|(_, l)| l.visible)
-        .map(|(idx, l)| render_surface(&m.id, l, idx, &pyr, z, frac, panx, pany, view_w, view_h))
+        .map(|(idx, l)| render_surface(&m.id, l, idx, &pyr, z, zoom, panx, pany, view_w, view_h))
         .collect();
 
     // ── Layer panel ─────────────────────────────────────────────────
@@ -381,6 +380,12 @@ fn persist_transform(view: &UseStateHandle<Option<ViewState>>, t: &Transform) {
 
 /// Render one layer's surface div with its visible `<img>` tiles. Tiles that
 /// 404 are hidden via an onerror handler so missing tiles simply aren't drawn.
+///
+/// To keep zooming smooth we render the level *below* the active one underneath
+/// it. Tiles are keyed by level, so when the active level changes the previous
+/// level's already-loaded tiles become the coarse backing set with their DOM
+/// elements intact — they stay on screen, filling the gap while the finer tiles
+/// fade in on top, instead of the whole map blanking out.
 #[allow(clippy::too_many_arguments)]
 fn render_surface(
     id: &str,
@@ -388,15 +393,12 @@ fn render_surface(
     z_index: usize,
     pyr: &Pyramid,
     z: u32,
-    frac: f64,
+    zoom: f64,
     panx: f64,
     pany: f64,
     view_w: f64,
     view_h: f64,
 ) -> Html {
-    let tile_screen = pyr.tile_px * frac;
-    let range = pyr.visible_tiles(z, panx, pany, frac, view_w, view_h);
-
     let style = format!(
         "z-index:{}; opacity:{};",
         z_index,
@@ -404,6 +406,38 @@ fn render_surface(
     );
 
     let mut tiles: Vec<Html> = Vec::new();
+    // Coarser backing level first (lower in the DOM = behind), then the active
+    // level on top. Skip the backing level at the coarsest zoom.
+    if z > pyr.min_z {
+        emit_level_tiles(&mut tiles, id, layer, pyr, z - 1, zoom, panx, pany, view_w, view_h);
+    }
+    emit_level_tiles(&mut tiles, id, layer, pyr, z, zoom, panx, pany, view_w, view_h);
+
+    html! {
+        <div class="gds-surface" style={style}>
+            { tiles }
+        </div>
+    }
+}
+
+/// Append the `<img>` tiles for one pyramid level `z` covering the viewport.
+#[allow(clippy::too_many_arguments)]
+fn emit_level_tiles(
+    out: &mut Vec<Html>,
+    id: &str,
+    layer: &LayerState,
+    pyr: &Pyramid,
+    z: u32,
+    zoom: f64,
+    panx: f64,
+    pany: f64,
+    view_w: f64,
+    view_h: f64,
+) {
+    let frac = pyr.frac_scale(zoom, z);
+    let tile_screen = pyr.tile_px * frac;
+    let range = pyr.visible_tiles(z, panx, pany, frac, view_w, view_h);
+
     // Prefetch one ring beyond the viewport for snappier panning.
     let n = pyr.tiles_per_axis(z) as i64;
     let gx0 = (range.x0 - 1).max(0);
@@ -425,7 +459,7 @@ fn render_surface(
                     let _ = img.style().set_property("visibility", "hidden");
                 }
             });
-            tiles.push(html! {
+            out.push(html! {
                 <img
                     key={key}
                     class="gds-tile"
@@ -436,12 +470,6 @@ fn render_surface(
                 />
             });
         }
-    }
-
-    html! {
-        <div class="gds-surface" style={style}>
-            { tiles }
-        </div>
     }
 }
 
