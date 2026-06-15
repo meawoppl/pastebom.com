@@ -72,10 +72,37 @@ body {
     gap: 2px;
 }
 
+.gds-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 4px 6px 8px;
+}
+
 .gds-panel h1 {
     font-size: 14px;
-    margin: 4px 6px 8px;
+    margin: 0;
     font-weight: 600;
+}
+
+.gds-allnone {
+    display: flex;
+    gap: 4px;
+}
+
+.gds-btn {
+    background: var(--row-hover);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.gds-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
 }
 
 .gds-row {

@@ -561,9 +561,26 @@ fn render_panel(
         })
         .collect();
 
+    let show_all = {
+        let view = view.clone();
+        let redraw = redraw.clone();
+        Callback::from(move |_: MouseEvent| set_all_visible(&view, &redraw, true))
+    };
+    let hide_all = {
+        let view = view.clone();
+        let redraw = redraw.clone();
+        Callback::from(move |_: MouseEvent| set_all_visible(&view, &redraw, false))
+    };
+
     html! {
         <div class="gds-panel">
-            <h1>{ "Layers" }</h1>
+            <div class="gds-panel-head">
+                <h1>{ "Layers" }</h1>
+                <div class="gds-allnone">
+                    <button type="button" class="gds-btn" onclick={show_all}>{ "All" }</button>
+                    <button type="button" class="gds-btn" onclick={hide_all}>{ "None" }</button>
+                </div>
+            </div>
             { rows }
         </div>
     }
@@ -595,6 +612,21 @@ fn mutate_layer<F: Fn(&mut LayerState)>(
             view.set(Some(vs));
             redraw.set(**redraw + 1);
         }
+    }
+}
+
+/// Show or hide every layer at once (the panel's All / None control).
+fn set_all_visible(
+    view: &UseStateHandle<Option<ViewState>>,
+    redraw: &UseStateHandle<u64>,
+    visible: bool,
+) {
+    if let Some(mut vs) = (**view).clone() {
+        for ls in &mut vs.layers {
+            ls.visible = visible;
+        }
+        view.set(Some(vs));
+        redraw.set(**redraw + 1);
     }
 }
 
