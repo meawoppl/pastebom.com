@@ -34,6 +34,12 @@ fn valid_id(id: &str) -> bool {
     Uuid::parse_str(id).is_ok()
 }
 
+/// Drop the `.svgz` extension the viewer appends to tile requests, leaving the
+/// bare key (`"{layer}_{datatype}"` or `"__lod"`) that we validate and re-suffix.
+fn strip_tile_ext(key: &str) -> &str {
+    key.strip_suffix(".svgz").unwrap_or(key)
+}
+
 /// Tile `key` must be `"{layer}_{datatype}"` or `"__lod"` — restrict to a safe
 /// charset so it can't escape the tile directory.
 fn valid_tile_key(key: &str) -> bool {
@@ -156,7 +162,10 @@ pub async fn get_gds_tile(
     State(state): State<AppState>,
     Path((id, z, x, y, key)): Path<(String, u32, u32, u32, String)>,
 ) -> Response {
-    if !valid_id(&id) || !valid_tile_key(&key) {
+    // The viewer requests `{key}.svgz`; stored tiles are `{key}.svgz` too, but
+    // we validate and re-suffix the bare key, so strip the extension first.
+    let key = strip_tile_ext(&key);
+    if !valid_id(&id) || !valid_tile_key(key) {
         return err(StatusCode::NOT_FOUND, "not found");
     }
     let tile_key = format!("gdsii/{id}/tiles/{z}/{x}/{y}/{key}.svgz");
@@ -257,4 +266,35 @@ pub async fn serve_gview(State(state): State<AppState>, uri: Uri) -> Response {
         Body::from(bytes),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{strip_tile_ext, valid_tile_key};
+
+    #[test]
+    fn tile_key_accepts_viewer_svgz_suffix() {
+        // The viewer requests `{key}.svgz`; the bare form (e.g. curl) also works.
+        for (segment, bare) in [
+            ("236_0.svgz", "236_0"),
+            ("64_5.svgz", "64_5"),
+            ("__lod.svgz", "__lod"),
+            ("236_0", "236_0"),
+        ] {
+            let key = strip_tile_ext(segment);
+            assert_eq!(key, bare, "{segment} should strip to {bare}");
+            assert!(valid_tile_key(key), "{segment} should validate");
+        }
+    }
+
+    #[test]
+    fn tile_key_rejects_traversal_and_junk() {
+        // A `.svgz` suffix must not let path-traversal or stray dots through.
+        for segment in ["../secret.svgz", "a/b.svgz", "", ".svgz", "a.b.svgz"] {
+            assert!(
+                !valid_tile_key(strip_tile_ext(segment)),
+                "{segment} must be rejected"
+            );
+        }
+    }
 }
