@@ -1,3 +1,4 @@
+use crate::svg;
 use crate::types::{Drawing, PcbData};
 use std::fmt::Write;
 
@@ -22,10 +23,7 @@ pub fn render_svg(data: &PcbData) -> String {
         return empty_svg();
     }
 
-    let vx = bbox.minx - MARGIN;
-    let vy = bbox.miny - MARGIN;
-    let vw = w + 2.0 * MARGIN;
-    let vh = h + 2.0 * MARGIN;
+    let (vx, vy, vw, vh) = svg::view_box(bbox, MARGIN);
 
     let mut svg = String::with_capacity(8192);
     write!(
@@ -84,7 +82,7 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
     for d in drawings {
         match d {
             Drawing::Segment { start, end, width } => {
-                let sw = if *width < 0.1 { 0.1 } else { *width };
+                let sw = svg::stroke_w(*width);
                 write!(
                     svg,
                     r#"<line x1="{:.4}" y1="{:.4}" x2="{:.4}" y2="{:.4}" stroke="{color}" stroke-width="{sw:.4}" stroke-linecap="round"/>"#,
@@ -106,7 +104,7 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                     )
                     .unwrap();
                 } else {
-                    let sw = if *width < 0.1 { 0.1 } else { *width };
+                    let sw = svg::stroke_w(*width);
                     write!(
                         svg,
                         r#"<circle cx="{:.4}" cy="{:.4}" r="{:.4}" fill="none" stroke="{color}" stroke-width="{sw:.4}"/>"#,
@@ -123,7 +121,7 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                 let rw = (end[0] - start[0]).abs();
                 let rh = (end[1] - start[1]).abs();
                 // Match the viewer, which always strokes rectangle outlines.
-                let sw = if *width < 0.1 { 0.1 } else { *width };
+                let sw = svg::stroke_w(*width);
                 write!(
                     svg,
                     r#"<rect x="{x:.4}" y="{y:.4}" width="{rw:.4}" height="{rh:.4}" fill="none" stroke="{color}" stroke-width="{sw:.4}"/>"#,
@@ -146,29 +144,28 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                 filled,
                 width,
             } => {
+                // Match the viewer, which rotates polygons by -angle.
+                let cos_a = (-*angle).to_radians().cos();
+                let sin_a = (-*angle).to_radians().sin();
                 for poly in polygons {
                     if poly.len() < 2 {
                         continue;
                     }
-                    let mut d = String::new();
-                    // Match the viewer, which rotates polygons by -angle.
-                    let cos_a = (-*angle).to_radians().cos();
-                    let sin_a = (-*angle).to_radians().sin();
-                    for (i, pt) in poly.iter().enumerate() {
-                        let rx = pt[0] * cos_a - pt[1] * sin_a + pos[0];
-                        let ry = pt[0] * sin_a + pt[1] * cos_a + pos[1];
-                        if i == 0 {
-                            write!(d, "M{rx:.4} {ry:.4}").unwrap();
-                        } else {
-                            write!(d, "L{rx:.4} {ry:.4}").unwrap();
-                        }
-                    }
-                    d.push('Z');
+                    let pts: Vec<[f64; 2]> = poly
+                        .iter()
+                        .map(|pt| {
+                            [
+                                pt[0] * cos_a - pt[1] * sin_a + pos[0],
+                                pt[0] * sin_a + pt[1] * cos_a + pos[1],
+                            ]
+                        })
+                        .collect();
+                    let d = format!("{}Z", svg::polyline_to_d(&pts));
                     if filled.is_none_or(|f| f != 0) {
                         write!(svg, r#"<path d="{d}" fill="{color}" fill-rule="evenodd"/>"#)
                             .unwrap();
                     } else {
-                        let sw = if *width < 0.1 { 0.1 } else { *width };
+                        let sw = svg::stroke_w(*width);
                         write!(
                             svg,
                             r#"<path d="{d}" fill="none" stroke="{color}" stroke-width="{sw:.4}"/>"#,
@@ -184,7 +181,7 @@ fn render_drawings(svg: &mut String, drawings: &[Drawing], color: &str) {
                 cpb,
                 width,
             } => {
-                let sw = if *width < 0.1 { 0.1 } else { *width };
+                let sw = svg::stroke_w(*width);
                 write!(
                     svg,
                     r#"<path d="M{:.4} {:.4}C{:.4} {:.4},{:.4} {:.4},{:.4} {:.4}" fill="none" stroke="{color}" stroke-width="{sw:.4}" stroke-linecap="round"/>"#,
@@ -226,7 +223,7 @@ fn render_arc(
     let large = if forward_sweep > 180.0 { 1 } else { 0 };
     let sweep_flag = 1;
 
-    let sw = if width < 0.1 { 0.1 } else { width };
+    let sw = svg::stroke_w(width);
     write!(
         svg,
         r#"<path d="M{x1:.4} {y1:.4}A{radius:.4} {radius:.4} 0 {large} {sweep_flag} {x2:.4} {y2:.4}" fill="none" stroke="{color}" stroke-width="{sw:.4}" stroke-linecap="round"/>"#,
@@ -284,7 +281,7 @@ fn render_tracks(svg: &mut String, tracks: &[crate::types::Track], color: &str) 
             crate::types::Track::Segment {
                 start, end, width, ..
             } => {
-                let sw = if *width < 0.1 { 0.1 } else { *width };
+                let sw = svg::stroke_w(*width);
                 write!(
                     svg,
                     r#"<line x1="{:.4}" y1="{:.4}" x2="{:.4}" y2="{:.4}" stroke="{color}" stroke-width="{sw:.4}" stroke-linecap="round" opacity="0.5"/>"#,
@@ -313,15 +310,7 @@ fn render_zones(svg: &mut String, zones: &[crate::types::Zone]) {
                 if poly.len() < 3 {
                     continue;
                 }
-                let mut d = String::new();
-                for (i, pt) in poly.iter().enumerate() {
-                    if i == 0 {
-                        write!(d, "M{:.4} {:.4}", pt[0], pt[1]).unwrap();
-                    } else {
-                        write!(d, "L{:.4} {:.4}", pt[0], pt[1]).unwrap();
-                    }
-                }
-                d.push('Z');
+                let d = format!("{}Z", svg::polyline_to_d(poly));
                 write!(
                     svg,
                     r#"<path d="{d}" fill="{PAD_COLOR}" opacity="0.3" fill-rule="evenodd"/>"#,
