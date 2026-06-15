@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::ExtractError;
 
 use super::bsp::BspIndex;
-use super::tile::{stream_records, PlacedRecord, WorldBox};
+use super::tile::{stream_records, InstancedArray, PlacedRecord, WorldBox};
 use super::tiler::{
     lod_partition, render_layer_tile, render_overlay, svgz, Pyramid, LOD_MIN_PX, TILE_PX,
 };
@@ -82,11 +82,30 @@ pub const LOD_KEY: &str = "__lod";
 /// Everything to persist for one ingested GDSII file.
 pub struct TileSet {
     pub manifest: Manifest,
-    /// Serialized [`BspIndex`] (cache so re-tiling needn't re-parse).
+    /// Serialized [`TileIndex`] (cache so re-tiling needn't re-parse).
     pub index_bytes: Vec<u8>,
     /// Eager tile blobs: `(path under tiles/, gzipped-SVG body)`.
     /// Path is `"{z}/{x}/{y}/{key}.svgz"`.
     pub tiles: Vec<(String, Vec<u8>)>,
+}
+
+/// The cached spatial index for a GDSII view: the BSP over flat records plus
+/// the unexpanded large arrays. Serialized to `gdsii/{id}/index.bin` so tiles
+/// (including deep-zoom, on demand) can be rendered without re-parsing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TileIndex {
+    pub bsp: BspIndex,
+    pub arrays: Vec<InstancedArray>,
+}
+
+impl TileIndex {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_allocvec(self)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        postcard::from_bytes(bytes)
+    }
 }
 
 fn ext(b: &WorldBox) -> Extent {
@@ -117,8 +136,10 @@ fn palette_color(layer: i16, datatype: i16) -> String {
 pub fn build_tileset(id: &str, data: &[u8], eager_max_z: u32) -> Result<TileSet, ExtractError> {
     let stream = stream_records(data)?;
     let records = stream.records;
+    let arrays = stream.arrays;
 
-    // Group by (layer, datatype) for per-layer counts and extents.
+    // Group by (layer, datatype) for per-layer counts and extents — counting
+    // both flat records and the (unmaterialized) instances of large arrays.
     let mut groups: BTreeMap<(i16, i16), (u64, WorldBox)> = BTreeMap::new();
     let mut bounds = WorldBox::empty();
     for r in &records {
@@ -128,6 +149,17 @@ pub fn build_tileset(id: &str, data: &[u8], eager_max_z: u32) -> Result<TileSet,
             .or_insert((0, WorldBox::empty()));
         e.0 += 1;
         e.1.union(&r.bbox);
+    }
+    for arr in &arrays {
+        bounds.union(&arr.bbox);
+        let instances = arr.cols as u64 * arr.rows as u64;
+        for cr in &arr.child {
+            let e = groups
+                .entry((cr.layer, cr.datatype))
+                .or_insert((0, WorldBox::empty()));
+            e.0 += instances;
+            e.1.union(&arr.bbox);
+        }
     }
     if bounds.is_empty() {
         bounds = WorldBox {
@@ -142,7 +174,10 @@ pub fn build_tileset(id: &str, data: &[u8], eager_max_z: u32) -> Result<TileSet,
     let max_z = pyramid.levels.saturating_sub(1);
     let res_nm_per_px: Vec<f64> = (0..pyramid.levels).map(|z| pyramid.res(z)).collect();
 
-    let index = BspIndex::build(records);
+    let index = TileIndex {
+        bsp: BspIndex::build(records),
+        arrays,
+    };
     let index_bytes = index
         .to_bytes()
         .map_err(|e| ExtractError::ParseError(format!("GDSII tile index serialize: {e}")))?;
@@ -216,7 +251,7 @@ pub fn build_tileset(id: &str, data: &[u8], eager_max_z: u32) -> Result<TileSet,
 /// these match what [`build_tileset`] would have produced eagerly.
 pub fn render_tile(
     bounds: WorldBox,
-    index: &BspIndex,
+    index: &TileIndex,
     z: u32,
     x: u32,
     y: u32,
@@ -228,7 +263,7 @@ pub fn render_tile(
 fn render_tile_inner(
     pyramid: &Pyramid,
     bounds: &WorldBox,
-    index: &BspIndex,
+    index: &TileIndex,
     z: u32,
     tx: u32,
     ty: u32,
@@ -238,25 +273,48 @@ fn render_tile_inner(
     if !tbox.intersects(bounds) {
         return out;
     }
-    let hits = index.query_records(&tbox);
-    if hits.is_empty() {
+
+    // Candidate geometry for this tile: flat records from the BSP (cloned) plus
+    // the instances of any large array whose extent overlaps the tile.
+    let mut by_layer: HashMap<(i16, i16), Vec<PlacedRecord>> = HashMap::new();
+    for r in index.bsp.query_records(&tbox) {
+        by_layer
+            .entry((r.layer, r.datatype))
+            .or_default()
+            .push(r.clone());
+    }
+    for arr in &index.arrays {
+        if !arr.bbox.intersects(&tbox) {
+            continue;
+        }
+        for rec in arr.expand_for_tile(&tbox) {
+            by_layer
+                .entry((rec.layer, rec.datatype))
+                .or_default()
+                .push(rec);
+        }
+    }
+    if by_layer.is_empty() {
         return out;
     }
+
     let res_z = pyramid.res(z);
-    let mut by_layer: HashMap<(i16, i16), Vec<&PlacedRecord>> = HashMap::new();
-    for r in hits {
-        by_layer.entry((r.layer, r.datatype)).or_default().push(r);
-    }
+    let mut keys: Vec<(i16, i16)> = by_layer.keys().copied().collect();
+    keys.sort_unstable();
     let mut all_omitted: Vec<&PlacedRecord> = Vec::new();
-    for ((layer, datatype), recs) in &by_layer {
-        let (kept, omitted) = lod_partition(recs, res_z);
+    for key in &keys {
+        let refs: Vec<&PlacedRecord> = by_layer[key].iter().collect();
+        let (kept, omitted) = lod_partition(&refs, res_z);
         all_omitted.extend(omitted);
         if kept.is_empty() {
             continue;
         }
-        let color = palette_color(*layer, *datatype);
+        let color = palette_color(key.0, key.1);
         let svg = render_layer_tile(&kept, &tbox, &color);
-        out.push((format!("{z}/{tx}/{ty}/{layer}_{datatype}.svgz"), svgz(&svg)));
+        out.push((
+            format!("{z}/{tx}/{ty}/{}_{}.svgz", key.0, key.1),
+            svgz(&svg),
+        ));
     }
     if !all_omitted.is_empty() {
         let svg = render_overlay(&all_omitted, &tbox);
@@ -420,8 +478,8 @@ mod tests {
             assert!(body.len() >= 2 && body[0] == 0x1f && body[1] == 0x8b);
         }
         // index round-trips and answers a query over the full extent.
-        let idx = BspIndex::from_bytes(&ts.index_bytes).unwrap();
-        let all = idx.query(&WorldBox {
+        let idx = TileIndex::from_bytes(&ts.index_bytes).unwrap();
+        let all = idx.bsp.query(&WorldBox {
             minx: 0,
             miny: 0,
             maxx: 3000,

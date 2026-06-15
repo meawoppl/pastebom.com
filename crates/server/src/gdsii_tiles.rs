@@ -14,9 +14,8 @@ use axum::{
     http::{header, StatusCode, Uri},
     response::{Html, IntoResponse, Response},
 };
-use pcb_extract::parsers::gdsii::bsp::BspIndex;
 use pcb_extract::parsers::gdsii::tile::WorldBox;
-use pcb_extract::parsers::gdsii::tileset::{self, Manifest};
+use pcb_extract::parsers::gdsii::tileset::{self, Manifest, TileIndex};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -191,7 +190,7 @@ pub async fn get_gds_tile(
         maxy: manifest.extent_nm.maxy,
     };
     let blobs = match tokio::task::spawn_blocking(move || {
-        BspIndex::from_bytes(&index_bytes)
+        TileIndex::from_bytes(&index_bytes)
             .map(|index| tileset::render_tile(bounds, &index, z, x, y))
     })
     .await
