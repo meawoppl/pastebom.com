@@ -74,6 +74,7 @@ COPY --from=builder /build/crates/gds-viewer/dist /app/gview
 
 ENV BIND_ADDR=0.0.0.0:8080
 ENV VIEWER_DIR=/app/viewer
+ENV GDS_VIEWER_DIR=/app/gview
 ENV STORAGE_PATH=/app/data
 ENV RUST_LOG=info
 ENV MAX_UPLOAD_SIZE=52428800
