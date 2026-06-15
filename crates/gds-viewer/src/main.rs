@@ -338,7 +338,18 @@ fn app() -> Html {
         .filter(|(_, l)| l.visible)
         .map(|(idx, l)| {
             render_surface(
-                &m.id, l, idx, &pyr, z, zoom, panx, pany, view_w, view_h, &loaded_set, &redraw,
+                &m.id,
+                l,
+                idx,
+                &pyr,
+                z,
+                zoom,
+                panx,
+                pany,
+                view_w,
+                view_h,
+                &loaded_set,
+                &redraw,
             )
         })
         .collect();
@@ -422,7 +433,18 @@ fn render_surface(
     // top regardless of DOM order. Skip the backing level at the coarsest zoom.
     if z > pyr.min_z {
         emit_level_tiles(
-            &mut tiles, id, layer, pyr, z - 1, zoom, panx, pany, view_w, view_h, loaded, redraw,
+            &mut tiles,
+            id,
+            layer,
+            pyr,
+            z - 1,
+            zoom,
+            panx,
+            pany,
+            view_w,
+            view_h,
+            loaded,
+            redraw,
         );
     }
     emit_level_tiles(
