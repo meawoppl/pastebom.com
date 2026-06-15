@@ -1,0 +1,40 @@
+[package]
+name = "gds-viewer"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+yew = { version = "0.21", features = ["csr"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+gloo = { version = "0.11", features = ["net", "events", "storage", "timers", "utils"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+wasm-logger = "0.2"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlImageElement",
+    "CssStyleDeclaration",
+    "DomRect",
+    "MouseEvent",
+    "WheelEvent",
+    "PointerEvent",
+    "DragEvent",
+    "DataTransfer",
+    "KeyboardEvent",
+    "Storage",
+    "Node",
+    "NodeList",
+    "EventTarget",
+    "Performance",
+    "Location",
+]

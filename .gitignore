@@ -18,6 +18,7 @@ target/
 
 # WASM build output
 crates/viewer/dist/
+crates/gds-viewer/dist/
 
 # Reference specs (downloaded, not checked in)
 specs/

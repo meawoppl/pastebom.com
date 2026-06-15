@@ -1,0 +1,163 @@
+:root {
+    --bg: #16161e;
+    --panel-bg: #1a1b26;
+    --panel-border: #2a2b3c;
+    --text: #c0caf5;
+    --text-dim: #565f89;
+    --accent: #7aa2f7;
+    --row-hover: #232433;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+}
+
+#app {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+}
+
+.gds-map {
+    position: relative;
+    flex: 1 1 auto;
+    overflow: hidden;
+    background: var(--bg);
+    cursor: grab;
+    touch-action: none;
+}
+
+.gds-map:active {
+    cursor: grabbing;
+}
+
+.gds-surface {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    transform-origin: 0 0;
+    pointer-events: none;
+}
+
+.gds-tile {
+    position: absolute;
+    image-rendering: auto;
+    pointer-events: none;
+    user-select: none;
+}
+
+.gds-panel {
+    flex: 0 0 320px;
+    background: var(--panel-bg);
+    border-left: 1px solid var(--panel-border);
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.gds-panel h1 {
+    font-size: 14px;
+    margin: 4px 6px 8px;
+    font-weight: 600;
+}
+
+.gds-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+}
+
+.gds-row:hover {
+    background: var(--row-hover);
+}
+
+.gds-row.drag-over {
+    border-color: var(--accent);
+}
+
+.gds-handle {
+    cursor: grab;
+    color: var(--text-dim);
+    user-select: none;
+    flex: 0 0 auto;
+}
+
+.gds-swatch {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--panel-border);
+    border-radius: 3px;
+    background: none;
+    cursor: pointer;
+}
+
+.gds-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 13px;
+    padding: 2px;
+}
+
+.gds-name:focus {
+    outline: 1px solid var(--accent);
+    border-radius: 2px;
+}
+
+.gds-count {
+    flex: 0 0 auto;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.gds-opacity {
+    flex: 0 0 70px;
+}
+
+.gds-status {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    background: rgba(26, 27, 38, 0.85);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+    pointer-events: none;
+}
+
+.gds-message {
+    margin: auto;
+    text-align: center;
+    color: var(--text-dim);
+}
+
+.gds-message.error {
+    color: #f7768e;
+}

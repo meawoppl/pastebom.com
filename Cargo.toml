@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pcb-extract", "crates/server", "crates/viewer"]
+members = ["crates/pcb-extract", "crates/server", "crates/viewer", "crates/gds-viewer"]
 resolver = "2"
 
 [workspace.package]
