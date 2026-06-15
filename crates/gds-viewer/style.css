@@ -59,18 +59,10 @@ body {
     image-rendering: auto;
     pointer-events: none;
     user-select: none;
-    /* Fades a tile in once when it mounts (new key). Panning only updates the
-       position style, so retained tiles don't re-run this and never flicker. */
-    animation: gds-tile-in 0.18s ease-out;
-}
-
-@keyframes gds-tile-in {
-    from {
-        opacity: 0;
-    }
-    to {
-        opacity: 1;
-    }
+    /* Opacity is driven by load state in the inline style; this transition
+       animates the 0 → 1 flip so a tile fades in when its image arrives. */
+    opacity: 0;
+    transition: opacity 0.18s ease-out;
 }
 
 .gds-panel {
