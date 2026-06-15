@@ -15943,6 +15943,7 @@
     },
     {
       "id": "aws-cqc-devicelayout-jl-badbytes-record",
+      "expect": "fail",
       "name": "DeviceLayout.jl: badbytes_record.gds",
       "description": "GDSII layout `badbytes_record.gds` (70B) from aws-cqc/DeviceLayout.jl. Repo: Julia package for computer-aided design of quantum integrated circuits. Path: test/badbytes_record.gds. Generator guess: unknown; PDK guess: unknown.",
       "blob_sha": "cb18f1d9eee6d3178a1a8ede366652fe4aa5e9fb",
@@ -16199,6 +16200,7 @@
     },
     {
       "id": "aws-cqc-devicelayout-jl-unknown-cell",
+      "expect": "fail",
       "name": "DeviceLayout.jl: unknown_cell.gds",
       "description": "GDSII layout `unknown_cell.gds` (98B) from aws-cqc/DeviceLayout.jl. Repo: Julia package for computer-aided design of quantum integrated circuits. Path: test/unknown_cell.gds. Generator guess: unknown; PDK guess: unknown.",
       "blob_sha": "da400130738c904ba3e733286919c6a40cad83ce",
@@ -16231,6 +16233,7 @@
     },
     {
       "id": "aws-cqc-devicelayout-jl-unknown-record",
+      "expect": "fail",
       "name": "DeviceLayout.jl: unknown_record.gds",
       "description": "GDSII layout `unknown_record.gds` (70B) from aws-cqc/DeviceLayout.jl. Repo: Julia package for computer-aided design of quantum integrated circuits. Path: test/unknown_record.gds. Generator guess: unknown; PDK guess: unknown.",
       "blob_sha": "b6b43c4b4a45b9e0f3cf60f3c065db4fe195dced",
