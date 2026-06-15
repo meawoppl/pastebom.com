@@ -5,6 +5,7 @@ use crate::types::*;
 use crate::ExtractOptions;
 
 mod reader;
+pub mod tile;
 
 // Byte-level record reader (record framing, float decode, RecordData accessors).
 use reader::*;
