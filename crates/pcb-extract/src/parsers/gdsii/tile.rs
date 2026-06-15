@@ -30,6 +30,11 @@ const MAX_DEPTH: usize = 64;
 const MAX_PLACED_RECORDS: usize = 5_000_000;
 /// Upper bound on AREF array instances (file-controlled COLROW counts).
 const MAX_AREF_INSTANCES: usize = 1_000_000;
+/// AREF arrays larger than this are kept unexpanded as an [`InstancedArray`]
+/// and materialized per-tile, rather than flattened into the record stream.
+const LAZY_THRESHOLD: usize = 4096;
+/// Safety cap on instances materialized for a single tile from one array.
+const MAX_EXPAND_PER_TILE: usize = 100_000;
 
 /// Axis-aligned extent in world nanometers (the integer twin of [`crate::types::BBox`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,10 +128,158 @@ pub struct PlacedRecord {
 #[derive(Debug, Clone)]
 pub struct RecordStream {
     pub records: Vec<PlacedRecord>,
+    /// Large AREF arrays kept unexpanded; materialized per-tile.
+    pub arrays: Vec<InstancedArray>,
     /// Nanometers per database unit (from the file's `UNITS` record).
     pub nm_per_dbu: f64,
     /// Whether the emit cap was hit (records were dropped).
     pub truncated: bool,
+}
+
+/// A large AREF kept unexpanded: the child cell flattened once at instance
+/// (0,0), plus the grid shape and per-column/row world offsets. Instances are
+/// materialized only for the tiles a query touches ([`Self::expand_for_tile`]),
+/// so memory stays bounded by the unique cell geometry rather than `cols*rows`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstancedArray {
+    /// Child cell geometry at instance (0,0), in world nm.
+    pub child: Vec<PlacedRecord>,
+    /// Extent of `child`.
+    pub child_bbox: WorldBox,
+    pub cols: u32,
+    pub rows: u32,
+    /// World-nm offset added per column / per row.
+    pub col_delta: [f64; 2],
+    pub row_delta: [f64; 2],
+    /// Overall extent across every instance.
+    pub bbox: WorldBox,
+}
+
+impl InstancedArray {
+    /// Materialize the instances whose geometry intersects `tile`.
+    pub fn expand_for_tile(&self, tile: &WorldBox) -> Vec<PlacedRecord> {
+        let mut out = Vec::new();
+        if self.child.is_empty() || self.cols == 0 || self.rows == 0 {
+            return out;
+        }
+        let (c_lo, c_hi, r_lo, r_hi) = self.instance_range(tile);
+        let mut emitted = 0usize;
+        for r in r_lo..=r_hi {
+            for c in c_lo..=c_hi {
+                let ox =
+                    (c as f64 * self.col_delta[0] + r as f64 * self.row_delta[0]).round() as i64;
+                let oy =
+                    (c as f64 * self.col_delta[1] + r as f64 * self.row_delta[1]).round() as i64;
+                let inst = WorldBox {
+                    minx: self.child_bbox.minx + ox,
+                    miny: self.child_bbox.miny + oy,
+                    maxx: self.child_bbox.maxx + ox,
+                    maxy: self.child_bbox.maxy + oy,
+                };
+                if !inst.intersects(tile) {
+                    continue;
+                }
+                for rec in &self.child {
+                    let tr = translate_record(rec, ox, oy);
+                    if tr.bbox.intersects(tile) {
+                        out.push(tr);
+                    }
+                }
+                emitted += 1;
+                if emitted >= MAX_EXPAND_PER_TILE {
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
+    /// `(c_lo, c_hi, r_lo, r_hi)` instance index range that could intersect
+    /// `tile`, clamped to the grid. For axis-aligned grids this is the exact
+    /// range; otherwise it falls back to the whole grid (the per-tile emit cap
+    /// keeps that bounded).
+    fn instance_range(&self, tile: &WorldBox) -> (i64, i64, i64, i64) {
+        let (cmax, rmax) = (self.cols as i64 - 1, self.rows as i64 - 1);
+        let axis_aligned = self.col_delta[1].abs() < 1e-9
+            && self.row_delta[0].abs() < 1e-9
+            && self.col_delta[0].abs() > 1e-9
+            && self.row_delta[1].abs() > 1e-9;
+        if !axis_aligned {
+            return (0, cmax, 0, rmax);
+        }
+        let span =
+            |delta: f64, child_lo: i64, child_hi: i64, tile_lo: i64, tile_hi: i64, imax: i64| {
+                // instance i covers [child_lo + i*delta, child_hi + i*delta].
+                let a = (tile_lo - child_hi) as f64 / delta;
+                let b = (tile_hi - child_lo) as f64 / delta;
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                (
+                    (lo.floor() as i64).clamp(0, imax),
+                    (hi.ceil() as i64).clamp(0, imax),
+                )
+            };
+        let (c_lo, c_hi) = span(
+            self.col_delta[0],
+            self.child_bbox.minx,
+            self.child_bbox.maxx,
+            tile.minx,
+            tile.maxx,
+            cmax,
+        );
+        let (r_lo, r_hi) = span(
+            self.row_delta[1],
+            self.child_bbox.miny,
+            self.child_bbox.maxy,
+            tile.miny,
+            tile.maxy,
+            rmax,
+        );
+        (c_lo, c_hi, r_lo, r_hi)
+    }
+}
+
+/// Translate a placed record's geometry and extent by `(ox, oy)` world nm.
+fn translate_record(r: &PlacedRecord, ox: i64, oy: i64) -> PlacedRecord {
+    let geom = match &r.geom {
+        Geom::Poly { rings } => Geom::Poly {
+            rings: rings
+                .iter()
+                .map(|ring| ring.iter().map(|p| [p[0] + ox, p[1] + oy]).collect())
+                .collect(),
+        },
+        Geom::Path {
+            pts,
+            half_width,
+            pathtype,
+        } => Geom::Path {
+            pts: pts.iter().map(|p| [p[0] + ox, p[1] + oy]).collect(),
+            half_width: *half_width,
+            pathtype: *pathtype,
+        },
+        Geom::Label {
+            at,
+            text,
+            mag,
+            angle,
+        } => Geom::Label {
+            at: [at[0] + ox, at[1] + oy],
+            text: text.clone(),
+            mag: *mag,
+            angle: *angle,
+        },
+    };
+    PlacedRecord {
+        layer: r.layer,
+        datatype: r.datatype,
+        kind: r.kind,
+        bbox: WorldBox {
+            minx: r.bbox.minx + ox,
+            miny: r.bbox.miny + oy,
+            maxx: r.bbox.maxx + ox,
+            maxy: r.bbox.maxy + oy,
+        },
+        geom,
+    }
 }
 
 // ─── Cell model (keeps datatype / box / node / text, unlike the BOM path) ───
@@ -239,6 +392,7 @@ pub fn stream_records(data: &[u8]) -> Result<RecordStream, ExtractError> {
 
     let top = top_cell(&cells, &index);
     let mut out = Vec::new();
+    let mut arrays = Vec::new();
     let mut truncated = false;
     if let Some(top) = top {
         flatten(
@@ -248,13 +402,16 @@ pub fn stream_records(data: &[u8]) -> Result<RecordStream, ExtractError> {
             nm_per_dbu,
             Frame::root(),
             0,
+            true,
             &mut out,
+            &mut arrays,
             &mut truncated,
         );
     }
 
     Ok(RecordStream {
         records: out,
+        arrays,
         nm_per_dbu,
         truncated,
     })
@@ -536,7 +693,9 @@ fn flatten(
     nm_per_dbu: f64,
     frame: Frame,
     depth: usize,
+    lazy: bool,
     out: &mut Vec<PlacedRecord>,
+    arrays: &mut Vec<InstancedArray>,
     truncated: &mut bool,
 ) {
     if depth > MAX_DEPTH || out.len() >= MAX_PLACED_RECORDS {
@@ -669,7 +828,9 @@ fn flatten(
                     nm_per_dbu,
                     child_frame,
                     depth + 1,
+                    lazy,
                     out,
+                    arrays,
                     truncated,
                 );
             }
@@ -690,7 +851,7 @@ fn flatten(
                 }
                 let ncols = (*cols).max(0) as usize;
                 let nrows = (*rows).max(0) as usize;
-                if ncols == 0 || nrows == 0 || ncols.saturating_mul(nrows) > MAX_AREF_INSTANCES {
+                if ncols == 0 || nrows == 0 {
                     continue;
                 }
                 let p0 = frame.apply(to_nm(xy[0].0), to_nm(xy[0].1));
@@ -713,6 +874,68 @@ fn flatten(
                     [0.0, 0.0]
                 };
                 let reflect = (*strans & 0x8000) != 0;
+
+                // Large arrays are kept unexpanded (materialized per-tile);
+                // small arrays (and any array under a non-lazy parent) expand
+                // inline, bounded by the placed-record cap.
+                if lazy && ncols.saturating_mul(nrows) > LAZY_THRESHOLD {
+                    // Flatten the child once at instance (0,0), eagerly.
+                    let mut child_recs = Vec::new();
+                    let mut child_arrays = Vec::new();
+                    let mut child_trunc = false;
+                    let base = Frame {
+                        origin: p0,
+                        reflect,
+                        mag: *mag,
+                        angle_deg: *angle,
+                    };
+                    flatten(
+                        child,
+                        cells,
+                        index,
+                        nm_per_dbu,
+                        base,
+                        depth + 1,
+                        false,
+                        &mut child_recs,
+                        &mut child_arrays,
+                        &mut child_trunc,
+                    );
+                    if child_recs.is_empty() {
+                        continue;
+                    }
+                    let mut child_bbox = WorldBox::empty();
+                    for r in &child_recs {
+                        child_bbox.union(&r.bbox);
+                    }
+                    // Overall extent: child bbox translated to the grid corners.
+                    let mut bbox = WorldBox::empty();
+                    for &(cc, rr) in &[
+                        (0i64, 0i64),
+                        (ncols as i64 - 1, 0),
+                        (0, nrows as i64 - 1),
+                        (ncols as i64 - 1, nrows as i64 - 1),
+                    ] {
+                        let ox = (cc as f64 * col_d[0] + rr as f64 * row_d[0]).round() as i64;
+                        let oy = (cc as f64 * col_d[1] + rr as f64 * row_d[1]).round() as i64;
+                        bbox.expand_point(child_bbox.minx + ox, child_bbox.miny + oy);
+                        bbox.expand_point(child_bbox.maxx + ox, child_bbox.maxy + oy);
+                    }
+                    arrays.push(InstancedArray {
+                        child: child_recs,
+                        child_bbox,
+                        cols: ncols as u32,
+                        rows: nrows as u32,
+                        col_delta: col_d,
+                        row_delta: row_d,
+                        bbox,
+                    });
+                    continue;
+                }
+
+                if ncols.saturating_mul(nrows) > MAX_AREF_INSTANCES {
+                    continue;
+                }
                 'rows: for r in 0..nrows {
                     for c in 0..ncols {
                         if out.len() >= MAX_PLACED_RECORDS {
@@ -736,7 +959,9 @@ fn flatten(
                             nm_per_dbu,
                             child_frame,
                             depth + 1,
+                            lazy,
                             out,
+                            arrays,
                             truncated,
                         );
                     }
@@ -970,5 +1195,62 @@ mod tests {
 
         let s = stream_records(&g).unwrap();
         assert_eq!(s.records.len(), 6, "2x3 grid => 6 instances");
+    }
+
+    #[test]
+    fn large_aref_is_lazy_and_expands_per_tile() {
+        // 100x100 = 10000 instances (> LAZY_THRESHOLD) => kept unexpanded.
+        let mut g = Vec::new();
+        g.extend(rec_i16(reader::HEADER, &[600]));
+        g.extend(rec_i16(reader::BGNLIB, &[0; 12]));
+        g.extend(rec_ascii(reader::LIBNAME, "L"));
+        g.extend(rec_f64(UNITS, &[1e-3, 1e-9]));
+        // child cell: a 10nm square on layer 1
+        g.extend(rec_i16(BGNSTR, &[0; 12]));
+        g.extend(rec_ascii(STRNAME, "CELL"));
+        g.extend(rec_no_data(BOUNDARY));
+        g.extend(rec_i16(LAYER, &[1]));
+        g.extend(rec_i16(DATATYPE, &[0]));
+        g.extend(rec_i32(XY, &[0, 0, 10, 0, 10, 10, 0, 10, 0, 0]));
+        g.extend(rec_no_data(ENDEL));
+        g.extend(rec_no_data(ENDSTR));
+        // top: 100x100 array at 1000nm pitch on each axis
+        g.extend(rec_i16(BGNSTR, &[0; 12]));
+        g.extend(rec_ascii(STRNAME, "TOP"));
+        g.extend(rec_no_data(AREF));
+        g.extend(rec_ascii(SNAME, "CELL"));
+        g.extend(rec_i16(COLROW, &[100, 100]));
+        g.extend(rec_i32(XY, &[0, 0, 100_000, 0, 0, 100_000]));
+        g.extend(rec_no_data(ENDEL));
+        g.extend(rec_no_data(ENDSTR));
+        g.extend(rec_no_data(reader::ENDLIB));
+
+        let s = stream_records(&g).unwrap();
+        assert!(s.records.is_empty(), "large array must stay unexpanded");
+        assert_eq!(s.arrays.len(), 1);
+        let arr = &s.arrays[0];
+        assert_eq!((arr.cols, arr.rows), (100, 100));
+
+        // Whole-extent expansion yields one child record per instance.
+        assert_eq!(arr.expand_for_tile(&arr.bbox).len(), 100 * 100);
+
+        // A tile around just the first instance yields very few.
+        let near = WorldBox {
+            minx: -5,
+            miny: -5,
+            maxx: 15,
+            maxy: 15,
+        };
+        let n = arr.expand_for_tile(&near).len();
+        assert!((1..10).contains(&n), "got {n}");
+
+        // A tile far outside the array yields nothing.
+        let far = WorldBox {
+            minx: 10_000_000,
+            miny: 10_000_000,
+            maxx: 10_001_000,
+            maxy: 10_001_000,
+        };
+        assert!(arr.expand_for_tile(&far).is_empty());
     }
 }
