@@ -1,4 +1,5 @@
 mod compressed_assets;
+mod gdsii_tiles;
 mod github;
 mod reparse;
 mod routes;
@@ -29,6 +30,14 @@ async fn main() {
         std::env::var("VIEWER_DIR").unwrap_or_else(|_| "crates/viewer/dist".to_string()),
     );
     tracing::info!("Serving viewer assets from {}", viewer_dir.display());
+
+    let gds_viewer_dir = PathBuf::from(
+        std::env::var("GDS_VIEWER_DIR").unwrap_or_else(|_| "crates/gds-viewer/dist".to_string()),
+    );
+    tracing::info!(
+        "Serving GDSII viewer assets from {}",
+        gds_viewer_dir.display()
+    );
 
     let recent = routes::load_recent(&s3_client).await;
     tracing::info!("Loaded {} recent public uploads", recent.len());
@@ -64,6 +73,7 @@ async fn main() {
     let state = AppState {
         s3: s3_client,
         viewer_dir: viewer_dir.clone(),
+        gds_viewer_dir,
         recent: Arc::new(RwLock::new(recent)),
         http_client,
         max_upload_bytes,
@@ -106,6 +116,7 @@ pub fn build_app(state: AppState) -> Router {
 pub struct AppState {
     pub s3: s3::S3Client,
     pub viewer_dir: PathBuf,
+    pub gds_viewer_dir: PathBuf,
     pub recent: Arc<RwLock<Vec<routes::RecentEntry>>>,
     pub http_client: reqwest::Client,
     pub max_upload_bytes: usize,
@@ -126,6 +137,7 @@ mod tests {
         AppState {
             s3,
             viewer_dir,
+            gds_viewer_dir: PathBuf::from("crates/gds-viewer/dist"),
             recent: Arc::new(RwLock::new(Vec::new())),
             http_client: reqwest::Client::new(),
             max_upload_bytes: 50 * 1024 * 1024,
@@ -176,6 +188,44 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::get("/b/00000000-0000-0000-0000-000000000000/data")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn test_gds_invalid_id_is_404() {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(Request::get("/g/not-a-uuid").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn test_gds_missing_manifest_is_404() {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(
+                Request::get("/g/00000000-0000-0000-0000-000000000000/manifest.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn test_gds_tile_bad_key_is_404() {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(
+                Request::get("/g/00000000-0000-0000-0000-000000000000/tiles/0/0/0/bad..key")
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -177,36 +177,9 @@ pub fn build_tileset(id: &str, data: &[u8], eager_max_z: u32) -> Result<TileSet,
     let mut tiles = Vec::new();
     for z in 0..=eager {
         let n = pyramid.tiles_per_axis(z);
-        let res_z = pyramid.res(z);
         for ty in 0..n {
             for tx in 0..n {
-                let tbox = pyramid.tile_world_box(z, tx, ty);
-                if !tbox.intersects(&bounds) {
-                    continue;
-                }
-                let hits = index.query_records(&tbox);
-                if hits.is_empty() {
-                    continue;
-                }
-                let mut by_layer: HashMap<(i16, i16), Vec<&PlacedRecord>> = HashMap::new();
-                for r in hits {
-                    by_layer.entry((r.layer, r.datatype)).or_default().push(r);
-                }
-                let mut all_omitted: Vec<&PlacedRecord> = Vec::new();
-                for ((layer, datatype), recs) in &by_layer {
-                    let (kept, omitted) = lod_partition(recs, res_z);
-                    all_omitted.extend(omitted);
-                    if kept.is_empty() {
-                        continue;
-                    }
-                    let color = palette_color(*layer, *datatype);
-                    let svg = render_layer_tile(&kept, &tbox, &color);
-                    tiles.push((format!("{z}/{tx}/{ty}/{layer}_{datatype}.svgz"), svgz(&svg)));
-                }
-                if !all_omitted.is_empty() {
-                    let svg = render_overlay(&all_omitted, &tbox);
-                    tiles.push((format!("{z}/{tx}/{ty}/{LOD_KEY}.svgz"), svgz(&svg)));
-                }
+                tiles.extend(render_tile_inner(&pyramid, &bounds, &index, z, tx, ty));
             }
         }
     }
@@ -234,6 +207,62 @@ pub fn build_tileset(id: &str, data: &[u8], eager_max_z: u32) -> Result<TileSet,
         index_bytes,
         tiles,
     })
+}
+
+/// Render every layer's blob for a single tile `(z, x, y)` on demand, given the
+/// design `bounds` (from the manifest) and the cached index. Returns
+/// `(path, svgz)` pairs (`{z}/{x}/{y}/{key}.svgz`); empty if the tile holds
+/// nothing. The pyramid is reconstructed deterministically from `bounds`, so
+/// these match what [`build_tileset`] would have produced eagerly.
+pub fn render_tile(
+    bounds: WorldBox,
+    index: &BspIndex,
+    z: u32,
+    x: u32,
+    y: u32,
+) -> Vec<(String, Vec<u8>)> {
+    let pyramid = Pyramid::new(bounds, RES_MIN_NM_PER_PX);
+    render_tile_inner(&pyramid, &bounds, index, z, x, y)
+}
+
+fn render_tile_inner(
+    pyramid: &Pyramid,
+    bounds: &WorldBox,
+    index: &BspIndex,
+    z: u32,
+    tx: u32,
+    ty: u32,
+) -> Vec<(String, Vec<u8>)> {
+    let tbox = pyramid.tile_world_box(z, tx, ty);
+    let mut out = Vec::new();
+    if !tbox.intersects(bounds) {
+        return out;
+    }
+    let hits = index.query_records(&tbox);
+    if hits.is_empty() {
+        return out;
+    }
+    let res_z = pyramid.res(z);
+    let mut by_layer: HashMap<(i16, i16), Vec<&PlacedRecord>> = HashMap::new();
+    for r in hits {
+        by_layer.entry((r.layer, r.datatype)).or_default().push(r);
+    }
+    let mut all_omitted: Vec<&PlacedRecord> = Vec::new();
+    for ((layer, datatype), recs) in &by_layer {
+        let (kept, omitted) = lod_partition(recs, res_z);
+        all_omitted.extend(omitted);
+        if kept.is_empty() {
+            continue;
+        }
+        let color = palette_color(*layer, *datatype);
+        let svg = render_layer_tile(&kept, &tbox, &color);
+        out.push((format!("{z}/{tx}/{ty}/{layer}_{datatype}.svgz"), svgz(&svg)));
+    }
+    if !all_omitted.is_empty() {
+        let svg = render_overlay(&all_omitted, &tbox);
+        out.push((format!("{z}/{tx}/{ty}/{LOD_KEY}.svgz"), svgz(&svg)));
+    }
+    out
 }
 
 #[cfg(test)]

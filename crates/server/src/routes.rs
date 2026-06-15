@@ -178,6 +178,18 @@ pub fn router(max_upload_bytes: usize) -> Router<AppState> {
         .route("/b/{id}/meta", get(get_meta))
         .route("/b/{id}/thumb.svg", get(get_thumb_svg))
         .route("/gh-render", get(crate::github::gh_render))
+        // GDSII tile viewer
+        .route("/g/{id}", get(crate::gdsii_tiles::get_gds_viewer))
+        .route(
+            "/g/{id}/manifest.json",
+            get(crate::gdsii_tiles::get_gds_manifest),
+        )
+        .route(
+            "/g/{id}/tiles/{z}/{x}/{y}/{key}",
+            get(crate::gdsii_tiles::get_gds_tile),
+        )
+        .route("/gview/{*path}", get(crate::gdsii_tiles::serve_gview))
+        .route("/gview/", get(crate::gdsii_tiles::serve_gview))
         .route("/health", get(health))
         .layer(DefaultBodyLimit::max(max_upload_bytes))
 }
@@ -262,6 +274,26 @@ async fn upload(
 
     let (filename, data) =
         file_data.ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "No file uploaded"))?;
+
+    // GDSII goes to the tile-viewer pipeline, not the PcbData/BOM path.
+    let lower = filename.to_lowercase();
+    if lower.ends_with(".gds") || lower.ends_with(".gds2") {
+        let id = Uuid::new_v4().to_string();
+        crate::gdsii_tiles::ingest(&state, &id, data)
+            .await
+            .map_err(|e| {
+                tracing::error!("GDSII ingest error for {filename}: {e}");
+                error_response(StatusCode::UNPROCESSABLE_ENTITY, &e)
+            })?;
+        let base_url =
+            std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+        return Ok(Json(UploadResponse {
+            url: format!("{base_url}/g/{id}"),
+            id,
+            filename,
+            components: 0,
+        }));
+    }
 
     let path = std::path::Path::new(&filename);
     let format = pcb_extract::detect_format_with_content(path, &data)
