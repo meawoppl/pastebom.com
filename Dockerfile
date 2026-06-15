@@ -21,14 +21,16 @@ COPY Cargo.lock Cargo.lock
 COPY crates/pcb-extract/Cargo.toml crates/pcb-extract/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/viewer/Cargo.toml crates/viewer/Cargo.toml
+COPY crates/gds-viewer/Cargo.toml crates/gds-viewer/Cargo.toml
 
 # Create dummy source files for dependency caching
-RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src \
+RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src crates/gds-viewer/src \
     && echo "pub fn main() {}" > crates/pcb-extract/src/main.rs \
     && echo "pub fn lib() {}" > crates/pcb-extract/src/lib.rs \
     && echo "fn main() {}" > crates/server/src/main.rs \
     && echo "<html></html>" > crates/server/static/index.html \
-    && echo "fn main() {}" > crates/viewer/src/main.rs
+    && echo "fn main() {}" > crates/viewer/src/main.rs \
+    && echo "fn main() {}" > crates/gds-viewer/src/main.rs
 
 # Build dependencies only (cached layer)
 RUN cargo build --release --locked 2>/dev/null || true
@@ -40,13 +42,17 @@ COPY crates/ crates/
 RUN touch crates/pcb-extract/src/main.rs \
     crates/pcb-extract/src/lib.rs \
     crates/server/src/main.rs \
-    crates/viewer/src/main.rs
+    crates/viewer/src/main.rs \
+    crates/gds-viewer/src/main.rs
 
 # Build release binaries
 RUN cargo build --release --locked
 
 # Build viewer WASM
 RUN cd crates/viewer && trunk build --release
+
+# Build GDSII tile viewer WASM
+RUN cd crates/gds-viewer && trunk build --release
 
 # =============================================================================
 # Stage 2: Runtime
@@ -64,6 +70,7 @@ WORKDIR /app
 COPY --from=builder /build/target/release/pastebom-server /app/pastebom-server
 COPY --from=builder /build/target/release/pcb-extract /app/pcb-extract
 COPY --from=builder /build/crates/viewer/dist /app/viewer
+COPY --from=builder /build/crates/gds-viewer/dist /app/gview
 
 ENV BIND_ADDR=0.0.0.0:8080
 ENV VIEWER_DIR=/app/viewer
