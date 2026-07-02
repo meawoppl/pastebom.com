@@ -2,13 +2,13 @@
   "schema_version": 1,
   "title": "GDSII loader test corpus",
   "description": "Curated catalog of GDSII (.gds/.gds2) files discovered in public GitHub repositories by the pastebom.com-tester discovery agent. Each case is pinned to an immutable commit SHA so it can be downloaded reproducibly and fed to the pcb-extract GDSII loader. Intended to drive a download-and-parse test that emits a per-case success/failure report.",
-  "generated_date": "2026-06-28",
+  "generated_date": "2026-07-02",
   "source": "https://github.com/meawoppl/pastebom.com-tester (gdsii_files.json)",
   "selection": {
     "method": "group by blob SHA; one case per unique file, every location kept as a source pointer (no per-repo cap)",
     "total_discovered_paths": 2144,
-    "resolvable_source_pointers": 2133,
-    "unique_files": 863
+    "resolvable_source_pointers": 2134,
+    "unique_files": 864
   },
   "tiers": {
     "smoke": "<= 64 KiB \u2014 tiny cells/gates; fast default CI subset",
@@ -16,7 +16,7 @@
     "stress": "> 5 MiB \u2014 full chips/wafers; perf + robustness"
   },
   "tier_counts": {
-    "smoke": 653,
+    "smoke": 654,
     "standard": 154,
     "stress": 56
   },
@@ -40353,6 +40353,38 @@
           "commit_date": "2026-05-03T19:50:35Z",
           "repo_stars": 0,
           "repo_license": "MIT"
+        }
+      ]
+    },
+    {
+      "id": "silab-bonn-gds2kicad-example",
+      "name": "gds2kicad: example.gds",
+      "description": "GDSII layout `example.gds` (5.2KB) from SiLab-Bonn/gds2kicad. Repo: Convert GDS geometry to KiCad PCB files. Path: example.gds. Generator guess: unknown; PDK guess: unknown.",
+      "blob_sha": "8fd798de8db9b0bd9ed4fa0eda9c7cdd81582b81",
+      "size_bytes": 5368,
+      "tier": "smoke",
+      "generator_guess": "unknown",
+      "pdk_guess": "unknown",
+      "date_indexed": "2026-07-02",
+      "source_count": 1,
+      "repo": "SiLab-Bonn/gds2kicad",
+      "path": "example.gds",
+      "permalink": "https://github.com/SiLab-Bonn/gds2kicad/blob/b80ad994e8dbba9c1bbc22cc83e9f3f62be4f80b/example.gds",
+      "raw_url": "https://raw.githubusercontent.com/SiLab-Bonn/gds2kicad/b80ad994e8dbba9c1bbc22cc83e9f3f62be4f80b/example.gds",
+      "commit": "b80ad994e8dbba9c1bbc22cc83e9f3f62be4f80b",
+      "commit_date": "2026-06-23T15:08:02Z",
+      "repo_stars": 0,
+      "repo_license": null,
+      "sources": [
+        {
+          "repo": "SiLab-Bonn/gds2kicad",
+          "path": "example.gds",
+          "permalink": "https://github.com/SiLab-Bonn/gds2kicad/blob/b80ad994e8dbba9c1bbc22cc83e9f3f62be4f80b/example.gds",
+          "raw_url": "https://raw.githubusercontent.com/SiLab-Bonn/gds2kicad/b80ad994e8dbba9c1bbc22cc83e9f3f62be4f80b/example.gds",
+          "commit": "b80ad994e8dbba9c1bbc22cc83e9f3f62be4f80b",
+          "commit_date": "2026-06-23T15:08:02Z",
+          "repo_stars": 0,
+          "repo_license": null
         }
       ]
     }
