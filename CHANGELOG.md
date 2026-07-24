@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.1
+
+- Add per-board reparse telemetry to identify the board that OOMs the startup scan: flushed `reparse: [i/n] board=… upload_bytes=… parser=old->new` start line and `… done rss=…MB parsed_bytes=…` completion line
+- Persist a `reparse_progress` marker before each board's parse so a SIGKILL/OOM leaves the offending board named in storage
+- Process boards in deterministic ascending board-id order so the failing board is reproducible run-to-run
+- Add `SKIP_REPARSE` / `DISABLE_REPARSE` env to halt the reparse crash-loop while triaging
+
 ## 1.9.0
 
 - Fix KiCad arc direction by honouring the (start, mid, end) point convention; thumbnail and viewer now trace the same sweep
