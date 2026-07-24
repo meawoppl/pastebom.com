@@ -3,6 +3,7 @@ use std::path::PathBuf;
 pub struct ObjectInfo {
     pub key: String,
     pub last_modified: chrono::DateTime<chrono::Utc>,
+    pub size: u64,
 }
 
 #[derive(Clone)]
@@ -126,9 +127,11 @@ impl S3Client {
                                     chrono::DateTime::from_timestamp(t.secs(), t.subsec_nanos())
                                 })
                                 .unwrap_or_else(chrono::Utc::now);
+                            let size = obj.size().unwrap_or(0).max(0) as u64;
                             objects.push(ObjectInfo {
                                 key: logical_key,
                                 last_modified,
+                                size,
                             });
                         }
                     }
@@ -152,12 +155,18 @@ impl S3Client {
                                 prefix.trim_end_matches('/'),
                                 entry.file_name().to_string_lossy()
                             );
-                            let last_modified = entry
-                                .metadata()
-                                .and_then(|m| m.modified())
+                            let metadata = entry.metadata().ok();
+                            let last_modified = metadata
+                                .as_ref()
+                                .and_then(|m| m.modified().ok())
                                 .map(chrono::DateTime::<chrono::Utc>::from)
-                                .unwrap_or_else(|_| chrono::Utc::now());
-                            objects.push(ObjectInfo { key, last_modified });
+                                .unwrap_or_else(chrono::Utc::now);
+                            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                            objects.push(ObjectInfo {
+                                key,
+                                last_modified,
+                                size,
+                            });
                         }
                     }
                 }
