@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install trunk and wasm target for viewer build
-RUN cargo install trunk \
+# Install trunk and wasm target for viewer build.
+# Pin the version and use --locked so the build resolves trunk's own tested
+# dependency set; an unpinned install picks up broken transitive deps (e.g. a
+# cssparser/cssparser-macros mismatch) and fails to compile.
+RUN cargo install trunk --version 0.21.14 --locked \
     && rustup target add wasm32-unknown-unknown
 
 WORKDIR /build
