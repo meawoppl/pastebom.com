@@ -691,10 +691,12 @@ fn parse_pad(node: &SExpr, fp_x: f64, fp_y: f64, fp_angle: f64, nets: &[String])
         size: [size_w, size_h],
         shape: shape.to_string(),
         pad_type: pad_type.to_string(),
+        // KiCad stores the pad `at` angle as an absolute board orientation that already
+        // includes the footprint's rotation (unlike the pad position, which is local and
+        // rotated above). Adding fp_angle here would double-count it — visibly wrong at
+        // non-orthogonal footprint rotations (e.g. a 45° chip's leads).
         angle: if pad_angle != 0.0 {
-            Some(pad_angle + fp_angle)
-        } else if fp_angle != 0.0 {
-            Some(fp_angle)
+            Some(pad_angle)
         } else {
             None
         },
@@ -1290,5 +1292,39 @@ mod arc_tests {
             "sweep was {}°, expected 20°",
             forward_sweep(sa, ea)
         );
+    }
+}
+
+#[cfg(test)]
+mod pad_angle_tests {
+    use super::*;
+
+    fn pad_angle(fp_at: &str, pad_at: &str) -> Option<f64> {
+        let doc = format!(
+            "(kicad_pcb (footprint \"T\" (layer \"F.Cu\") (at {fp_at}) \
+             (pad \"1\" smd roundrect (at {pad_at}) (size 0.8 0.2) (layers \"F.Cu\"))))"
+        );
+        let opts = ExtractOptions {
+            include_tracks: false,
+            include_nets: false,
+        };
+        let data = parse(doc.as_bytes(), &opts).expect("parse");
+        data.footprints[0].pads[0].angle
+    }
+
+    #[test]
+    fn pad_angle_is_absolute_not_double_counted() {
+        // KiCad bakes the footprint rotation into the stored pad angle. A footprint at
+        // -45° with a pad the file records at 315° must stay 315° — not 270° (double-count).
+        assert_eq!(pad_angle("100 100 -45", "1 0 315"), Some(315.0));
+        // Orthogonal footprint: a pad recorded at 90° stays 90°, not 180°.
+        assert_eq!(pad_angle("100 100 90", "1 0 90"), Some(90.0));
+    }
+
+    #[test]
+    fn pad_with_zero_file_angle_stays_unrotated() {
+        // A pad the file records at 0° is absolutely axis-aligned even inside a rotated
+        // footprint; it must not inherit the footprint's rotation.
+        assert_eq!(pad_angle("100 100 -45", "1 0"), None);
     }
 }
