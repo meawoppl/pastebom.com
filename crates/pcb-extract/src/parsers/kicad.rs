@@ -306,6 +306,18 @@ fn parse_gr_circle(node: &SExpr) -> Option<(Drawing, String)> {
     ))
 }
 
+/// Order the (start, end) angles of a legacy center+angle arc so the renderer's
+/// forward (increasing-angle) sweep traces the arc actually specified. KiCad's arc
+/// `angle` is signed — a negative (clockwise) angle would otherwise render as its
+/// 360°-complement (e.g. a 90° corner drawn as a 270° bulge).
+fn legacy_arc_span(start_angle: f64, angle: f64) -> (f64, f64) {
+    if angle >= 0.0 {
+        (start_angle, start_angle + angle)
+    } else {
+        (start_angle + angle, start_angle)
+    }
+}
+
 fn parse_gr_arc(node: &SExpr) -> Option<(Drawing, String)> {
     // KiCad 7+ uses (start, mid, end) for arcs
     // KiCad 5-6 uses (start=center, end=startpoint, angle)
@@ -335,8 +347,7 @@ fn parse_gr_arc(node: &SExpr) -> Option<(Drawing, String)> {
         let dx = endpoint[0] - center[0];
         let dy = endpoint[1] - center[1];
         let radius = (dx * dx + dy * dy).sqrt();
-        let start_angle = dy.atan2(dx) * 180.0 / PI;
-        let end_angle = start_angle + angle;
+        let (start_angle, end_angle) = legacy_arc_span(dy.atan2(dx) * 180.0 / PI, angle);
         Some((
             Drawing::Arc {
                 start: center,
@@ -806,8 +817,7 @@ fn parse_fp_arc(node: &SExpr, fp_x: f64, fp_y: f64, fp_angle: f64) -> Option<(Dr
         let dx = ex - cx;
         let dy = ey - cy;
         let radius = (dx * dx + dy * dy).sqrt();
-        let start_angle = dy.atan2(dx) * 180.0 / PI;
-        let end_angle = start_angle + angle;
+        let (start_angle, end_angle) = legacy_arc_span(dy.atan2(dx) * 180.0 / PI, angle);
         Some((
             Drawing::Arc {
                 start: [cx, cy],
@@ -1326,5 +1336,60 @@ mod pad_angle_tests {
         // A pad the file records at 0° is absolutely axis-aligned even inside a rotated
         // footprint; it must not inherit the footprint's rotation.
         assert_eq!(pad_angle("100 100 -45", "1 0"), None);
+    }
+}
+
+#[cfg(test)]
+mod legacy_arc_tests {
+    use super::*;
+
+    fn forward_sweep(sa: f64, ea: f64) -> f64 {
+        let s = (ea - sa) % 360.0;
+        if s < 0.0 {
+            s + 360.0
+        } else {
+            s
+        }
+    }
+
+    #[test]
+    fn legacy_arc_span_orders_by_direction() {
+        // Clockwise (negative) angle is reordered so the forward sweep stays the minor arc.
+        assert_eq!(legacy_arc_span(-90.0, -90.0), (-180.0, -90.0));
+        // Counter-clockwise angle is left as-is.
+        assert_eq!(legacy_arc_span(0.0, 90.0), (0.0, 90.0));
+    }
+
+    #[test]
+    fn legacy_clockwise_edge_arc_renders_minor_sweep() {
+        // A rounded-rect corner: center offset 2.54 from both edges, swept 90° clockwise.
+        // It must render as a 90° minor arc, not the 270° bulge seen before the fix.
+        let doc = r#"(kicad_pcb
+            (gr_arc (start 59.69 31.75) (end 59.69 29.21) (angle -90)
+                    (layer "Edge.Cuts") (width 0.05)))"#;
+        let opts = ExtractOptions {
+            include_tracks: false,
+            include_nets: false,
+        };
+        let data = parse(doc.as_bytes(), &opts).expect("parse");
+        let (sa, ea, r) = data
+            .edges
+            .iter()
+            .find_map(|d| match d {
+                Drawing::Arc {
+                    startangle,
+                    endangle,
+                    radius,
+                    ..
+                } => Some((*startangle, *endangle, *radius)),
+                _ => None,
+            })
+            .expect("edge arc present");
+        assert!((r - 2.54).abs() < 1e-6, "radius {r}");
+        let sweep = forward_sweep(sa, ea);
+        assert!(
+            (sweep - 90.0).abs() < 0.01,
+            "forward sweep was {sweep}°, expected 90°"
+        );
     }
 }
