@@ -888,7 +888,8 @@ fn app() -> Html {
             // ─── BOM sidebar (left) ────────────────────────────
                 <div class={classes!("sidebar", "bom-sidebar", (!*bom_sidebar_open).then_some("sidebar-closed"))}>
                     <div class="sidebar-header">
-                        <div>
+                        <a class="back-btn" href="/" title="Back to PasteBOM" aria-label="Back to PasteBOM">{"\u{2039}"}</a>
+                        <div class="sidebar-header-titles">
                             <div class="sidebar-title">{
                                 if let Some(ref name) = *upload_filename {
                                     name.clone()

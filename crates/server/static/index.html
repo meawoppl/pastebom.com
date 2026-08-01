@@ -147,37 +147,66 @@
             font-size: 1.1rem;
             margin: 0 0 1rem 0;
         }
-        .public-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.85rem;
+        .paste-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
         }
-        .public-table th {
-            text-align: left;
-            color: #888;
-            font-weight: 500;
-            padding: 0.5rem 0.5rem;
-            border-bottom: 1px solid #2a2a4e;
-        }
-        .public-table td {
-            padding: 0.5rem 0.5rem;
-            border-bottom: 1px solid #2a2a4e;
-        }
-        .public-table tr:last-child td { border-bottom: none; }
-        .public-table td a {
-            color: #4ecca3;
-            text-decoration: none;
+        .paste-card {
+            position: relative;
             display: block;
-            max-width: 300px;
+            aspect-ratio: 4 / 3;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #0f1626;
+            border: 1px solid #2a2a4e;
+            text-decoration: none;
+            transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+        }
+        .paste-card:hover {
+            transform: translateY(-2px);
+            border-color: #4ecca3;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+        }
+        .paste-card-thumb {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            padding: 10px;
+            opacity: 0.4;
+            transition: opacity 0.15s;
+        }
+        .paste-card:hover .paste-card-thumb { opacity: 0.7; }
+        .paste-card-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 0.75rem;
+            background: linear-gradient(to top,
+                rgba(15, 22, 38, 0.95) 0%,
+                rgba(15, 22, 38, 0.6) 38%,
+                rgba(15, 22, 38, 0.1) 68%,
+                rgba(15, 22, 38, 0) 100%);
+        }
+        .paste-card-name {
+            color: #eee;
+            font-weight: 600;
+            font-size: 0.9rem;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .public-table td a:hover { text-decoration: underline; }
-        .public-table .num { text-align: right; color: #aaa; }
-        .public-table .age { color: #666; white-space: nowrap; }
-        .thumb-cell { width: 60px; padding: 0.25rem 0.5rem; }
-        .thumb-img { width: 56px; height: auto; border-radius: 4px; border: 1px solid #2a2a4e; vertical-align: middle; }
+        .paste-card:hover .paste-card-name { color: #7effc3; }
+        .paste-card-meta {
+            color: #9aa8bf;
+            font-size: 0.75rem;
+            margin-top: 0.3rem;
+        }
     </style>
 </head>
 <body>
@@ -294,32 +323,23 @@
                 const resp = await fetch('/api/recent');
                 const entries = await resp.json();
                 if (!entries.length) { recentEl.innerHTML = ''; return; }
-                const rows = entries.map(e => {
+                const cards = entries.map(e => {
                     const ago = timeAgo(e.created);
                     const size = e.file_size != null ? formatSize(e.file_size) : '';
                     const fmt = detectFormat(e.filename);
-                    return `<tr>
-                        <td class="thumb-cell"><a href="/b/${e.id}" target="_blank"><img src="/b/${e.id}/thumb.svg" class="thumb-img" loading="lazy" alt=""></a></td>
-                        <td><a href="/b/${e.id}" target="_blank">${e.filename}</a></td>
-                        <td>${fmt}</td>
-                        <td class="num">${e.components}</td>
-                        <td class="num">${size}</td>
-                        <td class="age">${ago}</td>
-                    </tr>`;
+                    const meta = [fmt, e.components != null ? `${e.components} comps` : '', size, ago]
+                        .filter(Boolean).join(' · ');
+                    return `<a class="paste-card" href="/b/${e.id}" target="_blank">
+                        <img class="paste-card-thumb" src="/b/${e.id}/thumb.svg" loading="lazy" alt="">
+                        <div class="paste-card-overlay">
+                            <div class="paste-card-name">${e.filename}</div>
+                            <div class="paste-card-meta">${meta}</div>
+                        </div>
+                    </a>`;
                 }).join('');
                 recentEl.innerHTML = `
                     <h2>Public Pastes</h2>
-                    <table class="public-table">
-                        <thead><tr>
-                            <th></th>
-                            <th>Name</th>
-                            <th>Format</th>
-                            <th class="num">Components</th>
-                            <th class="num">Size</th>
-                            <th>Age</th>
-                        </tr></thead>
-                        <tbody>${rows}</tbody>
-                    </table>`;
+                    <div class="paste-grid">${cards}</div>`;
             } catch { recentEl.innerHTML = ''; }
         }
         loadRecent();
