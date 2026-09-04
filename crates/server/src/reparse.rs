@@ -129,10 +129,8 @@ pub async fn reparse_stale_boards(s3: S3Client) {
         tokio::task::yield_now().await;
     }
 
-    if reparsed > 0 || failed > 0 {
-        tracing::info!(
-            "Reparse complete: {reparsed} updated, {skipped} skipped (no upload), {failed} failed"
-        );
+    if reparsed > 0 || failed > 0 || skipped > 0 {
+        tracing::info!("Reparse complete: {reparsed} updated, {skipped} skipped, {failed} failed");
     }
 }
 
@@ -161,7 +159,7 @@ async fn check_and_reparse(
             "reparse: [{pos}/{total}] board={id} skipped: bom json {bom_size} bytes exceeds {max_bom_bytes} byte probe limit"
         );
         let _ = std::io::stdout().flush();
-        return ReparseResult::Current;
+        return ReparseResult::Skipped(format!("bom too large ({bom_size} bytes)"));
     }
 
     // Load just the parser_version field
@@ -177,7 +175,7 @@ async fn check_and_reparse(
 
     // Skip formats no longer supported on the site
     if probe.format == Some(pcb_extract::PcbFormat::Gdsii) {
-        return ReparseResult::Current;
+        return ReparseResult::Skipped("unsupported format (gdsii)".into());
     }
 
     if probe.parser_version.as_deref() == Some(CURRENT_VERSION) {
@@ -213,7 +211,7 @@ async fn check_and_reparse(
     // field, so the probe check above can't catch them; detect by upload extension and
     // skip before attempting a parse that detect_format would only drop anyway.
     if is_unsupported_upload(&filename) {
-        return ReparseResult::Current;
+        return ReparseResult::Skipped("unsupported format (gdsii upload)".into());
     }
 
     // Emit + flush a per-board start line and persist a progress marker BEFORE the
