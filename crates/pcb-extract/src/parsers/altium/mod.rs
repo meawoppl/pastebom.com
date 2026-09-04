@@ -213,10 +213,8 @@ fn parse_wide_strings<R: Read + Seek>(
         if offset + byte_len > data.len() {
             break;
         }
-        let utf16: Vec<u16> = data[offset..offset + byte_len]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let (pairs, _) = data[offset..offset + byte_len].as_chunks::<2>();
+        let utf16: Vec<u16> = pairs.iter().map(|&c| u16::from_le_bytes(c)).collect();
         strings.insert(id, String::from_utf16_lossy(&utf16));
         offset += byte_len;
     }
