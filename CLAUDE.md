@@ -65,6 +65,8 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 | `S3_PREFIX` | — | Key prefix for S3 objects |
 | `MAX_UPLOAD_SIZE` | `52428800` (50 MB) | Max upload size in bytes |
 | `MAX_CONCURRENT_PARSES` | `4` | Max simultaneous PCB parse operations |
+| `MAX_REPARSE_BOM_SIZE` | `268435456` (256 MB) | Max bom JSON size the startup reparse scan will probe; larger records are skipped to avoid OOM |
+| `SKIP_REPARSE` / `DISABLE_REPARSE` | — | When truthy, skip the startup reparse scan entirely |
 | `BASE_URL` | `http://localhost:8000` | Base URL for generated links |
 
 ## Code Style Guidelines

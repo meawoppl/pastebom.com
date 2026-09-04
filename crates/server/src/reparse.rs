@@ -9,11 +9,20 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// board's memory-spiking work so that, after a SIGKILL/OOM, it names the offender.
 const PROGRESS_KEY: &str = "reparse_progress";
 
-/// Skip probing any bom JSON larger than this. The probe reads the whole object into
-/// memory to extract two fields, so a pathological legacy artifact (e.g. a 4.3 MB GDS
-/// that expanded to 1.2 GB of JSON) would OOM-kill the container. A real PCB bom is at
-/// most a few MB, so this only ever rejects degenerate records.
-const MAX_REPARSE_BOM_BYTES: u64 = 256 * 1024 * 1024;
+/// Default cap on the bom JSON size the reparse probe will read. The probe pulls the
+/// whole object into memory to extract two fields, so a pathological legacy artifact
+/// (e.g. a 4.3 MB GDS that expanded to 1.2 GB of JSON) would OOM-kill the container. A
+/// real PCB bom is at most a few MB, so this only ever rejects degenerate records.
+/// Overridable via `MAX_REPARSE_BOM_SIZE` (bytes) to tune against the container limit.
+const DEFAULT_MAX_REPARSE_BOM_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The active bom-size cap, from `MAX_REPARSE_BOM_SIZE` or the default.
+fn max_reparse_bom_bytes() -> u64 {
+    std::env::var("MAX_REPARSE_BOM_SIZE")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_MAX_REPARSE_BOM_BYTES)
+}
 
 /// A lightweight struct to check parser_version/format without deserializing full PcbData.
 #[derive(serde::Deserialize)]
@@ -93,8 +102,9 @@ pub async fn reparse_stale_boards(s3: S3Client) {
     boms.sort_by(|a, b| a.0.cmp(&b.0));
 
     let total = boms.len();
+    let max_bom_bytes = max_reparse_bom_bytes();
     tracing::info!(
-        "Reparse scan: checking {total} boards against parser v{CURRENT_VERSION} (ascending board-id order)"
+        "Reparse scan: checking {total} boards against parser v{CURRENT_VERSION} (ascending board-id order, bom probe cap {max_bom_bytes} bytes)"
     );
 
     let mut reparsed = 0;
@@ -102,7 +112,7 @@ pub async fn reparse_stale_boards(s3: S3Client) {
     let mut failed = 0;
 
     for (idx, (id, bom_size)) in boms.iter().enumerate() {
-        match check_and_reparse(&s3, id, *bom_size, idx + 1, total).await {
+        match check_and_reparse(&s3, id, *bom_size, max_bom_bytes, idx + 1, total).await {
             ReparseResult::Current => {}
             ReparseResult::Reparsed => reparsed += 1,
             ReparseResult::Skipped(reason) => {
@@ -119,10 +129,8 @@ pub async fn reparse_stale_boards(s3: S3Client) {
         tokio::task::yield_now().await;
     }
 
-    if reparsed > 0 || failed > 0 {
-        tracing::info!(
-            "Reparse complete: {reparsed} updated, {skipped} skipped (no upload), {failed} failed"
-        );
+    if reparsed > 0 || failed > 0 || skipped > 0 {
+        tracing::info!("Reparse complete: {reparsed} updated, {skipped} skipped, {failed} failed");
     }
 }
 
@@ -137,6 +145,7 @@ async fn check_and_reparse(
     s3: &S3Client,
     id: &str,
     bom_size: u64,
+    max_bom_bytes: u64,
     pos: usize,
     total: usize,
 ) -> ReparseResult {
@@ -145,12 +154,12 @@ async fn check_and_reparse(
     // Guard the probe download: reading a multi-gigabyte bom into memory to check two
     // fields OOM-kills the container. Skip (and name it in the log, flushed) before any
     // large read so a single pathological artifact can't take the process down.
-    if bom_size > MAX_REPARSE_BOM_BYTES {
+    if bom_size > max_bom_bytes {
         tracing::warn!(
-            "reparse: [{pos}/{total}] board={id} skipped: bom json {bom_size} bytes exceeds {MAX_REPARSE_BOM_BYTES} byte probe limit"
+            "reparse: [{pos}/{total}] board={id} skipped: bom json {bom_size} bytes exceeds {max_bom_bytes} byte probe limit"
         );
         let _ = std::io::stdout().flush();
-        return ReparseResult::Current;
+        return ReparseResult::Skipped(format!("bom too large ({bom_size} bytes)"));
     }
 
     // Load just the parser_version field
@@ -166,7 +175,7 @@ async fn check_and_reparse(
 
     // Skip formats no longer supported on the site
     if probe.format == Some(pcb_extract::PcbFormat::Gdsii) {
-        return ReparseResult::Current;
+        return ReparseResult::Skipped("unsupported format (gdsii)".into());
     }
 
     if probe.parser_version.as_deref() == Some(CURRENT_VERSION) {
@@ -202,7 +211,7 @@ async fn check_and_reparse(
     // field, so the probe check above can't catch them; detect by upload extension and
     // skip before attempting a parse that detect_format would only drop anyway.
     if is_unsupported_upload(&filename) {
-        return ReparseResult::Current;
+        return ReparseResult::Skipped("unsupported format (gdsii upload)".into());
     }
 
     // Emit + flush a per-board start line and persist a progress marker BEFORE the
@@ -294,7 +303,8 @@ mod tests {
     #[test]
     fn size_guard_rejects_only_degenerate_boms() {
         // A real PCB bom (a few MB) is probed; a 1.23 GB legacy GDSII artifact is not.
-        assert!(5 * 1024 * 1024 <= MAX_REPARSE_BOM_BYTES);
-        assert!(1_291_972_963 > MAX_REPARSE_BOM_BYTES);
+        let cap = max_reparse_bom_bytes();
+        assert!(5 * 1024 * 1024 <= cap);
+        assert!(1_291_972_963 > cap);
     }
 }
