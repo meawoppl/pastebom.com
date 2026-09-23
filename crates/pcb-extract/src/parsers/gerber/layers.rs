@@ -16,6 +16,9 @@ pub enum GerberLayerType {
     SolderPasteBottom,
     BoardOutline,
     Drills,
+    /// A declared non-fabrication layer: documentation, courtyard, fab/assembly
+    /// drawings, adhesive, user layers.
+    Other,
     Unknown,
 }
 
@@ -29,6 +32,7 @@ pub enum LayerFunction {
     SolderPaste,
     Outline,
     Drill,
+    Other,
     Unknown,
 }
 
@@ -50,6 +54,7 @@ impl GerberLayerType {
             Self::SolderPasteTop | Self::SolderPasteBottom => LayerFunction::SolderPaste,
             Self::BoardOutline => LayerFunction::Outline,
             Self::Drills => LayerFunction::Drill,
+            Self::Other => LayerFunction::Other,
             Self::Unknown => LayerFunction::Unknown,
         }
     }
@@ -64,7 +69,7 @@ impl GerberLayerType {
             | Self::SolderMaskBottom
             | Self::SolderPasteBottom => Some(LayerSide::Bottom),
             Self::CopperInner(_) => Some(LayerSide::Inner),
-            Self::BoardOutline | Self::Drills | Self::Unknown => None,
+            Self::BoardOutline | Self::Drills | Self::Other | Self::Unknown => None,
         }
     }
 
@@ -84,7 +89,7 @@ impl GerberLayerType {
             Self::SolderMaskBottom => 2,
             Self::CopperBottom => 3,
             Self::CopperInner(_) => 4,
-            Self::Unknown => 5,
+            Self::Other | Self::Unknown => 5,
             Self::CopperTop => 6,
             Self::SolderMaskTop => 7,
             Self::SilkscreenTop => 8,
@@ -103,7 +108,11 @@ pub fn identify_from_x2(func: &FileFunction) -> GerberLayerType {
         } => match side {
             CopperSide::Top => GerberLayerType::CopperTop,
             CopperSide::Bottom => GerberLayerType::CopperBottom,
-            CopperSide::Inner => GerberLayerType::CopperInner(format!("In{layer_num}")),
+            // X2 numbers physical layers from the top (L1), so L2 is the first inner
+            // layer, which KiCad and Altium call In1.
+            CopperSide::Inner => {
+                GerberLayerType::CopperInner(format!("In{}", layer_num.saturating_sub(1).max(1)))
+            }
         },
         FileFunction::Legend { side } => match side {
             BoardSide::Top => GerberLayerType::SilkscreenTop,
@@ -118,7 +127,14 @@ pub fn identify_from_x2(func: &FileFunction) -> GerberLayerType {
             BoardSide::Bottom => GerberLayerType::SolderPasteBottom,
         },
         FileFunction::Profile => GerberLayerType::BoardOutline,
-        FileFunction::Other(_) => GerberLayerType::Unknown,
+        FileFunction::Other(function) => match function.as_str() {
+            "" => GerberLayerType::Unknown,
+            // Drill and rout data written as Gerber.
+            "Plated" | "NonPlated" => GerberLayerType::Drills,
+            // Any other declared function (Other, Glue, AssemblyDrawing, Keep-out, ...)
+            // is documentation rather than fabrication artwork.
+            _ => GerberLayerType::Other,
+        },
     }
 }
 
@@ -211,6 +227,21 @@ pub fn identify_from_filename(filename: &str) -> GerberLayerType {
     {
         return GerberLayerType::BoardOutline;
     }
+    // KiCad documentation layers: courtyard, fab, adhesive, margin, user drawings.
+    const KICAD_NON_FAB: [&str; 9] = [
+        "courtyard",
+        "crtyd",
+        "_fab",
+        ".fab",
+        "_adhes",
+        ".adhes",
+        "margin",
+        "_user",
+        ".user",
+    ];
+    if KICAD_NON_FAB.iter().any(|p| lower.contains(p)) || lower.contains("user_") {
+        return GerberLayerType::Other;
+    }
 
     // EasyEDA naming
     if lower.contains("toplayer") {
@@ -233,33 +264,86 @@ pub fn identify_from_filename(filename: &str) -> GerberLayerType {
     }
 
     // Generic patterns
-    if lower.contains("top") && lower.contains("copper") {
-        return GerberLayerType::CopperTop;
-    }
-    if lower.contains("bottom") && lower.contains("copper") {
-        return GerberLayerType::CopperBottom;
-    }
-    if lower.contains("silkscreen") || lower.contains("silk") {
-        if lower.contains("top") || lower.contains("front") {
-            return GerberLayerType::SilkscreenTop;
-        }
-        if lower.contains("bottom") || lower.contains("back") {
-            return GerberLayerType::SilkscreenBottom;
+    let side = name_side(&lower);
+    if lower.contains("copper") {
+        match side {
+            Some(LayerSide::Top) => return GerberLayerType::CopperTop,
+            Some(LayerSide::Bottom) => return GerberLayerType::CopperBottom,
+            _ => {}
         }
     }
-    if lower.contains("soldermask") || (lower.contains("solder") && lower.contains("mask")) {
-        if lower.contains("top") || lower.contains("front") {
-            return GerberLayerType::SolderMaskTop;
+    let by_side = |top, bottom| match side {
+        Some(LayerSide::Top) => Some(top),
+        Some(LayerSide::Bottom) => Some(bottom),
+        _ => None,
+    };
+    if lower.contains("silk") {
+        if let Some(layer) = by_side(
+            GerberLayerType::SilkscreenTop,
+            GerberLayerType::SilkscreenBottom,
+        ) {
+            return layer;
         }
-        if lower.contains("bottom") || lower.contains("back") {
-            return GerberLayerType::SolderMaskBottom;
+    }
+    if lower.contains("mask") {
+        if let Some(layer) = by_side(
+            GerberLayerType::SolderMaskTop,
+            GerberLayerType::SolderMaskBottom,
+        ) {
+            return layer;
+        }
+    }
+    if lower.contains("paste") {
+        if let Some(layer) = by_side(
+            GerberLayerType::SolderPasteTop,
+            GerberLayerType::SolderPasteBottom,
+        ) {
+            return layer;
         }
     }
     if lower.contains("outline") || lower.contains("profile") {
         return GerberLayerType::BoardOutline;
     }
+    if let Some(layer) = numbered_copper(&lower) {
+        return layer;
+    }
+    // Allegro fabrication/assembly drawings.
+    let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
+    if stem == "fab" || stem.starts_with("fabnote") || stem.starts_with("assy") {
+        return GerberLayerType::Other;
+    }
 
     GerberLayerType::Unknown
+}
+
+/// Board side named in a filename: "top"/"front" or "bottom"/"bot"/"back".
+fn name_side(lower: &str) -> Option<LayerSide> {
+    if lower.contains("top") || lower.contains("front") {
+        Some(LayerSide::Top)
+    } else if lower.contains("bot") || lower.contains("back") {
+        Some(LayerSide::Bottom)
+    } else {
+        None
+    }
+}
+
+/// Allegro-style numbered copper artwork: `l1_top.art`, `l3.art`, `l6_bottom.art`,
+/// `layer2.gbr`. L1 is the top, and unsuffixed Ln (n > 1) is inner layer In(n-1).
+fn numbered_copper(lower: &str) -> Option<GerberLayerType> {
+    let stem = lower.rsplit_once('.').map_or(lower, |(s, _)| s);
+    let rest = stem
+        .strip_prefix("layer")
+        .or_else(|| stem.strip_prefix('l'))?;
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let n: u32 = rest[..digits].parse().ok()?;
+    let suffix = rest[digits..].trim_start_matches(['_', '-']);
+    match (suffix, name_side(suffix)) {
+        (_, Some(LayerSide::Top)) => Some(GerberLayerType::CopperTop),
+        (_, Some(LayerSide::Bottom)) => Some(GerberLayerType::CopperBottom),
+        ("", _) if n == 1 => Some(GerberLayerType::CopperTop),
+        ("", _) => Some(GerberLayerType::CopperInner(format!("In{}", n - 1))),
+        _ => None,
+    }
 }
 
 /// Extract KiCad inner copper layer name (e.g., "In1_Cu" -> "In1").
@@ -310,10 +394,70 @@ mod tests {
             layer_num: 3,
             side: CopperSide::Inner,
         };
+        // Physical layer 3 is the second inner layer.
         assert_eq!(
             identify_from_x2(&func),
-            GerberLayerType::CopperInner("In3".into())
+            GerberLayerType::CopperInner("In2".into())
         );
+    }
+
+    #[test]
+    fn test_x2_other_functions() {
+        for f in ["Other", "Glue", "AssemblyDrawing", "Drillmap"] {
+            assert_eq!(
+                identify_from_x2(&FileFunction::Other(f.into())),
+                GerberLayerType::Other,
+                "{f}"
+            );
+        }
+        for f in ["Plated", "NonPlated"] {
+            assert_eq!(
+                identify_from_x2(&FileFunction::Other(f.into())),
+                GerberLayerType::Drills
+            );
+        }
+        assert_eq!(
+            identify_from_x2(&FileFunction::Other(String::new())),
+            GerberLayerType::Unknown
+        );
+    }
+
+    #[test]
+    fn test_kicad_documentation_layers() {
+        for name in [
+            "board-F_Courtyard.gbr",
+            "board-B_Fab.gbr",
+            "board-F_Adhes.gbr",
+            "board-Margin.gbr",
+            "board-User_2.gbr",
+            "board-Dwgs_User.gbr",
+        ] {
+            assert_eq!(
+                identify_from_filename(name),
+                GerberLayerType::Other,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_allegro_artwork_names() {
+        let cases = [
+            ("l1_top.art", GerberLayerType::CopperTop),
+            ("l6_bottom.art", GerberLayerType::CopperBottom),
+            ("L2.art", GerberLayerType::CopperInner("In1".into())),
+            ("l5.art", GerberLayerType::CopperInner("In4".into())),
+            ("masktop.art", GerberLayerType::SolderMaskTop),
+            ("maskbot.art", GerberLayerType::SolderMaskBottom),
+            ("silkbot2.art", GerberLayerType::SilkscreenBottom),
+            ("pastetop.art", GerberLayerType::SolderPasteTop),
+            ("fab.art", GerberLayerType::Other),
+            ("fabnotes.art", GerberLayerType::Other),
+            ("logo.art", GerberLayerType::Unknown),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(identify_from_filename(name), expected, "{name}");
+        }
     }
 
     #[test]
