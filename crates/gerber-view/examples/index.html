@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gerber-view example</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d1014; color: #d7dae0; font: 14px system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; }
+    header { display: flex; gap: 12px; align-items: center; padding: 8px 12px; }
+    #viewer { flex: 1; min-height: 0; }
+    #status { opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+</head>
+<body>
+  <header>
+    <input id="files" type="file" multiple accept=".gbr,.gtl,.gbl,.gto,.gbo,.gts,.gbs,.gtp,.gbp,.gko,.gm1,.drl,.xln,.txt,.zip,.g1,.g2,.g3,.g4">
+    <span id="status">Choose Gerber/drill files or a zip, drop them on the page, or pass <code>?src=url1,url2</code>.</span>
+  </header>
+  <div id="viewer"></div>
+
+  <script type="module">
+    import init, { GerberViewer } from "../pkg/gerber_view.js";
+
+    await init();
+    const viewer = new GerberViewer({ controls: true });
+    viewer.mount(document.getElementById("viewer"));
+
+    const status = document.getElementById("status");
+    viewer.onChange((project) => {
+      const warn = project.warnings.length ? ` · ${project.warnings.length} warning(s)` : "";
+      status.textContent = `${project.layers.length} layer(s)${warn}`;
+      status.title = project.warnings.join("\n");
+    });
+
+    async function show(sources) {
+      const project = await viewer.setSources(sources);
+      console.log("gerber-view project", project);
+      window.gerberProject = project;
+    }
+
+    document.getElementById("files").addEventListener("change", (e) => show(e.target.files));
+    document.addEventListener("dragover", (e) => e.preventDefault());
+    document.addEventListener("drop", (e) => {
+      e.preventDefault();
+      show(e.dataTransfer.files);
+    });
+
+    const src = new URLSearchParams(location.search).get("src");
+    if (src) {
+      show(src.split(",").map((url) => ({ url })));
+    }
+    window.viewer = viewer;
+  </script>
+</body>
+</html>

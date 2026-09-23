@@ -1,0 +1,19 @@
+[package]
+name = "gerber-view"
+version.workspace = true
+edition = "2021"
+description = "Embeddable, framework-neutral Gerber/Excellon viewer compiled to WebAssembly"
+repository = "https://github.com/meawoppl/pastebom.com"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+js-sys = "0.3"
+pcb-extract = { path = "../pcb-extract", default-features = false }
+serde = { workspace = true, features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+serde_json.workspace = true
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlInputElement", "CanvasRenderingContext2d", "Path2d", "CanvasWindingRule", "CssStyleDeclaration", "DomRect", "PointerEvent", "WheelEvent", "MouseEvent", "Event", "EventTarget", "AddEventListenerOptions", "Blob", "File", "FileList", "Response", "Node", "console"] }
