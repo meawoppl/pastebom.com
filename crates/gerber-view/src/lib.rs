@@ -20,6 +20,7 @@ mod style;
 mod view;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use js_sys::{Array, Function, Promise, Reflect};
@@ -40,8 +41,14 @@ use crate::scene::{paint_order, LayerPaths};
 use crate::style::{layer_label, LayerStyle, DEFAULT_BACKGROUND};
 use crate::view::View;
 
-/// Wheel delta (in pixels) that zooms by a factor of e.
-const WHEEL_ZOOM_PIXELS: f64 = 650.0;
+/// Ctrl+wheel delta (in pixels) that zooms by a factor of e.
+const WHEEL_ZOOM_PIXELS: f64 = 400.0;
+
+/// Boards whose full render takes longer than this preview pan/zoom from a snapshot.
+const FRAME_BUDGET_MS: f64 = 12.0;
+
+/// Quiet period after the last pan/zoom before a heavy board is re-rendered sharply.
+const IDLE_RENDER_DELAY_MS: i32 = 150;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -66,15 +73,46 @@ impl Default for Options {
 
 struct Layer {
     layer: GerberLayer,
+    /// Label from the layer's kind alone, e.g. "Top copper".
+    kind_label: String,
+    /// Displayed label: `kind_label`, plus the file name when several layers share it.
     label: String,
     style: LayerStyle,
     paths: LayerPaths,
 }
 
 impl Layer {
-    /// Match on the full source name or the human-readable label ("Top copper").
+    /// Match on the full source name, the displayed label, or the kind label
+    /// ("Top copper" matches every top copper layer).
     fn matches(&self, key: &str) -> bool {
-        self.layer.name == key || self.label.eq_ignore_ascii_case(key)
+        self.layer.name == key
+            || self.label.eq_ignore_ascii_case(key)
+            || self.kind_label.eq_ignore_ascii_case(key)
+    }
+}
+
+/// Give layers that share a kind label a file-name suffix so they can be told apart.
+fn disambiguate_labels(layers: &mut [Layer]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for layer in layers.iter() {
+        *counts.entry(layer.kind_label.clone()).or_default() += 1;
+    }
+    for layer in layers.iter_mut() {
+        layer.label = if counts[&layer.kind_label] > 1 {
+            let file = layer
+                .layer
+                .name
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or_default();
+            if file == layer.kind_label {
+                file.to_string()
+            } else {
+                format!("{} ({file})", layer.kind_label)
+            }
+        } else {
+            layer.kind_label.clone()
+        };
     }
 }
 
@@ -90,6 +128,17 @@ struct Dom {
     listeners: Vec<(EventTarget, &'static str, Listener)>,
     resize_observer: Option<JsValue>,
     resize_callback: Option<Closure<dyn FnMut()>>,
+    /// Copy of the last full-quality frame and the view it was drawn with. Boards
+    /// too heavy to redraw every frame pan and zoom by transforming this copy.
+    snapshot: HtmlCanvasElement,
+    snapshot_ctx: CanvasRenderingContext2d,
+    snapshot_view: Option<View>,
+    /// Duration of the last full render, in milliseconds.
+    full_render_ms: f64,
+    frame_callback: Option<Closure<dyn FnMut()>>,
+    frame_id: Option<i32>,
+    idle_callback: Option<Closure<dyn FnMut()>>,
+    idle_id: Option<i32>,
     /// Canvas size in CSS pixels.
     width: f64,
     height: f64,
@@ -124,6 +173,14 @@ impl Dom {
         if let Some(observer) = &self.resize_observer {
             let _ = call_method(observer, "disconnect", &[]);
         }
+        if let Some(window) = web_sys::window() {
+            if let Some(id) = self.frame_id {
+                let _ = window.cancel_animation_frame(id);
+            }
+            if let Some(id) = self.idle_id {
+                window.clear_timeout_with_handle(id);
+            }
+        }
         self.root.remove();
     }
 }
@@ -133,6 +190,7 @@ struct Inner {
     options: Options,
     layers: Vec<Layer>,
     warnings: Vec<String>,
+    skipped: Vec<String>,
     bbox: Option<BBox>,
     view: View,
     from_bottom: bool,
@@ -141,15 +199,18 @@ struct Inner {
     /// Incremented by `setSources`/`clear` so loads from a superseded call are dropped.
     generation: u32,
     drag: Option<(i32, f64, f64)>,
+    /// The next frame must be a full render rather than a snapshot preview.
+    needs_full_render: bool,
     on_change: Option<Function>,
     dom: Option<Dom>,
 }
 
 impl Inner {
     fn add_source(&mut self, name: &str, data: &[u8]) {
-        let (layers, warnings) = parse_source(name, data);
-        self.warnings.extend(warnings);
-        for layer in layers {
+        let parsed = parse_source(name, data);
+        self.warnings.extend(parsed.warnings);
+        self.skipped.extend(parsed.skipped);
+        for layer in parsed.layers {
             let paths = match LayerPaths::build(&layer) {
                 Ok(paths) => paths,
                 Err(e) => {
@@ -162,16 +223,19 @@ impl Inner {
             let pos = self
                 .layers
                 .partition_point(|l| l.layer.layer_type.stack_order() <= order);
+            let kind_label = layer_label(&layer.layer_type, &layer.name);
             self.layers.insert(
                 pos,
                 Layer {
-                    label: layer_label(&layer.layer_type),
+                    label: kind_label.clone(),
+                    kind_label,
                     style: LayerStyle::default_for(&layer.layer_type, &self.options.background),
                     paths,
                     layer,
                 },
             );
         }
+        disambiguate_labels(&mut self.layers);
         self.bbox = board_bbox(self.layers.iter().map(|l| &l.layer));
         self.refresh();
     }
@@ -179,6 +243,7 @@ impl Inner {
     fn clear(&mut self) {
         self.layers.clear();
         self.warnings.clear();
+        self.skipped.clear();
         self.bbox = None;
         self.auto_fit = true;
         self.generation = self.generation.wrapping_add(1);
@@ -202,10 +267,11 @@ impl Inner {
         dom.height = height;
         dom.dpr = dpr;
         let (bw, bh) = ((width * dpr).round() as u32, (height * dpr).round() as u32);
-        for canvas in [&dom.canvas, &dom.scratch] {
+        for canvas in [&dom.canvas, &dom.scratch, &dom.snapshot] {
             canvas.set_width(bw);
             canvas.set_height(bh);
         }
+        dom.snapshot_view = None;
     }
 
     fn fit(&mut self) {
@@ -228,17 +294,134 @@ impl Inner {
         if self.auto_fit {
             self.fit();
         }
-        self.render();
+        self.invalidate();
         self.update_panel();
     }
 
-    fn render(&self) {
-        if let Err(e) = self.try_render() {
+    /// Content or styling changed: schedule a full-quality render.
+    fn invalidate(&mut self) {
+        self.needs_full_render = true;
+        self.schedule_frame();
+    }
+
+    /// The view moved interactively. Heavy boards preview by transforming the last
+    /// full frame and re-render at full quality once interaction pauses.
+    fn view_changed(&mut self) {
+        let can_preview = self.dom.as_ref().is_some_and(|d| {
+            d.full_render_ms > FRAME_BUDGET_MS
+                && d.snapshot_view
+                    .is_some_and(|v| v.mirrored == self.view.mirrored)
+        });
+        if can_preview {
+            self.schedule_frame();
+            self.schedule_idle_render();
+        } else {
+            self.invalidate();
+        }
+    }
+
+    fn schedule_frame(&mut self) {
+        let Some(dom) = self.dom.as_mut() else {
+            return;
+        };
+        if dom.frame_id.is_some() {
+            return;
+        }
+        if let (Some(window), Some(callback)) = (web_sys::window(), &dom.frame_callback) {
+            dom.frame_id = window
+                .request_animation_frame(callback.as_ref().unchecked_ref())
+                .ok();
+        }
+    }
+
+    fn schedule_idle_render(&mut self) {
+        let Some(dom) = self.dom.as_mut() else {
+            return;
+        };
+        let (Some(window), Some(callback)) = (web_sys::window(), &dom.idle_callback) else {
+            return;
+        };
+        if let Some(id) = dom.idle_id.take() {
+            window.clear_timeout_with_handle(id);
+        }
+        dom.idle_id = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.as_ref().unchecked_ref(),
+                IDLE_RENDER_DELAY_MS,
+            )
+            .ok();
+    }
+
+    fn on_idle(&mut self) {
+        if let Some(dom) = self.dom.as_mut() {
+            dom.idle_id = None;
+        }
+        self.invalidate();
+    }
+
+    fn on_frame(&mut self) {
+        let full = self.needs_full_render;
+        let Some(dom) = self.dom.as_mut() else {
+            return;
+        };
+        dom.frame_id = None;
+        let result = if full || dom.snapshot_view.is_none() {
+            self.needs_full_render = false;
+            self.render_full()
+        } else {
+            self.render_preview()
+        };
+        if let Err(e) = result {
             web_sys::console::error_2(&"gerber-view: render failed".into(), &e);
         }
     }
 
-    fn try_render(&self) -> Result<(), JsValue> {
+    /// Draw the last full frame, scaled and shifted from its view to the current one.
+    fn render_preview(&self) -> Result<(), JsValue> {
+        let Some(dom) = &self.dom else {
+            return Ok(());
+        };
+        let Some(snap) = dom.snapshot_view else {
+            return Ok(());
+        };
+        let (w, h) = (
+            f64::from(dom.canvas.width()),
+            f64::from(dom.canvas.height()),
+        );
+        // A board point at snapshot screen position p lands at (p - t_snap) * k + t.
+        let k = self.view.scale / snap.scale;
+        let dx = (self.view.tx - snap.tx * k) * dom.dpr;
+        let dy = (self.view.ty - snap.ty * k) * dom.dpr;
+
+        let ctx = &dom.ctx;
+        ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)?;
+        ctx.set_global_alpha(1.0);
+        ctx.set_fill_style_str(&self.options.background);
+        ctx.fill_rect(0.0, 0.0, w, h);
+        ctx.draw_image_with_html_canvas_element_and_dw_and_dh(&dom.snapshot, dx, dy, w * k, h * k)
+    }
+
+    fn render_full(&mut self) -> Result<(), JsValue> {
+        let started = js_sys::Date::now();
+        self.draw_layers()?;
+        let view = self.view;
+        let Some(dom) = self.dom.as_mut() else {
+            return Ok(());
+        };
+        dom.snapshot_ctx.clear_rect(
+            0.0,
+            0.0,
+            f64::from(dom.snapshot.width()),
+            f64::from(dom.snapshot.height()),
+        );
+        dom.snapshot_ctx
+            .draw_image_with_html_canvas_element(&dom.canvas, 0.0, 0.0)?;
+        dom.snapshot_view = Some(view);
+        dom.full_render_ms = js_sys::Date::now() - started;
+        Ok(())
+    }
+
+    fn draw_layers(&self) -> Result<(), JsValue> {
         let Some(dom) = &self.dom else {
             return Ok(());
         };
@@ -300,7 +483,7 @@ impl Inner {
             found = true;
         }
         if found {
-            self.render();
+            self.invalidate();
             self.update_panel();
         }
         found
@@ -327,6 +510,7 @@ impl Inner {
                 .collect(),
             bbox: self.bbox.as_ref(),
             warnings: &self.warnings,
+            skipped: &self.skipped,
             side: if self.from_bottom { "bottom" } else { "top" },
         };
         Ok(summary.serialize(&Serializer::json_compatible())?)
@@ -339,6 +523,7 @@ struct ProjectSummary<'a> {
     layers: Vec<LayerSummary<'a>>,
     bbox: Option<&'a BBox>,
     warnings: &'a [String],
+    skipped: &'a [String],
     side: &'static str,
 }
 
@@ -432,6 +617,7 @@ impl GerberViewer {
             .set_css_text("display:block;width:100%;height:100%;touch-action:none;cursor:grab;");
         root.append_child(&canvas)?;
         let scratch: HtmlCanvasElement = create("canvas")?.dyn_into()?;
+        let snapshot: HtmlCanvasElement = create("canvas")?.dyn_into()?;
 
         let panel = if self.inner.borrow().options.controls {
             let panel = create("div")?;
@@ -449,12 +635,26 @@ impl GerberViewer {
                 .ok_or("canvas 2d context unavailable")?
                 .dyn_into()?)
         };
+        let weak_frame = Rc::downgrade(&self.inner);
+        let weak_idle = Rc::downgrade(&self.inner);
         let mut dom = Dom {
             ctx: context(&canvas)?,
             scratch_ctx: context(&scratch)?,
+            snapshot_ctx: context(&snapshot)?,
             root,
             canvas,
             scratch,
+            snapshot,
+            snapshot_view: None,
+            full_render_ms: 0.0,
+            frame_callback: Some(Closure::new(move || {
+                with_state(&weak_frame, Inner::on_frame);
+            })),
+            frame_id: None,
+            idle_callback: Some(Closure::new(move || {
+                with_state(&weak_idle, Inner::on_idle);
+            })),
+            idle_id: None,
             panel,
             listeners: Vec::new(),
             resize_observer: None,
@@ -489,7 +689,7 @@ impl GerberViewer {
         self.load(sources)
     }
 
-    /// Remove all layers and warnings. Pending loads from earlier calls are discarded.
+    /// Remove all layers and diagnostics. Pending loads from earlier calls are discarded.
     pub fn clear(&self) {
         self.inner.borrow_mut().clear();
         notify(&self.inner);
@@ -556,7 +756,8 @@ impl GerberViewer {
     }
 
     /// Summary of the loaded project: layers (name, label, function, side, colour,
-    /// visibility, counts, bbox), board bbox in millimetres, warnings, and view side.
+    /// visibility, counts, bbox), board bbox in millimetres, `warnings` (problems),
+    /// `skipped` (non-fabrication or empty files), and view side.
     pub fn project(&self) -> Result<JsValue, JsValue> {
         self.inner.borrow().summary()
     }
@@ -569,6 +770,7 @@ impl GerberViewer {
             layers: state.layers.iter().map(|l| l.layer.clone()).collect(),
             bbox: state.bbox.clone(),
             warnings: state.warnings.clone(),
+            skipped: state.skipped.clone(),
         };
         serde_json::to_string(&project).map_err(|e| e.to_string().into())
     }
@@ -664,7 +866,6 @@ impl GerberViewer {
                     f64::from(e.client_x()),
                     f64::from(e.client_y()),
                 ));
-                s.auto_fit = false;
                 if let Some(dom) = &s.dom {
                     let _ = dom.canvas.set_pointer_capture(e.pointer_id());
                     let _ = dom.canvas.style().set_property("cursor", "grabbing");
@@ -681,7 +882,8 @@ impl GerberViewer {
                         let (nx, ny) = (f64::from(e.client_x()), f64::from(e.client_y()));
                         s.view.pan(nx - x, ny - y);
                         s.drag = Some((id, nx, ny));
-                        s.render();
+                        s.auto_fit = false;
+                        s.view_changed();
                     }
                 }
             });
@@ -691,7 +893,10 @@ impl GerberViewer {
             let weak = Rc::downgrade(&self.inner);
             dom.listen(&canvas, event, true, move |_| {
                 with_state(&weak, |s| {
-                    s.drag = None;
+                    if s.drag.take().is_some() && !s.auto_fit {
+                        // Sharpen immediately rather than waiting for the idle timer.
+                        s.invalidate();
+                    }
                     if let Some(dom) = &s.dom {
                         let _ = dom.canvas.style().set_property("cursor", "grab");
                     }
@@ -709,11 +914,19 @@ impl GerberViewer {
                     WheelEvent::DOM_DELTA_PAGE => s.dom.as_ref().map_or(800.0, |d| d.height),
                     _ => 1.0,
                 };
-                let factor = (-e.delta_y() * unit / WHEEL_ZOOM_PIXELS).exp();
+                // Like the pastebom viewer: pinch (reported as ctrl+wheel) or
+                // ctrl/cmd+wheel zooms, plain wheel or two-finger scroll pans.
+                if e.ctrl_key() || e.meta_key() {
+                    let factor = (-e.delta_y() * unit / WHEEL_ZOOM_PIXELS)
+                        .exp()
+                        .clamp(0.5, 2.0);
+                    s.view
+                        .zoom_at(f64::from(e.offset_x()), f64::from(e.offset_y()), factor);
+                } else {
+                    s.view.pan(-e.delta_x() * unit, -e.delta_y() * unit);
+                }
                 s.auto_fit = false;
-                s.view
-                    .zoom_at(f64::from(e.offset_x()), f64::from(e.offset_y()), factor);
-                s.render();
+                s.view_changed();
             });
         })?;
 
@@ -745,7 +958,7 @@ impl GerberViewer {
                 let changed = with_state(&weak, |s| {
                     let layer = s.layers.get_mut(index)?;
                     layer.style.visible = input.checked();
-                    s.render();
+                    s.invalidate();
                     s.update_panel();
                     Some(())
                 });
@@ -817,7 +1030,7 @@ fn with_state<R>(weak: &Weak<RefCell<Inner>>, f: impl FnOnce(&mut Inner) -> R) -
     Some(f(&mut state))
 }
 
-/// Parse sources without rendering. Resolves with `{ layers, bbox, warnings }`, where
+/// Parse sources without rendering. Resolves with `{ layers, bbox, warnings, skipped }`, where
 /// each layer has `name`, `function`, `side`, `inner`, `drawings`, `clear_drawings`,
 /// and `bbox`. Coordinates are millimetres with Y pointing down.
 #[wasm_bindgen(js_name = parseSources)]

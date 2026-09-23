@@ -195,6 +195,81 @@ fn push_ring(ops: &mut Vec<PathOp>, ring: &[[f64; 2]], normalize: bool) {
     }
 }
 
+/// Serialise ops as SVG path data, so a browser `Path2D` can be built in one call
+/// rather than one wasm-to-JS call per segment.
+///
+/// Canvas-style arcs become SVG endpoint arcs. The pen is assumed to already sit
+/// at the arc's start point, which `compile` guarantees.
+pub fn to_svg_path(ops: &[PathOp]) -> String {
+    use std::fmt::Write;
+
+    let mut d = String::with_capacity(ops.len() * 24);
+    for op in ops {
+        // Writing to a String cannot fail.
+        let _ = match *op {
+            PathOp::MoveTo(x, y) => write!(d, "M{}", Pt(x, y)),
+            PathOp::LineTo(x, y) => write!(d, "L{}", Pt(x, y)),
+            PathOp::BezierTo { c1, c2, end } => write!(
+                d,
+                "C{} {} {}",
+                Pt(c1[0], c1[1]),
+                Pt(c2[0], c2[1]),
+                Pt(end[0], end[1])
+            ),
+            PathOp::Close => write!(d, "Z"),
+            PathOp::Arc { cx, cy, r, a0, a1 } => {
+                let at = |a: f64| Pt(cx + r * a.cos(), cy + r * a.sin());
+                let r = Num(r);
+                let sweep = arc_sweep(a0, a1);
+                if sweep >= TAU - 1e-9 {
+                    // SVG cannot draw a full circle as one arc; use two halves.
+                    write!(
+                        d,
+                        "A{r} {r} 0 0 1 {}A{r} {r} 0 0 1 {}",
+                        at(a0 + TAU / 2.0),
+                        at(a0)
+                    )
+                } else if sweep > 0.0 {
+                    let large = u8::from(sweep > TAU / 2.0);
+                    write!(d, "A{r} {r} 0 {large} 1 {}", at(a0 + sweep))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+    }
+    d
+}
+
+/// Sweep of a canvas `arc(a0, a1)` drawn with increasing angle, in `[0, 2π]`.
+fn arc_sweep(a0: f64, a1: f64) -> f64 {
+    let raw = a1 - a0;
+    if raw >= TAU {
+        TAU
+    } else {
+        raw.rem_euclid(TAU)
+    }
+}
+
+/// Coordinate formatted to 0.1 µm, which is plenty for fabrication data in mm.
+struct Num(f64);
+
+impl std::fmt::Display for Num {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let v = (self.0 * 1e4).round() / 1e4;
+        // Avoid "-0".
+        write!(f, "{}", if v == 0.0 { 0.0 } else { v })
+    }
+}
+
+struct Pt(f64, f64);
+
+impl std::fmt::Display for Pt {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} {}", Num(self.0), Num(self.1))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +361,45 @@ mod tests {
             PathOp::MoveTo(x, y) => assert!(x.abs() < 1e-9 && (y - 2.0).abs() < 1e-9),
             ref other => panic!("expected MoveTo, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn svg_path_lines_and_close() {
+        let ops = [
+            PathOp::MoveTo(0.0, -0.0),
+            PathOp::LineTo(1.23456789, 2.0),
+            PathOp::Close,
+        ];
+        assert_eq!(to_svg_path(&ops), "M0 0L1.2346 2Z");
+    }
+
+    #[test]
+    fn svg_path_full_circle_is_two_half_arcs() {
+        let mut ops = Vec::new();
+        push_circle(&mut ops, 1.0, 1.0, 0.5);
+        assert_eq!(
+            to_svg_path(&ops),
+            "M1.5 1A0.5 0.5 0 0 1 0.5 1A0.5 0.5 0 0 1 1.5 1Z"
+        );
+    }
+
+    #[test]
+    fn svg_path_partial_arcs_pick_large_flag_and_wrap() {
+        let arc = |a0: f64, a1: f64| {
+            to_svg_path(&[PathOp::Arc {
+                cx: 0.0,
+                cy: 0.0,
+                r: 1.0,
+                a0: a0.to_radians(),
+                a1: a1.to_radians(),
+            }])
+        };
+        assert_eq!(arc(0.0, 90.0), "A1 1 0 0 1 0 1");
+        assert_eq!(arc(0.0, 270.0), "A1 1 0 1 1 0 -1");
+        // Canvas semantics: 350deg -> 10deg sweeps 20deg forward, ending at 10deg.
+        let wrapped = arc(350.0, 10.0);
+        assert!(wrapped.starts_with("A1 1 0 0 1 0.9848 0.1736"), "{wrapped}");
+        assert_eq!(arc(45.0, 45.0), "");
     }
 
     #[test]

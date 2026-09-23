@@ -47,13 +47,15 @@ impl LayerStyle {
             GerberLayerType::SilkscreenBottom => Self::new("#c9c3e6", 0.8, true),
             GerberLayerType::BoardOutline => Self::new("#e8d44d", 1.0, true),
             GerberLayerType::Drills => Self::new(background, 1.0, true),
+            GerberLayerType::Other => Self::new("#9aa4b2", 0.6, false),
             GerberLayerType::Unknown => Self::new("#e5c07b", 0.6, true),
         }
     }
 }
 
-/// Short human-readable label such as "Top copper" or "In2 copper".
-pub fn layer_label(layer_type: &GerberLayerType) -> String {
+/// Short human-readable label such as "Top copper" or "In2 copper". Layers without
+/// a known fabrication function are labelled with their file name.
+pub fn layer_label(layer_type: &GerberLayerType, source_name: &str) -> String {
     let function = match layer_type.function() {
         LayerFunction::Copper => "copper",
         LayerFunction::Silkscreen => "silkscreen",
@@ -61,7 +63,13 @@ pub fn layer_label(layer_type: &GerberLayerType) -> String {
         LayerFunction::SolderPaste => "paste",
         LayerFunction::Outline => return "Board outline".to_string(),
         LayerFunction::Drill => return "Drills".to_string(),
-        LayerFunction::Unknown => return "Unknown".to_string(),
+        LayerFunction::Other | LayerFunction::Unknown => {
+            let file = source_name
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(source_name);
+            return file.to_string();
+        }
     };
     let side = match layer_type {
         GerberLayerType::CopperInner(name) => name.as_str(),
@@ -91,15 +99,18 @@ mod tests {
 
     #[test]
     fn labels() {
-        assert_eq!(layer_label(&GerberLayerType::CopperTop), "Top copper");
+        let label = |t: GerberLayerType| layer_label(&t, "fab.zip/gerbers/b.gbr");
+        assert_eq!(label(GerberLayerType::CopperTop), "Top copper");
         assert_eq!(
-            layer_label(&GerberLayerType::SilkscreenBottom),
+            label(GerberLayerType::SilkscreenBottom),
             "Bottom silkscreen"
         );
         assert_eq!(
-            layer_label(&GerberLayerType::CopperInner("In3".into())),
+            label(GerberLayerType::CopperInner("In3".into())),
             "In3 copper"
         );
-        assert_eq!(layer_label(&GerberLayerType::BoardOutline), "Board outline");
+        assert_eq!(label(GerberLayerType::BoardOutline), "Board outline");
+        assert_eq!(label(GerberLayerType::Unknown), "b.gbr");
+        assert_eq!(label(GerberLayerType::Other), "b.gbr");
     }
 }

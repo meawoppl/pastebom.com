@@ -16,8 +16,12 @@ wasm-pack build --release --target web --out-dir pkg
 TypeScript definitions (`gerber_view.d.ts`). Use `--target bundler` instead to
 consume it from webpack/Vite as an npm package.
 
-The pastebom.com server also serves a prebuilt copy at `/gerber-view/`, so
-`https://pastebom.com/gerber-view/gerber_view.js` can be vendored directly.
+Prebuilt copies are also available:
+- pastebom.com serves the bundle at `https://pastebom.com/gerber-view/pkg/`
+  (`gerber_view.js`, `gerber_view_bg.wasm`, `gerber_view.d.ts`), with CORS
+  enabled, and a demo at `https://pastebom.com/gerber-view/`.
+- Every CI run uploads a `gerber-view` artifact with `pkg/`, `examples/`, and
+  this README.
 
 ## Example
 
@@ -68,7 +72,7 @@ viewer.onChange((project) => renderMyLayerList(project.layers));
 | `setSources(sources) → Promise<Project>` | Replace all layers. Layers appear as each source loads. |
 | `addSources(sources) → Promise<Project>` | Add layers to the current set. |
 | `clear()` | Remove all layers. Pending loads from earlier calls are discarded. |
-| `setLayerVisibility(layer, visible) → bool` | `layer` is a label (`"Top copper"`) or a source name. |
+| `setLayerVisibility(layer, visible) → bool` | `layer` is a source name or a label. A kind label (`"Top copper"`) matches every layer of that kind. |
 | `setLayerColor(layer, cssColor) → bool` | |
 | `setLayerOpacity(layer, 0..1) → bool` | |
 | `setSide("top" \| "bottom")` / `side()` | The bottom view is mirrored with the stack reversed. |
@@ -80,7 +84,7 @@ viewer.onChange((project) => renderMyLayerList(project.layers));
 | `destroy()` | Unmount and drop all layers. Call `free()` afterwards to release wasm memory. |
 
 `parseSources(sources) → Promise` parses without rendering and resolves with
-`{ layers, bbox, warnings }`, including full geometry.
+`{ layers, bbox, warnings, skipped }`, including full geometry.
 
 Sources can be a single item or any iterable (Array, `FileList`). Each item is
 a `File`, `{ name, content }`, or `{ name?, url }`. URLs are loaded with
@@ -90,22 +94,30 @@ last path segment. The name matters because it is used to identify the layer
 when a file has no Gerber X2 `FileFunction` attribute. Zip archives are
 expanded, and their entries are named `archive.zip/inner/path.gbr`.
 
-A source that fails to load or parse never rejects the promise. It is reported
-in `warnings`.
+A source that fails to load or parse never rejects the promise. Diagnostics
+read `"<file>: <reason>"` and come in two severities:
+- `warnings` are problems worth showing: fetch failures, files that look like
+  Gerber but fail to parse, and layers whose function can't be identified.
+- `skipped` is informational: files that aren't fabrication data (logs, PDFs,
+  job files), and files with nothing to draw (empty paste or silkscreen
+  layers, drill files with no holes).
 
 ### Project summary
 
 ```ts
 interface Project {
   layers: Layer[];            // back-to-front stacking order
-  bbox: BBox | null;          // board outline extents, else all geometry
+  bbox: BBox | null;          // outline extents, else copper, else all geometry
   warnings: string[];
+  skipped: string[];
   side: "top" | "bottom";
 }
 interface Layer {
   name: string;               // source name
-  label: string;              // e.g. "Top copper", "In2 copper", "Drills"
-  function: "copper" | "silkscreen" | "solder_mask" | "solder_paste" | "outline" | "drill" | "unknown";
+  label: string;              // e.g. "Top copper", "In2 copper", "Drills"; the file name for
+                              // other/unknown layers; "(file)" is appended when labels collide
+  function: "copper" | "silkscreen" | "solder_mask" | "solder_paste" | "outline" | "drill"
+          | "other" | "unknown";
   side: "top" | "bottom" | "inner" | null;
   inner: string | null;       // "In1", "In2", ... for inner copper
   color: string;
@@ -122,16 +134,29 @@ Coordinates are in millimetres with Y pointing down, so Gerber Y is negated.
 
 ### Interaction
 
-Drag to pan, use the wheel to zoom about the cursor, and double-click to fit.
+Drag, scroll, or two-finger swipe to pan. Pinch, or hold ctrl/⌘ while using
+the wheel, to zoom about the cursor. This matches the main pastebom viewer.
+Double-click to fit.
 The built-in panel toggles layers and switches between the top and bottom
 views. Elements use `gv-*` class names (`gv-root`, `gv-canvas`, `gv-controls`,
 `gv-layer`, `gv-swatch`, `gv-button`) so hosts can restyle them.
 
 ### Layer detection
 
-A layer's function comes from the Gerber X2 `%TF.FileFunction%` attribute when
-present. Otherwise the filename is checked against Protel/Altium extensions
-(`.GTL`, `.GBS`, `.G1`, ...), KiCad names (`F_Cu`, `B_Mask`, `In1_Cu`,
-`Edge_Cuts`, ...), Eagle, and EasyEDA conventions. Anything else is still
-shown, as an "Unknown" layer with a warning. Solder mask and paste are hidden
-by default.
+A layer's function comes from the Gerber X2 `FileFunction` attribute when
+present. Both the `%TF...%` form and KiCad's `G04 #@! TF...` comment form are
+read. Otherwise the filename is checked against these conventions:
+- Protel/Altium extensions (`.GTL`, `.GBS`, `.G1`, ...)
+- KiCad names (`F_Cu`, `B_Mask`, `In1_Cu`, `Edge_Cuts`, ...)
+- Cadence Allegro artwork (`l1_top.art`, `l3.art`, `masktop.art`, `silkbot.art`)
+- Eagle and EasyEDA conventions
+
+Documentation layers are classified as `other` and hidden by default, with no
+warning. These are KiCad `User`/`Courtyard`/`Fab`/`Adhesive`/`Margin`,
+non-fabrication X2 functions, and Allegro `fab`/`assy` drawings. Anything else
+is still shown, as an `unknown` layer labelled with its file name and a
+warning. Solder mask and paste are hidden by default.
+
+Known gap: Altium- and Allegro-style Excellon drill files (`T1F00S00C...`
+tool definitions, modal coordinates) don't parse yet, so they appear in
+`skipped`. KiCad and Eagle drill files work.

@@ -5,7 +5,7 @@ use pcb_extract::parsers::gerber::GerberLayer;
 use wasm_bindgen::JsValue;
 use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, Path2d};
 
-use crate::geometry::{compile, CompiledPaths, PathOp};
+use crate::geometry::{compile, to_svg_path, CompiledPaths, PathOp};
 
 /// Browser-side paths for one polarity of a layer.
 pub struct Paths {
@@ -79,19 +79,7 @@ impl LayerPaths {
 }
 
 fn to_path2d(ops: &[PathOp]) -> Result<Path2d, JsValue> {
-    let path = Path2d::new()?;
-    for op in ops {
-        match *op {
-            PathOp::MoveTo(x, y) => path.move_to(x, y),
-            PathOp::LineTo(x, y) => path.line_to(x, y),
-            PathOp::Arc { cx, cy, r, a0, a1 } => path.arc(cx, cy, r.max(0.0), a0, a1)?,
-            PathOp::BezierTo { c1, c2, end } => {
-                path.bezier_curve_to(c1[0], c1[1], c2[0], c2[1], end[0], end[1])
-            }
-            PathOp::Close => path.close_path(),
-        }
-    }
-    Ok(path)
+    Path2d::new_with_path_string(&to_svg_path(ops))
 }
 
 /// Paint order for a layer. Viewed from the bottom, the stack is reversed, but
