@@ -4,10 +4,12 @@ Shareable interactive PCB BOM viewer. Upload a PCB file, get a link to an intera
 
 ## Architecture
 
-- **Cargo workspace** with three crates:
-  - `crates/pcb-extract` — PCB file parser library + CLI (KiCad, EasyEDA, Eagle, Altium)
+- **Cargo workspace** crates:
+  - `crates/pcb-extract` — PCB file parser library + CLI (KiCad, EasyEDA, Eagle, Altium, Gerber, ODB++, GDSII)
   - `crates/server` — Axum web server, handles uploads and serves viewer
   - `crates/viewer` — Yew WASM frontend, built with Trunk
+  - `crates/gds-viewer` — Yew WASM frontend for tiled GDSII, built with Trunk
+  - `crates/gerber-view` — framework-free embeddable Gerber viewer (wasm-bindgen library, built with wasm-pack, NOT Trunk). Consumed by external hosts (Backplane); keep its JS API stable and documented in its README
 - **Storage**: S3 in production, filesystem locally (`STORAGE_PATH` env var)
 - **Viewer assets**: Trunk builds to `crates/viewer/dist/`, server reads from `VIEWER_DIR`
 
@@ -60,6 +62,7 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 |---|---|---|
 | `STORAGE_PATH` | `./data` | Filesystem storage root (used when `S3_BUCKET` is not set) |
 | `VIEWER_DIR` | `crates/viewer/dist` | Path to built viewer assets |
+| `GERBER_VIEW_DIR` | `crates/gerber-view` | Dir holding the gerber-view `pkg/` bundle and `examples/`, served at `/gerber-view/` |
 | `BIND_ADDR` | `0.0.0.0:8000` | Server listen address |
 | `S3_BUCKET` | — | Enables S3 storage backend |
 | `S3_PREFIX` | — | Key prefix for S3 objects |
@@ -118,3 +121,6 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 - Viewer requires `wasm32-unknown-unknown` target and `trunk` installed
 - Server depends on `pcb-extract` as a library
 - Trunk config is at `crates/viewer/Trunk.toml` (public_url = `/viewer/`)
+- `pcb-extract` must stay wasm32-compatible (gerber-view depends on it with `default-features = false`). The CLI deps live behind the default `cli` feature, and `zip` uses only `deflate` because bzip2/lzma pull in C code. Check with `cargo check -p pcb-extract --lib --no-default-features --target wasm32-unknown-unknown`
+- Build gerber-view: `cd crates/gerber-view && wasm-pack build --release --target web --out-dir pkg`. Smoke-test it by serving the crate dir and opening `examples/index.html?src=url1,url2`. KiCad demo Gerbers live at `/usr/share/kicad/demos/tiny_tapeout/pcba/gerber/`
+- Gerber coordinates from pcb-extract are mm with Y negated (screen Y-down)

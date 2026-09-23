@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.0
+
+- Add `gerber-view`, an embeddable, framework-free Gerber/Excellon viewer compiled to WebAssembly (#271). It exposes a `GerberViewer` JS class (mount, `setSources`/`addSources` from Files, content, or URLs including zips, per-layer visibility/colour/opacity, top/bottom view, fit, `onChange`, `exportProject`) and a headless `parseSources`
+- Serve the built viewer bundle at `/gerber-view/pkg/` with a demo page at `/gerber-view/` (`GERBER_VIEW_DIR`)
+- `pcb-extract` builds for wasm32: CLI dependencies moved behind a default `cli` feature, and `zip` restricted to deflate
+- Add a per-layer Gerber API to `pcb-extract` (`GerberProject`, `parse_source`, `parse_file`, `board_bbox`), with one layer per file carrying its function, side, bounds, and warnings
+- Recognise solder paste Gerber layers (X2 `Paste`, `.GTP`/`.GBP`, `F_Paste`/`B_Paste`)
+- Read Gerber X2 attributes written as `G04 #@! TF...` comments (KiCad's default), not just `%TF...%`
+- Name X2 inner copper by physical position: `Copper,L2,Inr` is `In1`, matching KiCad/Altium, where it was previously `In2`
+- Classify KiCad documentation layers (User, Courtyard, Fab, Adhesive, Margin) and non-fabrication X2 functions as `other`, and Cadence Allegro artwork names (`l1_top.art`, `masktop.art`, `silkbot.art`, ...)
+- CI builds the viewer bundle with wasm-pack and uploads it as the `gerber-view` artifact
+
 ## 1.9.1
 
 - Add per-board reparse telemetry to identify the board that OOMs the startup scan: flushed `reparse: [i/n] board=… upload_bytes=… parser=old->new` start line and `… done rss=…MB parsed_bytes=…` completion line

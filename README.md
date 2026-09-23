@@ -33,14 +33,20 @@ auto-detected for web upload.
 
 ## Architecture
 
-Cargo workspace with three crates:
+Cargo workspace:
 
 ```
 crates/
 ├── pcb-extract/    Parser library + CLI. Reads PCB files, outputs JSON.
 ├── server/         Axum web server. Handles uploads, serves viewer.
-└── viewer/         Yew WASM frontend. Canvas-based board rendering.
+├── viewer/         Yew WASM frontend. Canvas-based board rendering.
+├── gds-viewer/     Yew WASM frontend for tiled GDSII layouts.
+└── gerber-view/    Embeddable, framework-free Gerber viewer (wasm-bindgen).
 ```
+
+`gerber-view` lets other sites reuse pastebom's Gerber parsing and rendering
+without the app shell. See [`crates/gerber-view/README.md`](crates/gerber-view/README.md).
+A built copy is served at `/gerber-view/pkg/`, with a demo at `/gerber-view/`.
 
 **Upload flow:** Browser POST `/upload` → server detects format from extension → `pcb-extract` parses to intermediate types → serialized to JSON → stored with UUID → returns viewer URL.
 
@@ -80,6 +86,7 @@ STORAGE_PATH=./localdata cargo run -p pastebom-server
 | `GET` | `/b/{id}/data` | Parsed PCB data (JSON) |
 | `GET` | `/b/{id}/meta` | Upload metadata |
 | `GET` | `/b/{id}/thumb.svg` | SVG thumbnail of the board |
+| `GET` | `/gerber-view/` | Embeddable Gerber viewer demo; bundle under `/gerber-view/pkg/` |
 | `GET` | `/health` | Health check (reports version) |
 
 ## Environment Variables
@@ -88,6 +95,7 @@ STORAGE_PATH=./localdata cargo run -p pastebom-server
 |----------|---------|-------------|
 | `BIND_ADDR` | `0.0.0.0:8000` | Server listen address |
 | `VIEWER_DIR` | `crates/viewer/dist` | Path to built WASM assets |
+| `GERBER_VIEW_DIR` | `crates/gerber-view` | Directory with the `gerber-view` `pkg/` bundle and `examples/` |
 | `STORAGE_PATH` | `./data` | Filesystem storage root (when S3 is not configured) |
 | `S3_BUCKET` | — | S3 bucket name; enables S3 backend when set |
 | `S3_PREFIX` | — | Key prefix for S3 objects |
@@ -105,4 +113,5 @@ cargo build                                          # build all crates
 cargo test                                           # run tests
 cargo clippy -- -W clippy::all                       # lint
 cd crates/viewer && trunk build --release            # build WASM
+cd crates/gerber-view && wasm-pack build --release --target web --out-dir pkg   # embeddable viewer
 ```
