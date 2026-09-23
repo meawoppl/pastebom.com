@@ -8,7 +8,9 @@ pub mod lexer;
 pub mod macros;
 
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
+
+use serde::Serialize;
 
 use crate::error::ExtractError;
 use crate::types::*;
@@ -16,7 +18,7 @@ use crate::ExtractOptions;
 
 use self::commands::GerberCommand;
 use self::interpreter::GerberLayerOutput;
-use self::layers::GerberLayerType;
+use self::layers::{GerberLayerType, LayerFunction, LayerSide};
 
 /// Parse a zip file containing Gerber files into PcbData.
 pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
@@ -28,60 +30,14 @@ fn parse_with_limit(
     opts: &ExtractOptions,
     max_decompressed: u64,
 ) -> Result<PcbData, ExtractError> {
-    let cursor = Cursor::new(data);
-    let mut archive = zip::ZipArchive::new(cursor)?;
-
-    let mut layer_outputs: Vec<(GerberLayerType, GerberLayerOutput)> = Vec::new();
+    let mut layers: Vec<GerberLayer> = Vec::new();
     let mut had_gerber = false;
-    let mut total_decompressed: u64 = 0;
 
-    for i in 0..archive.len() {
-        let file = archive.by_index(i)?;
-        if file.is_dir() {
-            continue;
-        }
-
-        let filename = file.name().to_string();
-
-        // Read file content with decompression bomb protection
-        let remaining = max_decompressed.saturating_sub(total_decompressed);
-        let mut content = String::new();
-        use std::io::Read;
-        if file
-            .take(remaining + 1)
-            .read_to_string(&mut content)
-            .is_err()
-        {
-            // Binary file or encoding error — skip
-            continue;
-        }
-        total_decompressed += content.len() as u64;
-        if total_decompressed > max_decompressed {
-            return Err(ExtractError::DecompressionBomb);
-        }
-
-        // Try to parse as Gerber first, then fall back to Excellon drill
-        match parse_single_gerber(&filename, &content) {
-            Ok((layer_type, output)) => {
-                had_gerber = true;
-                if layer_type != GerberLayerType::Unknown || !output.drawings.is_empty() {
-                    layer_outputs.push((layer_type, output));
-                }
-            }
-            Err(_) => {
-                // Not a valid Gerber file — try Excellon drill format
-                if let Some(drawings) = excellon::parse_excellon(&content) {
-                    if !drawings.is_empty() {
-                        had_gerber = true;
-                        layer_outputs.push((
-                            GerberLayerType::Drills,
-                            GerberLayerOutput {
-                                drawings,
-                                ..Default::default()
-                            },
-                        ));
-                    }
-                }
+    for (filename, content) in read_zip_entries(data, max_decompressed)? {
+        if let Ok(layer) = parse_file(&filename, &content) {
+            had_gerber = true;
+            if layer.layer_type != GerberLayerType::Unknown || !layer.drawings.is_empty() {
+                layers.push(layer);
             }
         }
     }
@@ -92,7 +48,195 @@ fn parse_with_limit(
         ));
     }
 
-    assemble_pcb_data(layer_outputs, opts)
+    assemble_pcb_data(layers, opts)
+}
+
+/// Read every file in a zip archive, enforcing a total decompressed size limit.
+fn read_zip_entries(
+    data: &[u8],
+    max_decompressed: u64,
+) -> Result<Vec<(String, Vec<u8>)>, ExtractError> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
+    let mut entries = Vec::new();
+    let mut total_decompressed: u64 = 0;
+
+    for i in 0..archive.len() {
+        let file = archive.by_index(i)?;
+        if file.is_dir() {
+            continue;
+        }
+        let filename = file.name().to_string();
+
+        let remaining = max_decompressed.saturating_sub(total_decompressed);
+        let mut content = Vec::new();
+        if file.take(remaining + 1).read_to_end(&mut content).is_err() {
+            continue;
+        }
+        total_decompressed += content.len() as u64;
+        if total_decompressed > max_decompressed {
+            return Err(ExtractError::DecompressionBomb);
+        }
+        entries.push((filename, content));
+    }
+    Ok(entries)
+}
+
+/// One parsed fabrication file: a Gerber layer or an Excellon drill file.
+#[derive(Debug, Clone, Serialize)]
+pub struct GerberLayer {
+    /// Source filename, including any directory path inside an archive.
+    pub name: String,
+    #[serde(skip)]
+    pub layer_type: GerberLayerType,
+    pub function: LayerFunction,
+    pub side: Option<LayerSide>,
+    /// Inner copper layer name (`In1`, `In2`, ...) for inner copper layers.
+    pub inner: Option<String>,
+    /// Dark-polarity geometry.
+    pub drawings: Vec<Drawing>,
+    /// Clear-polarity (%LPC%) geometry that erases previously drawn dark geometry.
+    pub clear_drawings: Vec<Drawing>,
+    pub bbox: Option<BBox>,
+}
+
+impl GerberLayer {
+    fn new(name: &str, layer_type: GerberLayerType, output: GerberLayerOutput) -> Self {
+        let mut bbox = BBox::empty();
+        for d in &output.drawings {
+            expand_bbox_drawing(&mut bbox, d);
+        }
+        Self {
+            name: name.to_string(),
+            function: layer_type.function(),
+            side: layer_type.side(),
+            inner: layer_type.inner_name().map(str::to_string),
+            layer_type,
+            drawings: output.drawings,
+            clear_drawings: output.clear_drawings,
+            bbox: bbox.minx.is_finite().then_some(bbox),
+        }
+    }
+}
+
+/// A set of fabrication files parsed independently, one layer per file.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GerberProject {
+    /// Layers in back-to-front stacking order.
+    pub layers: Vec<GerberLayer>,
+    /// Board bounds: the outline layer's extents when present, otherwise all geometry.
+    pub bbox: Option<BBox>,
+    /// Human-readable notes about files that were skipped or could not be classified.
+    pub warnings: Vec<String>,
+}
+
+impl GerberProject {
+    /// Parse a list of `(filename, contents)` pairs. See [`parse_source`].
+    pub fn from_files<'a, I>(files: I) -> Self
+    where
+        I: IntoIterator<Item = (&'a str, &'a [u8])>,
+    {
+        let mut project = Self::default();
+        for (name, data) in files {
+            project.add_source(name, data);
+        }
+        project
+    }
+
+    /// Parse one source and merge its layers into the project in stacking order.
+    pub fn add_source(&mut self, name: &str, data: &[u8]) {
+        let (layers, warnings) = parse_source(name, data);
+        self.warnings.extend(warnings);
+        for layer in layers {
+            let order = layer.layer_type.stack_order();
+            let pos = self
+                .layers
+                .partition_point(|l| l.layer_type.stack_order() <= order);
+            self.layers.insert(pos, layer);
+        }
+        self.bbox = board_bbox(&self.layers);
+    }
+}
+
+/// Parse one source file into layers. Zip archives are expanded, with entries named
+/// `archive.zip/path/in/archive`. Files that are empty, unparseable, or of unknown
+/// function produce a warning; unknown-function files are still returned as layers.
+pub fn parse_source(name: &str, data: &[u8]) -> (Vec<GerberLayer>, Vec<String>) {
+    let mut layers = Vec::new();
+    let mut warnings = Vec::new();
+    let mut add_file = |name: &str, data: &[u8]| match parse_file(name, data) {
+        Ok(layer) if layer.drawings.is_empty() && layer.clear_drawings.is_empty() => {
+            warnings.push(format!("{name}: no geometry"));
+        }
+        Ok(layer) => {
+            if layer.layer_type == GerberLayerType::Unknown {
+                warnings.push(format!("{name}: could not identify layer function"));
+            }
+            layers.push(layer);
+        }
+        Err(e) => warnings.push(format!("{name}: {e}")),
+    };
+
+    if data.starts_with(b"PK\x03\x04") {
+        match read_zip_entries(data, crate::MAX_DECOMPRESSED_BYTES) {
+            Ok(entries) => {
+                for (entry_name, content) in &entries {
+                    add_file(&format!("{name}/{entry_name}"), content);
+                }
+            }
+            Err(e) => warnings.push(format!("{name}: {e}")),
+        }
+    } else {
+        add_file(name, data);
+    }
+    (layers, warnings)
+}
+
+/// Board bounds for a set of layers: the outline layers' extents when present,
+/// otherwise the extents of all geometry.
+pub fn board_bbox<'a, I>(layers: I) -> Option<BBox>
+where
+    I: IntoIterator<Item = &'a GerberLayer>,
+    I::IntoIter: Clone,
+{
+    let layers = layers.into_iter();
+    let union = |iter: &mut dyn Iterator<Item = &'a GerberLayer>| {
+        let mut bbox = BBox::empty();
+        for b in iter.filter_map(|l| l.bbox.as_ref()) {
+            bbox.expand_point(b.minx, b.miny);
+            bbox.expand_point(b.maxx, b.maxy);
+        }
+        bbox.minx.is_finite().then_some(bbox)
+    };
+    union(
+        &mut layers
+            .clone()
+            .filter(|l| l.layer_type == GerberLayerType::BoardOutline),
+    )
+    .or_else(|| union(&mut layers.clone()))
+}
+
+/// Parse one fabrication file. Gerber (RS-274X) is tried first, then Excellon drill.
+pub fn parse_file(name: &str, data: &[u8]) -> Result<GerberLayer, ExtractError> {
+    let content = std::str::from_utf8(data)
+        .map_err(|_| ExtractError::ParseError("not a text file".into()))?;
+
+    match parse_single_gerber(name, content) {
+        Ok((layer_type, output)) => Ok(GerberLayer::new(name, layer_type, output)),
+        Err(gerber_err) => match excellon::parse_excellon(content) {
+            Some(drawings) if !drawings.is_empty() => Ok(GerberLayer::new(
+                name,
+                GerberLayerType::Drills,
+                GerberLayerOutput {
+                    drawings,
+                    ..Default::default()
+                },
+            )),
+            Some(_) => Err(ExtractError::ParseError(
+                "Excellon drill file with no drill hits found".into(),
+            )),
+            None => Err(gerber_err),
+        },
+    }
 }
 
 /// Parse a single Gerber file, returning its detected layer type and geometry.
@@ -170,7 +314,7 @@ fn drawing_to_track(drawing: &Drawing) -> Option<Track> {
 
 /// Assemble parsed layer outputs into a PcbData structure.
 fn assemble_pcb_data(
-    layer_outputs: Vec<(GerberLayerType, GerberLayerOutput)>,
+    layers: Vec<GerberLayer>,
     opts: &ExtractOptions,
 ) -> Result<PcbData, ExtractError> {
     let mut edges: Vec<Drawing> = Vec::new();
@@ -186,8 +330,8 @@ fn assemble_pcb_data(
     let mut pads_b: Vec<Drawing> = Vec::new();
     let mut pads_inner: HashMap<String, Vec<Drawing>> = HashMap::new();
 
-    for (layer_type, output) in layer_outputs {
-        match layer_type {
+    for output in layers {
+        match output.layer_type {
             GerberLayerType::BoardOutline => {
                 edges.extend(output.drawings);
             }
@@ -662,5 +806,84 @@ M02*
         let opts = ExtractOptions::default();
         let result = parse_with_limit(&zip_data, &opts, 1024 * 1024);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_project_from_loose_files() {
+        let files: [(&str, &[u8]); 4] = [
+            ("board.GKO", OUTLINE_GERBER.as_bytes()),
+            ("board.GTO", SILK_TOP_GERBER.as_bytes()),
+            ("board.GTL", COPPER_TOP_GERBER.as_bytes()),
+            ("README.txt", b"fabricate me please"),
+        ];
+        let project = GerberProject::from_files(files);
+
+        let names: Vec<&str> = project.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["board.GTL", "board.GTO", "board.GKO"]);
+
+        let copper = &project.layers[0];
+        assert_eq!(copper.function, LayerFunction::Copper);
+        assert_eq!(copper.side, Some(LayerSide::Top));
+        assert_eq!(copper.drawings.len(), 1);
+
+        let bbox = project.bbox.expect("board bbox");
+        assert_abs_diff_eq!(bbox.minx, 0.0, epsilon = 0.05);
+        assert_abs_diff_eq!(bbox.maxx, 50.0, epsilon = 0.05);
+        // Gerber Y-up coordinates are flipped to screen-space Y-down.
+        assert_abs_diff_eq!(bbox.miny, -30.0, epsilon = 0.05);
+        assert_abs_diff_eq!(bbox.maxy, 0.0, epsilon = 0.05);
+
+        assert_eq!(project.warnings.len(), 1);
+        assert!(project.warnings[0].starts_with("README.txt:"));
+    }
+
+    #[test]
+    fn test_project_expands_zip_sources() {
+        let zip_data = make_test_zip(&[
+            ("gerbers/board.GTL", COPPER_TOP_GERBER),
+            ("gerbers/board.GKO", OUTLINE_GERBER),
+        ]);
+        let project = GerberProject::from_files([("fab.zip", zip_data.as_slice())]);
+
+        let names: Vec<&str> = project.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["fab.zip/gerbers/board.GTL", "fab.zip/gerbers/board.GKO"]
+        );
+        assert!(project.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_project_bbox_without_outline_uses_all_layers() {
+        let project = GerberProject::from_files([("board.GTL", COPPER_TOP_GERBER.as_bytes())]);
+        let bbox = project.bbox.expect("bbox from copper");
+        assert_abs_diff_eq!(bbox.minx, 1.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(bbox.maxx, 4.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_project_keeps_unknown_layers_with_warning() {
+        let project = GerberProject::from_files([("mystery.gbr", COPPER_TOP_GERBER.as_bytes())]);
+        // X2 FileFunction identifies this despite the filename.
+        assert_eq!(project.layers[0].function, LayerFunction::Copper);
+
+        let plain = OUTLINE_GERBER.replace("%MOMM*%", "%MOMM*%\n");
+        let project = GerberProject::from_files([("mystery.gbr", plain.as_bytes())]);
+        assert_eq!(project.layers.len(), 1);
+        assert_eq!(project.layers[0].function, LayerFunction::Unknown);
+        assert_eq!(project.warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_file_reads_excellon() {
+        let drill = "M48\nMETRIC\nT1C0.8\n%\nT1\nX10.0Y10.0\nM30\n";
+        let layer = parse_file("board.drl", drill.as_bytes()).expect("drill parses");
+        assert_eq!(layer.function, LayerFunction::Drill);
+        assert_eq!(layer.drawings.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_file_rejects_binary() {
+        assert!(parse_file("image.png", &[0x89, 0x50, 0xff, 0xfe]).is_err());
     }
 }

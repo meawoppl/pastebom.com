@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use super::commands::{BoardSide, CopperSide, FileFunction};
 
 /// What role a Gerber file plays in the board stackup.
@@ -10,9 +12,87 @@ pub enum GerberLayerType {
     SilkscreenBottom,
     SolderMaskTop,
     SolderMaskBottom,
+    SolderPasteTop,
+    SolderPasteBottom,
     BoardOutline,
     Drills,
     Unknown,
+}
+
+/// Side-independent function of a fabrication layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerFunction {
+    Copper,
+    Silkscreen,
+    SolderMask,
+    SolderPaste,
+    Outline,
+    Drill,
+    Unknown,
+}
+
+/// Which side of the board a fabrication layer belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerSide {
+    Top,
+    Bottom,
+    Inner,
+}
+
+impl GerberLayerType {
+    pub fn function(&self) -> LayerFunction {
+        match self {
+            Self::CopperTop | Self::CopperBottom | Self::CopperInner(_) => LayerFunction::Copper,
+            Self::SilkscreenTop | Self::SilkscreenBottom => LayerFunction::Silkscreen,
+            Self::SolderMaskTop | Self::SolderMaskBottom => LayerFunction::SolderMask,
+            Self::SolderPasteTop | Self::SolderPasteBottom => LayerFunction::SolderPaste,
+            Self::BoardOutline => LayerFunction::Outline,
+            Self::Drills => LayerFunction::Drill,
+            Self::Unknown => LayerFunction::Unknown,
+        }
+    }
+
+    pub fn side(&self) -> Option<LayerSide> {
+        match self {
+            Self::CopperTop | Self::SilkscreenTop | Self::SolderMaskTop | Self::SolderPasteTop => {
+                Some(LayerSide::Top)
+            }
+            Self::CopperBottom
+            | Self::SilkscreenBottom
+            | Self::SolderMaskBottom
+            | Self::SolderPasteBottom => Some(LayerSide::Bottom),
+            Self::CopperInner(_) => Some(LayerSide::Inner),
+            Self::BoardOutline | Self::Drills | Self::Unknown => None,
+        }
+    }
+
+    /// Inner copper layer name such as `In1`, if this is an inner copper layer.
+    pub fn inner_name(&self) -> Option<&str> {
+        match self {
+            Self::CopperInner(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Back-to-front order for compositing layers in a single view.
+    pub fn stack_order(&self) -> u8 {
+        match self {
+            Self::SolderPasteBottom => 0,
+            Self::SilkscreenBottom => 1,
+            Self::SolderMaskBottom => 2,
+            Self::CopperBottom => 3,
+            Self::CopperInner(_) => 4,
+            Self::Unknown => 5,
+            Self::CopperTop => 6,
+            Self::SolderMaskTop => 7,
+            Self::SilkscreenTop => 8,
+            Self::SolderPasteTop => 9,
+            Self::Drills => 10,
+            Self::BoardOutline => 11,
+        }
+    }
 }
 
 /// Identify layer type from a Gerber X2 FileFunction attribute.
@@ -33,8 +113,12 @@ pub fn identify_from_x2(func: &FileFunction) -> GerberLayerType {
             BoardSide::Top => GerberLayerType::SolderMaskTop,
             BoardSide::Bottom => GerberLayerType::SolderMaskBottom,
         },
+        FileFunction::Paste { side } => match side {
+            BoardSide::Top => GerberLayerType::SolderPasteTop,
+            BoardSide::Bottom => GerberLayerType::SolderPasteBottom,
+        },
         FileFunction::Profile => GerberLayerType::BoardOutline,
-        _ => GerberLayerType::Unknown,
+        FileFunction::Other(_) => GerberLayerType::Unknown,
     }
 }
 
@@ -69,6 +153,9 @@ pub fn identify_from_filename(filename: &str) -> GerberLayerType {
             // Solder mask
             "gts" => return GerberLayerType::SolderMaskTop,
             "gbs" => return GerberLayerType::SolderMaskBottom,
+            // Solder paste
+            "gtp" => return GerberLayerType::SolderPasteTop,
+            "gbp" => return GerberLayerType::SolderPasteBottom,
             // Board outline
             "gko" => return GerberLayerType::BoardOutline,
             // Eagle extensions
@@ -113,6 +200,12 @@ pub fn identify_from_filename(filename: &str) -> GerberLayerType {
     }
     if lower.contains("b_mask") || lower.contains("b.mask") || lower.contains("back_mask") {
         return GerberLayerType::SolderMaskBottom;
+    }
+    if lower.contains("f_paste") || lower.contains("f.paste") || lower.contains("front_paste") {
+        return GerberLayerType::SolderPasteTop;
+    }
+    if lower.contains("b_paste") || lower.contains("b.paste") || lower.contains("back_paste") {
+        return GerberLayerType::SolderPasteBottom;
     }
     if lower.contains("edge_cuts") || lower.contains("edge.cuts") || lower.contains("boardoutline")
     {
@@ -236,6 +329,56 @@ mod tests {
         assert_eq!(
             identify_from_x2(&FileFunction::Profile),
             GerberLayerType::BoardOutline
+        );
+    }
+
+    #[test]
+    fn test_x2_paste() {
+        let func = FileFunction::Paste {
+            side: BoardSide::Bottom,
+        };
+        assert_eq!(identify_from_x2(&func), GerberLayerType::SolderPasteBottom);
+    }
+
+    #[test]
+    fn test_paste_filenames() {
+        assert_eq!(
+            identify_from_filename("board.GTP"),
+            GerberLayerType::SolderPasteTop
+        );
+        assert_eq!(
+            identify_from_filename("board.gbp"),
+            GerberLayerType::SolderPasteBottom
+        );
+        assert_eq!(
+            identify_from_filename("board-F_Paste.gbr"),
+            GerberLayerType::SolderPasteTop
+        );
+        assert_eq!(
+            identify_from_filename("board-B_Paste.gbr"),
+            GerberLayerType::SolderPasteBottom
+        );
+    }
+
+    #[test]
+    fn test_function_and_side() {
+        let inner = GerberLayerType::CopperInner("In2".into());
+        assert_eq!(inner.function(), LayerFunction::Copper);
+        assert_eq!(inner.side(), Some(LayerSide::Inner));
+        assert_eq!(inner.inner_name(), Some("In2"));
+
+        let mask = GerberLayerType::SolderMaskBottom;
+        assert_eq!(mask.function(), LayerFunction::SolderMask);
+        assert_eq!(mask.side(), Some(LayerSide::Bottom));
+        assert_eq!(mask.inner_name(), None);
+
+        assert_eq!(GerberLayerType::Drills.side(), None);
+        assert!(
+            GerberLayerType::CopperTop.stack_order() > GerberLayerType::CopperBottom.stack_order()
+        );
+        assert!(
+            GerberLayerType::BoardOutline.stack_order()
+                > GerberLayerType::SilkscreenTop.stack_order()
         );
     }
 
