@@ -73,7 +73,9 @@ pub fn tokenize(input: &str) -> Vec<GerberToken> {
                     }
                 }
                 let trimmed = word.trim().to_string();
-                if !trimmed.is_empty() && !is_comment(&trimmed) {
+                if let Some(attribute) = comment_attribute(&trimmed) {
+                    tokens.push(GerberToken::Extended(attribute));
+                } else if !trimmed.is_empty() && !is_comment(&trimmed) {
                     tokens.push(GerberToken::Word(trimmed));
                 }
             }
@@ -86,6 +88,17 @@ pub fn tokenize(input: &str) -> Vec<GerberToken> {
 /// Check if a command is a G04 comment.
 fn is_comment(s: &str) -> bool {
     s.starts_with("G04") || s.starts_with("G4")
+}
+
+/// X2 file attributes written as X1-compatible comments (`G04 #@! TF.FileFunction,...`,
+/// KiCad's default) are returned as the equivalent extended command content.
+fn comment_attribute(s: &str) -> Option<String> {
+    let body = s
+        .strip_prefix("G04")?
+        .trim_start()
+        .strip_prefix("#@!")?
+        .trim();
+    body.starts_with("TF.").then(|| body.to_string())
 }
 
 #[cfg(test)]
@@ -126,6 +139,19 @@ mod tests {
         let input = "G04 This is a comment*\nD10*\n";
         let tokens = tokenize(input);
         assert_eq!(tokens, vec![GerberToken::Word("D10".into())]);
+    }
+
+    #[test]
+    fn test_comment_x2_attribute_becomes_extended() {
+        let input = "G04 #@! TF.FileFunction,Copper,L2,Inr*\nG04 #@! TA.AperFunction,Pad*\nD10*\n";
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                GerberToken::Extended("TF.FileFunction,Copper,L2,Inr".into()),
+                GerberToken::Word("D10".into()),
+            ]
+        );
     }
 
     #[test]
