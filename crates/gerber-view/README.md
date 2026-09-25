@@ -94,6 +94,11 @@ last path segment. The name matters because it is used to identify the layer
 when a file has no Gerber X2 `FileFunction` attribute. Zip archives are
 expanded, and their entries are named `archive.zip/inner/path.gbr`.
 
+Files are recognised by content, not extension, so hosts shouldn't filter by
+extension. Pass every fabrication-output file, and non-Gerber ones will land
+in `skipped`. Extensions vary widely: `.gbr`, Protel `.gtl`/`.gbs`/`.gm1`,
+numbered inner copper `.g1`/`.g2`/..., `.art`, `.drl`, `.xln`, `.txt`.
+
 A source that fails to load or parse never rejects the promise. Diagnostics
 read `"<file>: <reason>"` and come in two severities:
 - `warnings` are problems worth showing: fetch failures, files that look like

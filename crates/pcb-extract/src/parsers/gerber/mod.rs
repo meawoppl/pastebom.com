@@ -1013,4 +1013,99 @@ M02*
     fn test_parse_file_rejects_binary() {
         assert!(parse_file("image.png", &[0x89, 0x50, 0xff, 0xfe]).is_err());
     }
+
+    /// Inner copper as KiCad 10 writes it with Protel extensions: `.g1`/`.g2`
+    /// files whose X2 function names the physical layer (L2, L3).
+    fn kicad10_inner_copper(physical_layer: u32) -> String {
+        format!(
+            "%TF.GenerationSoftware,KiCad,Pcbnew,10.0.6-10.0.6~ubuntu24.04.1*%\n\
+%TF.FileFunction,Copper,L{physical_layer},Inr*%\n\
+%TF.FilePolarity,Positive*%\n\
+%FSLAX46Y46*%\n\
+%MOMM*%\n\
+%ADD10C,0.200000*%\n\
+D10*\n\
+X1000000Y-1000000D02*\n\
+X5000000Y-1000000D01*\n\
+M02*\n"
+        )
+    }
+
+    fn assert_kicad_four_layer(project: &GerberProject, prefix: &str) {
+        let copper: Vec<(&str, Option<LayerSide>, Option<&str>)> = project
+            .layers
+            .iter()
+            .filter(|l| l.function == LayerFunction::Copper)
+            .map(|l| (l.name.as_str(), l.side, l.inner.as_deref()))
+            .collect();
+        let name = |f: &str| format!("{prefix}{f}");
+        assert_eq!(
+            copper,
+            [
+                (
+                    name("module-B_Cu.gbl").as_str(),
+                    Some(LayerSide::Bottom),
+                    None
+                ),
+                (
+                    name("module-In1_Cu.g1").as_str(),
+                    Some(LayerSide::Inner),
+                    Some("In1")
+                ),
+                (
+                    name("module-In2_Cu.g2").as_str(),
+                    Some(LayerSide::Inner),
+                    Some("In2")
+                ),
+                (name("module-F_Cu.gtl").as_str(), Some(LayerSide::Top), None),
+            ]
+        );
+        for layer in &project.layers {
+            assert!(!layer.drawings.is_empty(), "{} has no geometry", layer.name);
+        }
+        assert!(project.warnings.is_empty(), "{:?}", project.warnings);
+    }
+
+    fn kicad10_four_layer_files() -> Vec<(&'static str, String)> {
+        let top = COPPER_TOP_GERBER.to_string();
+        let bottom = COPPER_TOP_GERBER.replace("L1,Top", "L4,Bot");
+        vec![
+            ("module-F_Cu.gtl", top),
+            ("module-In1_Cu.g1", kicad10_inner_copper(2)),
+            ("module-In2_Cu.g2", kicad10_inner_copper(3)),
+            ("module-B_Cu.gbl", bottom),
+        ]
+    }
+
+    #[test]
+    fn test_kicad10_numbered_inner_copper_loose_files() {
+        let files = kicad10_four_layer_files();
+        let project = GerberProject::from_files(files.iter().map(|(n, c)| (*n, c.as_bytes())));
+        assert_kicad_four_layer(&project, "");
+    }
+
+    #[test]
+    fn test_kicad10_numbered_inner_copper_in_zip() {
+        let files = kicad10_four_layer_files();
+        let entries: Vec<(&str, &str)> = files.iter().map(|(n, c)| (*n, c.as_str())).collect();
+        let zip_data = make_test_zip(&entries);
+        let project = GerberProject::from_files([("module-gerbers.zip", zip_data.as_slice())]);
+        assert_kicad_four_layer(&project, "module-gerbers.zip/");
+    }
+
+    #[test]
+    fn test_kicad10_numbered_inner_copper_upload() {
+        let files = kicad10_four_layer_files();
+        let entries: Vec<(&str, &str)> = files.iter().map(|(n, c)| (*n, c.as_str())).collect();
+        let opts = ExtractOptions {
+            include_tracks: true,
+            include_nets: false,
+        };
+        let pcb = parse(&make_test_zip(&entries), &opts).unwrap();
+        let tracks = pcb.tracks.unwrap();
+        let mut inner: Vec<&String> = tracks.inner.keys().collect();
+        inner.sort();
+        assert_eq!(inner, ["In1", "In2"]);
+        assert!(!tracks.front.is_empty() && !tracks.back.is_empty());
+    }
 }
