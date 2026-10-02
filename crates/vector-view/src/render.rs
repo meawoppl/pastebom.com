@@ -3,14 +3,20 @@
 //! [`draw`] paints a [`Scene`] into a `CanvasRenderingContext2d` as resolved
 //! by a [`ViewState`]: layers in paint order, filled areas with even-odd holes,
 //! round-capped strokes (tracks, arcs, stroked text), drill holes, highlight
-//! dimming, and `destination-out` erase layers. It does not clear the canvas;
-//! call [`clear`] first, or compose several passes (e.g. a highlight overlay).
+//! dimming, and `destination-out` erase layers. It does not clear the canvas
+//! unless `ViewState::background` is set; call [`clear`] first, or compose
+//! several draws (e.g. a highlight overlay canvas).
+//!
+//! With `ViewState::passes` each pass is drawn opaque into an offscreen
+//! canvas and composited at its alpha, so translucent layers blend as one
+//! unit. `ViewState::overlay` draws a highlight over everything the same way.
 
 use crate::scene::{Item, Point, Prim, Scene};
-use crate::style::{css_rgba, Rgba, ViewState};
+use crate::style::{css_rgba, ItemPaint, Rgba, ViewState};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
-use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, Path2d};
+use wasm_bindgen::JsCast;
+use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, HtmlCanvasElement, Path2d};
 
 /// Polygons with at least this many vertices get a cached `Path2d`.
 const CACHE_MIN_POINTS: usize = 24;
@@ -105,11 +111,13 @@ fn polygon(sink: &dyn Sink, outer: &[Point], holes: &[Vec<Point>]) {
     }
 }
 
-/// Cached `Path2d`s for large polygons (zones), valid for one scene.
+/// Cached `Path2d`s for large polygons (zones), valid for one scene, plus
+/// the offscreen canvas used for pass compositing.
 #[derive(Default)]
 pub struct PathCache {
     key: Option<(usize, usize)>,
     paths: HashMap<usize, Path2d>,
+    scratch: Option<Scratch>,
 }
 
 impl PathCache {
@@ -129,6 +137,56 @@ impl PathCache {
             self.paths.clear();
             self.key = Some(key);
         }
+    }
+}
+
+/// Offscreen canvas matching the target's backing-store size.
+struct Scratch {
+    canvas: HtmlCanvasElement,
+    ctx: CanvasRenderingContext2d,
+}
+
+impl Scratch {
+    fn for_target(target: &CanvasRenderingContext2d, reuse: Option<Scratch>) -> Option<Scratch> {
+        let main = target.canvas()?;
+        let scratch = match reuse {
+            Some(s) => s,
+            None => {
+                let doc = main.owner_document()?;
+                let canvas: HtmlCanvasElement =
+                    doc.create_element("canvas").ok()?.dyn_into().ok()?;
+                let ctx: CanvasRenderingContext2d =
+                    canvas.get_context("2d").ok()??.dyn_into().ok()?;
+                Scratch { canvas, ctx }
+            }
+        };
+        if scratch.canvas.width() != main.width() {
+            scratch.canvas.set_width(main.width());
+        }
+        if scratch.canvas.height() != main.height() {
+            scratch.canvas.set_height(main.height());
+        }
+        Some(scratch)
+    }
+
+    fn clear(&self) {
+        let _ = self.ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        self.ctx.clear_rect(
+            0.0,
+            0.0,
+            self.canvas.width() as f64,
+            self.canvas.height() as f64,
+        );
+    }
+
+    /// Composite onto `target` at `alpha` with an identity transform.
+    fn composite(&self, target: &CanvasRenderingContext2d, alpha: f64) {
+        target.save();
+        let _ = target.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        let _ = target.set_global_composite_operation("source-over");
+        target.set_global_alpha(alpha.clamp(0.0, 1.0));
+        let _ = target.draw_image_with_html_canvas_element(&self.canvas, 0.0, 0.0);
+        target.restore();
     }
 }
 
@@ -204,10 +262,12 @@ pub fn clear(
 
 /// Draw `scene` without caching.
 pub fn draw(scene: &Scene, ctx: &CanvasRenderingContext2d, state: &ViewState) {
-    draw_inner(scene, ctx, state, None);
+    let mut cache = PathCache::new();
+    draw_inner(scene, ctx, state, &mut cache, false);
 }
 
-/// Draw `scene`, reusing `Path2d`s for large polygons across frames.
+/// Draw `scene`, reusing `Path2d`s for large polygons (and the compositing
+/// canvas) across frames.
 pub fn draw_cached(
     scene: &Scene,
     ctx: &CanvasRenderingContext2d,
@@ -215,80 +275,236 @@ pub fn draw_cached(
     cache: &mut PathCache,
 ) {
     cache.sync(scene);
-    draw_inner(scene, ctx, state, Some(cache));
+    draw_inner(scene, ctx, state, cache, true);
+}
+
+/// Shared per-frame drawing parameters.
+struct Frame<'a> {
+    scene: &'a Scene,
+    state: &'a ViewState,
+    by_layer: HashMap<u16, Vec<usize>>,
+    min_w: f64,
+    outline_w: f64,
+}
+
+fn set_view(ctx: &CanvasRenderingContext2d, state: &ViewState) {
+    let [a, b, c, d, e, f] = state.view.canvas_transform(state.dpr);
+    let _ = ctx.set_transform(a, b, c, d, e, f);
+    ctx.set_line_cap("round");
+    ctx.set_line_join("round");
+}
+
+fn draw_background(ctx: &CanvasRenderingContext2d, state: &ViewState) {
+    let Some(canvas) = ctx.canvas() else { return };
+    let (w, h) = (canvas.width() as f64, canvas.height() as f64);
+    if let Some(bg) = state.background {
+        clear(ctx, w, h, Some(bg));
+    }
+    let Some(grid) = state.grid else { return };
+    let view = &state.view;
+    let mut step = grid.spacing(view.scale);
+    let vis = view.visible_bbox(w / state.dpr, h / state.dpr);
+    // Coarsen rather than draw an unreasonable number of dots.
+    while (vis.width() / step + 1.0) * (vis.height() / step + 1.0) > 40_000.0 {
+        step *= 10.0;
+    }
+    let dot = grid.dot_px * view.world_per_px();
+    ctx.save();
+    set_view(ctx, state);
+    ctx.set_fill_style_str(&css_rgba(grid.color, 1.0));
+    ctx.begin_path();
+    let (x0, y0) = ((vis.min[0] / step).floor(), (vis.min[1] / step).floor());
+    let (x1, y1) = ((vis.max[0] / step).ceil(), (vis.max[1] / step).ceil());
+    let mut y = y0;
+    while y <= y1 {
+        let mut x = x0;
+        while x <= x1 {
+            ctx.rect(x * step - dot / 2.0, y * step - dot / 2.0, dot, dot);
+            x += 1.0;
+        }
+        y += 1.0;
+    }
+    ctx.fill();
+    ctx.restore();
+}
+
+/// Draw `items` (indices) of one plan entry onto `ctx`.
+fn draw_items(
+    frame: &Frame,
+    ctx: &CanvasRenderingContext2d,
+    items: &[usize],
+    erase: bool,
+    paint: &dyn Fn(&Item) -> Option<ItemPaint>,
+    mut cache: Option<&mut PathCache>,
+) {
+    let _ = ctx.set_global_composite_operation(if erase {
+        "destination-out"
+    } else {
+        "source-over"
+    });
+    let mut painter = Painter { ctx, open: None };
+    let mut alpha_now = f64::NAN;
+    for &i in items {
+        let item = &frame.scene.items[i];
+        let Some(paint) = paint(item) else {
+            continue;
+        };
+        let (alpha, stroke_c, fill_c) = if erase {
+            (1.0, [0, 0, 0, 255], [0, 0, 0, 255])
+        } else {
+            (paint.alpha, paint.stroke, paint.fill)
+        };
+        if alpha <= 0.0 {
+            continue;
+        }
+        if alpha != alpha_now {
+            painter.flush();
+            ctx.set_global_alpha(alpha);
+            alpha_now = alpha;
+        }
+        let stroke = css_rgba(stroke_c, 1.0);
+        let fill = css_rgba(fill_c, 1.0);
+        draw_item(
+            &mut painter,
+            item,
+            i,
+            &stroke,
+            &fill,
+            frame.min_w,
+            paint.outline.then_some(frame.outline_w),
+            cache.as_deref_mut(),
+        );
+    }
+    painter.flush();
+    let _ = ctx.set_global_composite_operation("source-over");
+    ctx.set_global_alpha(1.0);
+}
+
+/// Draw `items` at `alpha` as one unit: opaque into the scratch canvas, then
+/// composited. Falls back to direct drawing at full opacity.
+fn draw_composited(
+    frame: &Frame,
+    ctx: &CanvasRenderingContext2d,
+    items: &[usize],
+    alpha: f64,
+    paint: &dyn Fn(&Item) -> Option<ItemPaint>,
+    cache: &mut PathCache,
+) {
+    if items.is_empty() || alpha <= 0.0 {
+        return;
+    }
+    if alpha >= 1.0 {
+        draw_items(frame, ctx, items, false, paint, Some(cache));
+        return;
+    }
+    let Some(scratch) = Scratch::for_target(ctx, cache.scratch.take()) else {
+        // No document (e.g. a worker): approximate with per-item alpha.
+        let dimmed = |item: &Item| {
+            paint(item).map(|mut p| {
+                p.alpha *= alpha;
+                p
+            })
+        };
+        draw_items(frame, ctx, items, false, &dimmed, Some(cache));
+        return;
+    };
+    scratch.clear();
+    set_view(&scratch.ctx, frame.state);
+    draw_items(frame, &scratch.ctx, items, false, paint, Some(cache));
+    scratch.composite(ctx, alpha);
+    cache.scratch = Some(scratch);
 }
 
 fn draw_inner(
     scene: &Scene,
     ctx: &CanvasRenderingContext2d,
     state: &ViewState,
-    mut cache: Option<&mut PathCache>,
+    cache: &mut PathCache,
+    keep_scratch: bool,
 ) {
-    let order = state.paint_order(scene);
-    if order.is_empty() {
+    draw_background(ctx, state);
+    let plan = state.paint_plan(scene);
+    if plan.is_empty() {
         return;
     }
     let mut by_layer: HashMap<u16, Vec<usize>> = HashMap::new();
     for (i, item) in scene.items.iter().enumerate() {
         by_layer.entry(item.layer).or_default().push(i);
     }
+    let frame = Frame {
+        scene,
+        state,
+        by_layer,
+        min_w: state.min_line_world(),
+        outline_w: (state.min_line_px * 3.0).max(1.0) * state.view.world_per_px(),
+    };
 
     ctx.save();
-    let [a, b, c, d, e, f] = state.view.canvas_transform(state.dpr);
-    let _ = ctx.set_transform(a, b, c, d, e, f);
-    ctx.set_line_cap("round");
-    ctx.set_line_join("round");
-    let min_w = state.min_line_world();
-    let outline_w = (state.min_line_px * 3.0).max(1.0) * state.view.world_per_px();
-    let mut painter = Painter { ctx, open: None };
-
-    for layer in order {
-        let Some(items) = by_layer.get(&layer.id) else {
+    set_view(ctx, state);
+    for entry in &plan {
+        let Some(all) = frame.by_layer.get(&entry.layer.id) else {
             continue;
         };
+        let layer = entry.layer;
         let erase = state.erase_layers.contains(&layer.id);
-        let _ = ctx.set_global_composite_operation(if erase {
-            "destination-out"
-        } else {
-            "source-over"
-        });
-        let mut alpha_now = f64::NAN;
-        for &i in items {
-            let item = &scene.items[i];
-            let Some(paint) = state.item_paint(layer, item) else {
-                continue;
-            };
-            let (alpha, stroke_c, fill_c) = if erase {
-                (1.0, [0, 0, 0, 255], [0, 0, 0, 255])
-            } else {
-                (paint.alpha, paint.stroke, paint.fill)
-            };
-            if alpha <= 0.0 {
-                continue;
-            }
-            if alpha != alpha_now {
-                painter.flush();
-                ctx.set_global_alpha(alpha);
-                alpha_now = alpha;
-            }
-            let stroke = css_rgba(stroke_c, 1.0);
-            let fill = css_rgba(fill_c, 1.0);
-            let cached = cache.as_deref_mut();
-            draw_item(
-                &mut painter,
-                item,
-                i,
-                &stroke,
-                &fill,
-                min_w,
-                paint.outline.then_some(outline_w),
-                cached,
-            );
+        if !entry.composited {
+            let paint = |item: &Item| state.item_paint(layer, item);
+            draw_items(&frame, ctx, all, erase, &paint, Some(cache));
+            continue;
         }
-        painter.flush();
+        let items: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&i| entry.matches(&scene.items[i]))
+            .collect();
+        let paint = |item: &Item| state.item_paint_with(layer, item, 1.0);
+        if erase {
+            draw_items(&frame, ctx, &items, true, &paint, Some(cache));
+        } else {
+            draw_composited(&frame, ctx, &items, entry.alpha, &paint, cache);
+        }
     }
-    let _ = ctx.set_global_composite_operation("source-over");
+
+    if let Some(overlay) = &state.overlay {
+        if overlay.highlight.is_active() {
+            let mut lit: Vec<usize> = Vec::new();
+            for entry in &plan {
+                if state.erase_layers.contains(&entry.layer.id) {
+                    continue;
+                }
+                if let Some(all) = frame.by_layer.get(&entry.layer.id) {
+                    lit.extend(all.iter().copied().filter(|&i| {
+                        let item = &scene.items[i];
+                        entry.matches(item)
+                            && overlay.highlight.contains(item)
+                            && !state.hidden_items.contains(&item.id)
+                    }));
+                }
+            }
+            lit.sort_unstable();
+            lit.dedup();
+            let color = overlay.color;
+            let hole = state.theme.hole;
+            let paint = |item: &Item| {
+                let c = if item.role == crate::scene::Role::Hole {
+                    hole.unwrap_or(color)
+                } else {
+                    color
+                };
+                Some(ItemPaint {
+                    stroke: c,
+                    fill: c,
+                    alpha: 1.0,
+                    outline: state.outline_items.contains(&item.id),
+                })
+            };
+            draw_composited(&frame, ctx, &lit, overlay.alpha, &paint, cache);
+        }
+    }
     ctx.restore();
+    if !keep_scratch {
+        cache.scratch = None;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

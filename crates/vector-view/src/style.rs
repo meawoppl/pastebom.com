@@ -87,6 +87,93 @@ impl LayerVisibility {
     }
 }
 
+/// One compositing pass: the items of `layer` (optionally only some roles)
+/// drawn opaque into an offscreen canvas, then composited at `alpha` so
+/// overlapping translucent items blend as one unit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pass {
+    pub layer: LayerId,
+    /// Only these roles (e.g. split one copper layer into zones/tracks/pads).
+    pub roles: Option<Vec<Role>>,
+    pub alpha: f64,
+}
+
+impl Pass {
+    pub fn new(layer: LayerId, alpha: f64) -> Self {
+        Self {
+            layer,
+            roles: None,
+            alpha,
+        }
+    }
+
+    pub fn roles(layer: LayerId, roles: &[Role], alpha: f64) -> Self {
+        Self {
+            layer,
+            roles: Some(roles.to_vec()),
+            alpha,
+        }
+    }
+
+    pub fn matches(&self, item: &Item) -> bool {
+        item.layer == self.layer && self.roles.as_ref().is_none_or(|r| r.contains(&item.role))
+    }
+}
+
+/// A highlight drawn on top of everything in a single colour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overlay {
+    pub highlight: Highlight,
+    pub color: Rgba,
+    /// Composited as one unit at this opacity.
+    pub alpha: f64,
+}
+
+/// A dot grid at decade spacings (0.1, 1, 10 ... scene units).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grid {
+    pub color: Rgba,
+    /// The finest decade whose dots are at least this far apart is used.
+    pub min_spacing_px: f64,
+    /// Dot size in CSS pixels.
+    pub dot_px: f64,
+}
+
+impl Default for Grid {
+    fn default() -> Self {
+        Self {
+            color: [128, 128, 128, 160],
+            min_spacing_px: 12.0,
+            dot_px: 1.5,
+        }
+    }
+}
+
+impl Grid {
+    /// Grid spacing in scene units for `px_per_unit` CSS pixels per unit.
+    pub fn spacing(&self, px_per_unit: f64) -> f64 {
+        let min = self.min_spacing_px.max(1e-6) / px_per_unit.max(1e-12);
+        10f64.powf(min.log10().ceil())
+    }
+}
+
+/// One entry of the resolved paint plan (bottom first).
+#[derive(Debug, Clone, Copy)]
+pub struct PlannedPass<'a> {
+    pub layer: &'a Layer,
+    pub roles: Option<&'a [Role]>,
+    /// Pass opacity (`1.0` without passes, where `layer_alpha` applies per item).
+    pub alpha: f64,
+    /// True when this entry came from `ViewState::passes`.
+    pub composited: bool,
+}
+
+impl PlannedPass<'_> {
+    pub fn matches(&self, item: &Item) -> bool {
+        item.layer == self.layer.id && self.roles.is_none_or(|r| r.contains(&item.role))
+    }
+}
+
 /// Everything `render::draw` needs besides the scene and the context.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewState {
@@ -114,6 +201,16 @@ pub struct ViewState {
     /// Layers painted with `destination-out`: their shapes erase what is
     /// already on the canvas (clear polarity, see-through drills).
     pub erase_layers: HashSet<LayerId>,
+    /// Compositing passes; when set they define paint order (overriding `z`
+    /// and `layer_order`) and replace `layer_alpha`.
+    pub passes: Option<Vec<Pass>>,
+    /// Fill the canvas with this colour before drawing.
+    pub background: Option<Rgba>,
+    /// Dot grid drawn over the background, under the layers.
+    pub grid: Option<Grid>,
+    /// Highlight drawn over everything in one colour (`outline_items` are
+    /// drawn as outlines there too).
+    pub overlay: Option<Overlay>,
 }
 
 impl ViewState {
@@ -132,6 +229,56 @@ impl ViewState {
             hidden_items: HashSet::new(),
             outline_items: HashSet::new(),
             erase_layers: HashSet::new(),
+            passes: None,
+            background: None,
+            grid: None,
+            overlay: None,
+        }
+    }
+
+    /// The resolved paint plan, bottom first: `passes` when set (invisible
+    /// layers skipped), otherwise [`ViewState::paint_order`].
+    pub fn paint_plan<'a>(&'a self, scene: &'a Scene) -> Vec<PlannedPass<'a>> {
+        match &self.passes {
+            Some(passes) => passes
+                .iter()
+                .filter_map(|p| {
+                    let layer = scene.layer(p.layer)?;
+                    self.visibility.is_visible(layer).then_some(PlannedPass {
+                        layer,
+                        roles: p.roles.as_deref(),
+                        alpha: p.alpha,
+                        composited: true,
+                    })
+                })
+                .collect(),
+            None => self
+                .paint_order(scene)
+                .into_iter()
+                .map(|layer| PlannedPass {
+                    layer,
+                    roles: None,
+                    alpha: 1.0,
+                    composited: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// Picking order derived from the paint plan: for each item, the index
+    /// of the topmost plan entry that draws it, or `None` when it is not
+    /// drawn (invisible layer, filtered role, hidden item).
+    pub fn pick_plan(&self, scene: &Scene) -> PickPlan {
+        let mut by_layer: HashMap<LayerId, Vec<PlanSlot>> = HashMap::new();
+        for (i, p) in self.paint_plan(scene).iter().enumerate() {
+            by_layer
+                .entry(p.layer.id)
+                .or_default()
+                .push((i, p.roles.map(<[Role]>::to_vec)));
+        }
+        PickPlan {
+            by_layer,
+            hidden: self.hidden_items.clone(),
         }
     }
 
@@ -165,6 +312,17 @@ impl ViewState {
 
     /// Resolve the paint for one item, or `None` to skip it.
     pub fn item_paint(&self, layer: &Layer, item: &Item) -> Option<ItemPaint> {
+        self.item_paint_with(layer, item, self.layer_opacity(layer))
+    }
+
+    /// Like [`ViewState::item_paint`] with an explicit base opacity (passes
+    /// draw items opaque and apply their alpha when compositing).
+    pub fn item_paint_with(
+        &self,
+        layer: &Layer,
+        item: &Item,
+        base_alpha: f64,
+    ) -> Option<ItemPaint> {
         if self.hidden_items.contains(&item.id) {
             return None;
         }
@@ -196,7 +354,7 @@ impl ViewState {
         } else {
             (base, fill_base)
         };
-        let mut alpha = self.layer_opacity(layer);
+        let mut alpha = base_alpha;
         if active && !lit {
             alpha *= self.dim;
         }
@@ -223,6 +381,31 @@ pub struct ItemPaint {
     pub alpha: f64,
     /// Stroke filled shapes instead of filling them.
     pub outline: bool,
+}
+
+/// A plan index and its optional role filter.
+type PlanSlot = (usize, Option<Vec<Role>>);
+
+/// Which items are pickable and how they stack; see [`ViewState::pick_plan`].
+#[derive(Debug, Clone, Default)]
+pub struct PickPlan {
+    by_layer: HashMap<LayerId, Vec<PlanSlot>>,
+    hidden: HashSet<ItemId>,
+}
+
+impl PickPlan {
+    /// Index of the topmost plan entry drawing `item`, if any.
+    pub fn rank(&self, item: &Item) -> Option<usize> {
+        if self.hidden.contains(&item.id) {
+            return None;
+        }
+        self.by_layer
+            .get(&item.layer)?
+            .iter()
+            .filter(|(_, roles)| roles.as_ref().is_none_or(|r| r.contains(&item.role)))
+            .map(|(i, _)| *i)
+            .max()
+    }
 }
 
 /// CSS colour string for an RGBA colour at `alpha` extra opacity.
@@ -394,6 +577,56 @@ mod tests {
         assert_eq!(p.alpha, 0.35);
         assert!(p.outline);
         assert_eq!(css_rgba([4, 5, 6, 255], 0.5), "rgba(4,5,6,0.5000)");
+    }
+
+    #[test]
+    fn passes_define_order_and_skip_invisible_layers() {
+        let s = scene();
+        let mut st = ViewState::new(View::default());
+        st.passes = Some(vec![
+            Pass::new(2, 1.0),
+            Pass::roles(0, &[Role::Track], 0.5),
+            Pass::new(3, 1.0),
+            Pass::roles(0, &[Role::Pad, Role::Hole], 0.25),
+        ]);
+        let plan = st.paint_plan(&s);
+        let order: Vec<(LayerId, f64)> = plan.iter().map(|p| (p.layer.id, p.alpha)).collect();
+        // Layer 3 is invisible by default; layer z is ignored.
+        assert_eq!(order, vec![(2, 1.0), (0, 0.5), (0, 0.25)]);
+        assert!(plan.iter().all(|p| p.composited));
+        assert!(plan[1].matches(&s.items[1]) && !plan[1].matches(&s.items[0]));
+
+        let picks = st.pick_plan(&s);
+        assert_eq!(picks.rank(&s.items[0]), Some(2));
+        assert_eq!(picks.rank(&s.items[1]), Some(1));
+        st.hidden_items.insert(1);
+        assert_eq!(st.pick_plan(&s).rank(&s.items[0]), None);
+
+        st.passes = None;
+        let plan = st.paint_plan(&s);
+        assert!(plan.iter().all(|p| !p.composited && p.alpha == 1.0));
+        assert_eq!(st.pick_plan(&s).rank(&s.items[1]), Some(1));
+    }
+
+    #[test]
+    fn pass_paint_ignores_layer_alpha() {
+        let s = scene();
+        let mut st = ViewState::new(View::default());
+        st.layer_alpha.insert(0, 0.35);
+        let l = &s.layers[0];
+        assert_eq!(st.item_paint(l, &s.items[0]).unwrap().alpha, 0.35);
+        assert_eq!(st.item_paint_with(l, &s.items[0], 1.0).unwrap().alpha, 1.0);
+    }
+
+    #[test]
+    fn grid_uses_decades() {
+        let g = Grid::default();
+        // 12 px minimum: at 10 px/mm the 10 mm decade is the first wide enough.
+        assert_eq!(g.spacing(10.0), 10.0);
+        assert_eq!(g.spacing(12.0), 1.0);
+        assert_eq!(g.spacing(100.0), 1.0);
+        assert!((g.spacing(150.0) - 0.1).abs() < 1e-12);
+        assert_eq!(g.spacing(0.5), 100.0);
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! drawing order.
 
 use crate::scene::{BBox, Item, ItemId, LayerId, Point, Prim, Role, Scene};
+use crate::style::{PickPlan, ViewState};
 use std::f64::consts::TAU;
 
 /// Higher wins when several items are under the cursor.
@@ -189,6 +190,41 @@ pub fn hit_test(
         .map(|i| scene.items[i].id)
 }
 
+/// Rank for view-aware picking: role priority, then topmost paint-plan entry,
+/// then draw order. `None` when the item is not drawn.
+fn view_rank(scene: &Scene, plan: &PickPlan, idx: usize) -> Option<(u8, usize, usize)> {
+    let item = &scene.items[idx];
+    plan.rank(item)
+        .map(|pass| (role_priority(item.role), pass, idx))
+}
+
+fn best_view(
+    scene: &Scene,
+    plan: &PickPlan,
+    candidates: impl Iterator<Item = usize>,
+    p: Point,
+    tol: f64,
+) -> Vec<(u8, usize, usize)> {
+    let mut ranked: Vec<(u8, usize, usize)> = candidates
+        .filter_map(|i| {
+            let r = view_rank(scene, plan, i)?;
+            prim_contains(&scene.items[i].prim, p, tol).then_some(r)
+        })
+        .collect();
+    ranked.sort_unstable_by(|a, b| b.cmp(a));
+    ranked
+}
+
+/// Hit test honouring a [`ViewState`]: invisible layers, hidden items and
+/// role-filtered passes are not pickable, and overlaps resolve by role
+/// priority, then the topmost pass (or layer in paint order).
+pub fn hit_test_view(scene: &Scene, state: &ViewState, p: Point, tol: f64) -> Option<ItemId> {
+    let plan = state.pick_plan(scene);
+    best_view(scene, &plan, 0..scene.items.len(), p, tol)
+        .first()
+        .map(|r| scene.items[r.2].id)
+}
+
 /// Uniform-grid spatial index over item bounds.
 #[derive(Debug, Clone)]
 pub struct HitIndex {
@@ -296,6 +332,26 @@ impl HitIndex {
             .collect();
         c.sort_by_key(|&i| std::cmp::Reverse(rank(scene, i)));
         c.into_iter().map(|i| scene.items[i].id).collect()
+    }
+
+    /// Same result as [`hit_test_view`], via the grid.
+    pub fn hit_test_view(
+        &self,
+        scene: &Scene,
+        state: &ViewState,
+        p: Point,
+        tol: f64,
+    ) -> Option<ItemId> {
+        self.hits_view(scene, state, p, tol).into_iter().next()
+    }
+
+    /// All drawn items under `p` for `state`, best first.
+    pub fn hits_view(&self, scene: &Scene, state: &ViewState, p: Point, tol: f64) -> Vec<ItemId> {
+        let plan = state.pick_plan(scene);
+        best_view(scene, &plan, self.candidates(p, tol).into_iter(), p, tol)
+            .into_iter()
+            .map(|r| scene.items[r.2].id)
+            .collect()
     }
 
     /// Same result as [`hit_test`], via the grid.
@@ -490,6 +546,56 @@ mod tests {
             rotation: 1.0,
         };
         assert_eq!(hole.bbox().max, [2.0, 2.0]);
+    }
+
+    #[test]
+    fn view_hit_respects_visibility_hidden_and_passes() {
+        use crate::style::{Pass, ViewState};
+        use crate::view::View;
+        let s = scene();
+        let idx = HitIndex::new(&s);
+        let mut st = ViewState::new(View::default());
+        let pad = [15.0, 5.0];
+        assert_eq!(hit_test_view(&s, &st, pad, 0.0), Some(12));
+        // Hidden items fall through to what is underneath.
+        st.hidden_items.insert(12);
+        assert_eq!(hit_test_view(&s, &st, pad, 0.0), Some(11));
+        assert_eq!(idx.hit_test_view(&s, &st, pad, 0.0), Some(11));
+        st.hidden_items.clear();
+        // Invisible layers are not pickable.
+        st.visibility.set(1, false);
+        assert_eq!(hit_test_view(&s, &st, pad, 0.0), Some(11));
+        st.visibility.set(0, false);
+        assert_eq!(hit_test_view(&s, &st, pad, 0.0), None);
+        st.visibility.overrides.clear();
+
+        // Passes: only listed layers/roles are pickable.
+        st.passes = Some(vec![Pass::roles(0, &[Role::Zone], 0.5), Pass::new(1, 1.0)]);
+        assert_eq!(hit_test_view(&s, &st, [3.0, 5.0], 0.0), Some(10));
+        assert_eq!(idx.hits_view(&s, &st, pad, 0.0), vec![12, 10]);
+
+        // Same role on two layers: the topmost pass wins, regardless of z.
+        let mut s2 = s.clone();
+        s2.items[1].layer = 1; // the track now on layer 1 too
+        s2.items.push(item(
+            99,
+            0,
+            Role::Track,
+            Prim::Polyline {
+                points: vec![[0.0, 5.0], [20.0, 5.0]],
+                width: 0.5,
+            },
+        ));
+        let at = [3.0, 5.0];
+        st.passes = Some(vec![Pass::new(1, 1.0), Pass::new(0, 1.0)]);
+        assert_eq!(hit_test_view(&s2, &st, at, 0.0), Some(99));
+        st.passes = Some(vec![Pass::new(0, 1.0), Pass::new(1, 1.0)]);
+        assert_eq!(hit_test_view(&s2, &st, at, 0.0), Some(11));
+        // Without passes the paint order (by z) decides: layer 1 is on top.
+        st.passes = None;
+        assert_eq!(hit_test_view(&s2, &st, at, 0.0), Some(11));
+        st.layer_order = Some(vec![1, 0]);
+        assert_eq!(hit_test_view(&s2, &st, at, 0.0), Some(99));
     }
 
     #[test]
