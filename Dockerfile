@@ -25,15 +25,17 @@ COPY crates/pcb-extract/Cargo.toml crates/pcb-extract/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/viewer/Cargo.toml crates/viewer/Cargo.toml
 COPY crates/gds-viewer/Cargo.toml crates/gds-viewer/Cargo.toml
+COPY crates/vector-view/Cargo.toml crates/vector-view/Cargo.toml
 
 # Create dummy source files for dependency caching
-RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src crates/gds-viewer/src \
+RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src crates/gds-viewer/src crates/vector-view/src \
     && echo "pub fn main() {}" > crates/pcb-extract/src/main.rs \
     && echo "pub fn lib() {}" > crates/pcb-extract/src/lib.rs \
     && echo "fn main() {}" > crates/server/src/main.rs \
     && echo "<html></html>" > crates/server/static/index.html \
     && echo "fn main() {}" > crates/viewer/src/main.rs \
-    && echo "fn main() {}" > crates/gds-viewer/src/main.rs
+    && echo "fn main() {}" > crates/gds-viewer/src/main.rs \
+    && echo "pub fn lib() {}" > crates/vector-view/src/lib.rs
 
 # Build dependencies only (cached layer)
 RUN cargo build --release --locked 2>/dev/null || true
@@ -46,7 +48,8 @@ RUN touch crates/pcb-extract/src/main.rs \
     crates/pcb-extract/src/lib.rs \
     crates/server/src/main.rs \
     crates/viewer/src/main.rs \
-    crates/gds-viewer/src/main.rs
+    crates/gds-viewer/src/main.rs \
+    crates/vector-view/src/lib.rs
 
 # Build release binaries
 RUN cargo build --release --locked

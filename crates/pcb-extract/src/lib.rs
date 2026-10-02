@@ -1,6 +1,8 @@
 pub mod bom;
 pub mod error;
 pub mod parsers;
+#[cfg(feature = "vector-view")]
+pub mod scene;
 pub mod svg;
 pub mod thumbnail;
 pub mod types;
