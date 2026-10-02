@@ -1,77 +1,53 @@
-use std::collections::HashMap;
-use std::f64::consts::PI;
-use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, HtmlCanvasElement, Path2d};
+//! Board rendering and picking through `vector-view`.
+//!
+//! `pcb_extract::scene::to_scene` turns the board into a plain vector scene;
+//! this module only decides, per canvas and per pass, which scene layers to
+//! show at what opacity and colour so the result matches the classic iBOM
+//! look (see-through opposite side, dimmed inner layers, highlight overlay).
 
-use crate::pcbdata::*;
+use std::collections::{HashMap, HashSet};
+
+use pcb_extract::scene::{
+    layer_name, BOUNDS, COPPER_PADS, DRILLS, EDGE_CUTS, FAB, FOOTPRINTS, HOLES, PADS, SILKSCREEN,
+    SILKSCREEN_CLEAR, TRACKS, ZONES,
+};
+use vector_view::hit::HitIndex;
+use vector_view::render::{self as vr, PathCache};
+use vector_view::style::{parse_css_color, Highlight, HighlightStyle, Rgba, ViewState};
+use vector_view::view::View;
+use vector_view::{GroupId, ItemId, LayerId, NetId, Prop, Role, Scene};
+use wasm_bindgen::JsCast;
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+
 use crate::state::Settings;
 
 fn deg2rad(deg: f64) -> f64 {
-    deg * PI / 180.0
+    deg * std::f64::consts::PI / 180.0
 }
 
-#[derive(Clone)]
-pub struct Transform {
-    pub x: f64,
-    pub y: f64,
-    pub s: f64,
-    pub panx: f64,
-    pub pany: f64,
-    pub zoom: f64,
-}
-
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            s: 1.0,
-            panx: 0.0,
-            pany: 0.0,
-            zoom: 1.0,
-        }
-    }
-}
-
-pub struct LayerCanvases {
-    pub bg: HtmlCanvasElement,
-    pub fab: HtmlCanvasElement,
-    pub silk: HtmlCanvasElement,
-    pub highlight: HtmlCanvasElement,
-    pub layer: String,
-    pub transform: Transform,
-}
-
-impl LayerCanvases {
-    pub fn all_canvases(&self) -> [&HtmlCanvasElement; 4] {
-        [&self.bg, &self.fab, &self.silk, &self.highlight]
-    }
-}
-
+/// Theme colours read from the page's CSS custom properties.
 #[derive(Clone)]
 pub struct Colors {
-    pub pcb_edge: String,
-    pub pad: String,
-    pub pad_hole: String,
-    pub pad_highlight: String,
-    pub pad_highlight_both: String,
-    pub pad_highlight_marked: String,
-    pub pin1_outline: String,
-    pub pin1_outline_highlight: String,
-    pub pin1_outline_highlight_both: String,
-    pub pin1_outline_highlight_marked: String,
-    pub silk_edge: String,
-    pub silk_polygon: String,
-    pub silk_text: String,
-    pub fab_edge: String,
-    pub fab_polygon: String,
-    pub fab_text: String,
-    pub track_front: String,
-    pub track_back: String,
-    pub track_highlight: String,
-    pub zone_front: String,
-    pub zone_back: String,
-    pub zone_highlight: String,
+    pub pcb_edge: Rgba,
+    pub pad: Rgba,
+    pub pad_hole: Rgba,
+    pub pad_highlight: Rgba,
+    pub pad_highlight_both: Rgba,
+    pub pad_highlight_marked: Rgba,
+    pub pin1_outline: Rgba,
+    pub pin1_outline_highlight: Rgba,
+    pub pin1_outline_highlight_both: Rgba,
+    pub pin1_outline_highlight_marked: Rgba,
+    pub silk_edge: Rgba,
+    pub silk_polygon: Rgba,
+    pub fab_edge: Rgba,
+    pub fab_polygon: Rgba,
+    pub track_front: Rgba,
+    pub track_back: Rgba,
+    pub track_highlight: Rgba,
+    pub zone_front: Rgba,
+    pub zone_back: Rgba,
+    pub zone_highlight: Rgba,
 }
 
 impl Colors {
@@ -81,12 +57,9 @@ impl Colors {
             .get_computed_style(el)
             .unwrap()
             .unwrap();
-        let g = |name: &str| -> String {
-            style
-                .get_property_value(name)
-                .unwrap_or_default()
-                .trim()
-                .to_string()
+        let g = |name: &str| -> Rgba {
+            let v = style.get_property_value(name).unwrap_or_default();
+            parse_css_color(&v).unwrap_or([255, 0, 255, 255])
         };
         Self {
             pcb_edge: g("--pcb-edge-color"),
@@ -101,10 +74,8 @@ impl Colors {
             pin1_outline_highlight_marked: g("--pin1-outline-color-highlight-marked"),
             silk_edge: g("--silkscreen-edge-color"),
             silk_polygon: g("--silkscreen-polygon-color"),
-            silk_text: g("--silkscreen-text-color"),
             fab_edge: g("--fabrication-edge-color"),
             fab_polygon: g("--fabrication-polygon-color"),
-            fab_text: g("--fabrication-text-color"),
             track_front: g("--track-color-front"),
             track_back: g("--track-color-back"),
             track_highlight: g("--track-color-highlight"),
@@ -113,1591 +84,224 @@ impl Colors {
             zone_highlight: g("--zone-color-highlight"),
         }
     }
+
+    fn track(&self, side: &str) -> Rgba {
+        if side == "F" {
+            self.track_front
+        } else {
+            self.track_back
+        }
+    }
+
+    fn zone(&self, side: &str) -> Rgba {
+        if side == "F" {
+            self.zone_front
+        } else {
+            self.zone_back
+        }
+    }
 }
 
-/// Cache for Path2D objects (keyed by a unique string identifier)
-pub struct PathCache {
-    pads: HashMap<String, Path2d>,
+/// The board as a scene plus the lookups the iBOM UI needs.
+pub struct Board {
+    pub scene: Scene,
+    index: HitIndex,
+    layers: HashMap<String, LayerId>,
+    /// Inner copper names, sorted (as in the layer panel).
+    inner: Vec<String>,
+    pin1_pads: HashMap<LayerId, Vec<ItemId>>,
+    ref_texts: HashSet<ItemId>,
+    value_texts: HashSet<ItemId>,
+    pads_by_group: HashMap<GroupId, Vec<ItemId>>,
+    bounds_by_group: HashMap<GroupId, ItemId>,
 }
 
-impl PathCache {
-    pub fn new() -> Self {
+fn has_prop(props: &[Prop], key: &str, value: &str) -> bool {
+    props.iter().any(|p| p.key == key && p.value == value)
+}
+
+impl Board {
+    pub fn new(scene: Scene) -> Self {
+        let layers: HashMap<String, LayerId> = scene
+            .layers
+            .iter()
+            .map(|l| (l.name.clone(), l.id))
+            .collect();
+        let mut inner: Vec<String> = scene
+            .layers
+            .iter()
+            .filter(|l| l.side == vector_view::Side::Inner)
+            .filter_map(|l| {
+                [ZONES, TRACKS, COPPER_PADS]
+                    .iter()
+                    .find_map(|s| l.name.strip_suffix(&format!(".{s}")))
+                    .map(str::to_string)
+            })
+            .collect();
+        inner.sort();
+        inner.dedup();
+        let bounds_layers: HashSet<LayerId> = ["F", "B"]
+            .iter()
+            .filter_map(|s| layers.get(&layer_name(s, BOUNDS)).copied())
+            .collect();
+        let mut board = Board {
+            index: HitIndex::new(&scene),
+            layers,
+            inner,
+            pin1_pads: HashMap::new(),
+            ref_texts: HashSet::new(),
+            value_texts: HashSet::new(),
+            pads_by_group: HashMap::new(),
+            bounds_by_group: HashMap::new(),
+            scene: Scene::new(vector_view::SceneKind::Pcb, true),
+        };
+        for item in &scene.items {
+            match item.role {
+                Role::Pad => {
+                    if has_prop(&item.props, "pin1", "1") {
+                        board.pin1_pads.entry(item.layer).or_default().push(item.id);
+                    }
+                    if let Some(g) = item.group {
+                        board.pads_by_group.entry(g).or_default().push(item.id);
+                    }
+                }
+                Role::Text => {
+                    if has_prop(&item.props, "kind", "ref") {
+                        board.ref_texts.insert(item.id);
+                    } else if has_prop(&item.props, "kind", "value") {
+                        board.value_texts.insert(item.id);
+                    }
+                }
+                _ => {
+                    if let (Some(g), true) = (item.group, bounds_layers.contains(&item.layer)) {
+                        board.bounds_by_group.insert(g, item.id);
+                    }
+                }
+            }
+        }
+        board.scene = scene;
+        board
+    }
+
+    fn layer(&self, side: &str, suffix: &str) -> Option<LayerId> {
+        self.layers.get(&layer_name(side, suffix)).copied()
+    }
+
+    fn named(&self, name: &str) -> Option<LayerId> {
+        self.layers.get(name).copied()
+    }
+
+    pub fn net_name(&self, id: NetId) -> Option<&str> {
+        self.scene.net(id).map(|n| n.name.as_str())
+    }
+
+    pub fn net_id(&self, name: &str) -> Option<NetId> {
+        self.scene
+            .nets
+            .iter()
+            .find(|n| n.name == name)
+            .map(|n| n.id)
+    }
+}
+
+/// The fitted board transform plus the user's pan/zoom on top of it.
+#[derive(Clone, Copy)]
+pub struct Viewport {
+    pub fit: View,
+    /// Screen-space pan/zoom (rotation and mirror unused), driven by input.
+    pub user: View,
+    pub width: f64,
+    pub height: f64,
+    pub dpr: f64,
+}
+
+impl Default for Viewport {
+    fn default() -> Self {
         Self {
-            pads: HashMap::new(),
+            fit: View::default(),
+            user: View::default(),
+            width: 1.0,
+            height: 1.0,
+            dpr: 1.0,
         }
     }
 }
 
-// ─── Path Builders ──────────────────────────────────────────────────
-
-fn get_chamfered_rect_path(size: [f64; 2], radius: f64, chamfpos: u8, chamfratio: f64) -> Path2d {
-    let path = Path2d::new().unwrap();
-    let width = size[0];
-    let height = size[1];
-    let x = width * -0.5;
-    let y = height * -0.5;
-    let chamf_offset = width.min(height) * chamfratio;
-
-    path.move_to(x, 0.0);
-
-    if chamfpos & 4 != 0 {
-        path.line_to(x, y + height - chamf_offset);
-        path.line_to(x + chamf_offset, y + height);
-        path.line_to(0.0, y + height);
-    } else {
-        path.arc_to(x, y + height, x + width, y + height, radius)
-            .unwrap();
-    }
-
-    if chamfpos & 8 != 0 {
-        path.line_to(x + width - chamf_offset, y + height);
-        path.line_to(x + width, y + height - chamf_offset);
-        path.line_to(x + width, 0.0);
-    } else {
-        path.arc_to(x + width, y + height, x + width, y, radius)
-            .unwrap();
-    }
-
-    if chamfpos & 2 != 0 {
-        path.line_to(x + width, y + chamf_offset);
-        path.line_to(x + width - chamf_offset, y);
-        path.line_to(0.0, y);
-    } else {
-        path.arc_to(x + width, y, x, y, radius).unwrap();
-    }
-
-    if chamfpos & 1 != 0 {
-        path.line_to(x + chamf_offset, y);
-        path.line_to(x, y + chamf_offset);
-        path.line_to(x, 0.0);
-    } else {
-        path.arc_to(x, y, x, y + height, radius).unwrap();
-    }
-
-    path.close_path();
-    path
-}
-
-fn get_oblong_path(size: [f64; 2]) -> Path2d {
-    get_chamfered_rect_path(size, size[0].min(size[1]) / 2.0, 0, 0.0)
-}
-
-fn get_circle_path(radius: f64) -> Path2d {
-    let path = Path2d::new().unwrap();
-    path.arc(0.0, 0.0, radius, 0.0, 2.0 * PI).unwrap();
-    path.close_path();
-    path
-}
-
-fn get_polygons_path(polygons: &[Vec<[f64; 2]>]) -> Path2d {
-    let path = Path2d::new().unwrap();
-    for polygon in polygons {
-        if let Some(first) = polygon.first() {
-            path.move_to(first[0], first[1]);
-            for pt in &polygon[1..] {
-                path.line_to(pt[0], pt[1]);
-            }
-            path.close_path();
+impl Viewport {
+    /// `screen = user(fit(p))`.
+    pub fn view(&self) -> View {
+        View {
+            scale: self.user.scale * self.fit.scale,
+            tx: self.user.scale * self.fit.tx + self.user.tx,
+            ty: self.user.scale * self.fit.ty + self.user.ty,
+            ..self.fit
         }
     }
-    path
-}
 
-fn get_pad_path(pad: &Pad, cache: &mut PathCache, key: &str) -> Path2d {
-    if let Some(p) = cache.pads.get(key) {
-        return p.clone();
-    }
-    let path = match pad.shape.as_str() {
-        "rect" => {
-            let p = Path2d::new().unwrap();
-            p.rect(
-                -pad.size[0] * 0.5,
-                -pad.size[1] * 0.5,
-                pad.size[0],
-                pad.size[1],
-            );
-            p
-        }
-        "oval" => get_oblong_path(pad.size),
-        "circle" => get_circle_path(pad.size[0] / 2.0),
-        "roundrect" => get_chamfered_rect_path(pad.size, pad.radius.unwrap_or(0.0), 0, 0.0),
-        "chamfrect" => get_chamfered_rect_path(
-            pad.size,
-            pad.radius.unwrap_or(0.0),
-            pad.chamfpos.unwrap_or(0),
-            pad.chamfratio.unwrap_or(0.0),
-        ),
-        "custom" => {
-            if let Some(ref svgpath) = pad.svgpath {
-                Path2d::new_with_path_string(svgpath).unwrap_or_else(|_| Path2d::new().unwrap())
-            } else if let Some(ref polygons) = pad.polygons {
-                get_polygons_path(polygons)
-            } else {
-                Path2d::new().unwrap()
-            }
-        }
-        _ => Path2d::new().unwrap(),
-    };
-    cache.pads.insert(key.to_string(), path.clone());
-    path
-}
-
-// ─── Drawing Functions ──────────────────────────────────────────────
-
-fn draw_edge(ctx: &CanvasRenderingContext2d, scalefactor: f64, drawing: &Drawing, color: &str) {
-    ctx.set_stroke_style_str(color);
-    ctx.set_fill_style_str(color);
-    ctx.set_line_cap("round");
-    ctx.set_line_join("round");
-
-    match drawing {
-        Drawing::Segment { start, end, width } => {
-            ctx.set_line_width((1.0 / scalefactor).max(*width));
-            ctx.begin_path();
-            ctx.move_to(start[0], start[1]);
-            ctx.line_to(end[0], end[1]);
-            ctx.stroke();
-        }
-        Drawing::Rect { start, end, width } => {
-            ctx.set_line_width((1.0 / scalefactor).max(*width));
-            ctx.begin_path();
-            ctx.move_to(start[0], start[1]);
-            ctx.line_to(start[0], end[1]);
-            ctx.line_to(end[0], end[1]);
-            ctx.line_to(end[0], start[1]);
-            ctx.line_to(start[0], start[1]);
-            ctx.stroke();
-        }
-        Drawing::Arc {
-            start,
-            radius,
-            startangle,
-            endangle,
-            width,
-        } => {
-            ctx.set_line_width((1.0 / scalefactor).max(*width));
-            ctx.begin_path();
-            ctx.arc(
-                start[0],
-                start[1],
-                *radius,
-                deg2rad(*startangle),
-                deg2rad(*endangle),
-            )
-            .unwrap();
-            ctx.stroke();
-        }
-        Drawing::Circle {
-            start,
-            radius,
-            width,
-            filled,
-        } => {
-            ctx.set_line_width((1.0 / scalefactor).max(*width));
-            ctx.begin_path();
-            ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
-            ctx.close_path();
-            if filled.is_some_and(|f| f != 0) {
-                ctx.fill();
-            } else {
-                ctx.stroke();
-            }
-        }
-        Drawing::Curve {
-            start,
-            end,
-            cpa,
-            cpb,
-            width,
-        } => {
-            ctx.set_line_width((1.0 / scalefactor).max(*width));
-            ctx.begin_path();
-            ctx.move_to(start[0], start[1]);
-            ctx.bezier_curve_to(cpa[0], cpa[1], cpb[0], cpb[1], end[0], end[1]);
-            ctx.stroke();
-        }
-        Drawing::Polygon { .. } => {
-            draw_polygon_shape(ctx, scalefactor, drawing, color);
-        }
-    }
-}
-
-fn draw_polygon_shape(
-    ctx: &CanvasRenderingContext2d,
-    scalefactor: f64,
-    drawing: &Drawing,
-    color: &str,
-) {
-    if let Drawing::Polygon {
-        pos,
-        angle,
-        polygons,
-        filled,
-        width,
-    } = drawing
-    {
-        ctx.save();
-        ctx.translate(pos[0], pos[1]).unwrap();
-        ctx.rotate(deg2rad(-angle)).unwrap();
-        let path = get_polygons_path(polygons);
-        if filled.is_none_or(|f| f != 0) {
-            ctx.set_fill_style_str(color);
-            ctx.fill_with_path_2d_and_winding(&path, CanvasWindingRule::Evenodd);
+    pub fn rotation(settings: &Settings, flipped: bool) -> f64 {
+        let back = if flipped && settings.offset_back_rotation {
+            -180.0
         } else {
-            ctx.set_stroke_style_str(color);
-            ctx.set_line_width((1.0 / scalefactor).max(*width));
-            ctx.set_line_cap("round");
-            ctx.set_line_join("round");
-            ctx.stroke_with_path(&path);
-        }
-        ctx.restore();
-    }
-}
-
-fn draw_text(
-    ctx: &CanvasRenderingContext2d,
-    text: &TextDrawing,
-    color: &str,
-    settings: &Settings,
-    font_data: Option<&FontData>,
-) {
-    if text.is_ref.is_some() && !settings.render_references {
-        return;
-    }
-    if text.val.is_some() && !settings.render_values {
-        return;
+            0.0
+        };
+        deg2rad(settings.board_rotation + back)
     }
 
-    ctx.save();
-    ctx.set_fill_style_str(color);
-    ctx.set_stroke_style_str(color);
-    ctx.set_line_cap("round");
-    ctx.set_line_join("round");
-
-    if let Some(ref svgpath) = text.svgpath {
-        if let Ok(path) = Path2d::new_with_path_string(svgpath) {
-            if let Some(thickness) = text.thickness {
-                ctx.set_line_width(thickness);
-                ctx.stroke_with_path(&path);
-            } else if text.fillrule.is_some() {
-                ctx.fill_with_path_2d(&path);
-            }
-        }
-        ctx.restore();
-        return;
-    }
-
-    if let Some(thickness) = text.thickness {
-        ctx.set_line_width(thickness);
-    }
-
-    if let Some(ref polygons) = text.polygons {
-        let path = get_polygons_path(polygons);
-        ctx.fill_with_path_2d_and_winding(&path, CanvasWindingRule::Evenodd);
-        ctx.restore();
-        return;
-    }
-
-    // Stroke font rendering
-    if let (Some(pos), Some(txt), Some(height), Some(width), Some(justify), Some(angle)) = (
-        text.pos,
-        text.text.as_deref(),
-        text.height,
-        text.width,
-        text.justify,
-        text.angle,
+    /// Refit the board into a `width` x `height` (CSS px) viewport,
+    /// keeping the user's pan/zoom.
+    pub fn refit(
+        &mut self,
+        board: &Board,
+        width: f64,
+        height: f64,
+        settings: &Settings,
+        flipped: bool,
     ) {
-        if let Some(fd) = font_data {
-            let thickness = text.thickness.unwrap_or(0.15);
-            ctx.set_line_width(thickness);
-            ctx.translate(pos[0], pos[1]).unwrap();
-            ctx.translate(thickness * 0.5, 0.0).unwrap();
-
-            let attr = text.attr.as_deref().unwrap_or(&[]);
-            let mut draw_angle = -angle;
-            if attr.iter().any(|a| a == "mirrored") {
-                ctx.scale(-1.0, 1.0).unwrap();
-                draw_angle = -draw_angle;
-            }
-            let tilt = if attr.iter().any(|a| a == "italic") {
-                0.125
-            } else {
-                0.0
-            };
-
-            let interline = height * 1.5 + thickness;
-            let lines: Vec<&str> = txt.split('\n').collect();
-            let line_count = if lines.last() == Some(&"") {
-                lines.len() - 1
-            } else {
-                lines.len()
-            };
-
-            ctx.rotate(deg2rad(draw_angle)).unwrap();
-
-            let mut offsety = (1.0 - justify[1]) / 2.0 * height;
-            offsety -= (line_count as f64 - 1.0) * (justify[1] + 1.0) / 2.0 * interline;
-
-            for line_str in &lines[..line_count] {
-                let chars: Vec<char> = line_str.chars().collect();
-                // Calculate line width
-                let mut line_width = thickness + interline / 2.0 * tilt;
-                let mut j = 0;
-                while j < chars.len() {
-                    if chars[j] == '\t' {
-                        if let Some(sp) = fd.get(" ") {
-                            let four_spaces = 4.0 * sp.w * width;
-                            line_width += four_spaces - line_width % four_spaces;
-                        }
-                    } else {
-                        if chars[j] == '~' {
-                            j += 1;
-                            if j >= chars.len() {
-                                break;
-                            }
-                        }
-                        let ch = chars[j].to_string();
-                        if let Some(glyph) = fd.get(&ch) {
-                            line_width += glyph.w * width;
-                        }
-                    }
-                    j += 1;
-                }
-
-                let mut offsetx = -line_width * (justify[0] + 1.0) / 2.0;
-                j = 0;
-                while j < chars.len() {
-                    if chars[j] == '\t' {
-                        if let Some(sp) = fd.get(" ") {
-                            let four_spaces = 4.0 * sp.w * width;
-                            offsetx += four_spaces - offsetx % four_spaces;
-                        }
-                        j += 1;
-                        continue;
-                    }
-                    if chars[j] == '~' {
-                        j += 1;
-                        if j >= chars.len() {
-                            break;
-                        }
-                        if chars[j] != '~' {
-                            j += 1;
-                            continue;
-                        }
-                    }
-
-                    let ch = chars[j].to_string();
-                    if let Some(glyph) = fd.get(&ch) {
-                        for line in &glyph.l {
-                            if line.len() < 2 {
-                                continue;
-                            }
-                            ctx.begin_path();
-                            let p0 =
-                                calc_font_point(line[0], width, height, offsetx, offsety, tilt);
-                            ctx.move_to(p0[0], p0[1]);
-                            for pt in &line[1..] {
-                                let p = calc_font_point(*pt, width, height, offsetx, offsety, tilt);
-                                ctx.line_to(p[0], p[1]);
-                            }
-                            ctx.stroke();
-                        }
-                        offsetx += glyph.w * width;
-                    }
-                    j += 1;
-                }
-                offsety += interline;
-            }
-        }
-    }
-
-    ctx.restore();
-}
-
-fn calc_font_point(
-    linepoint: [f64; 2],
-    width: f64,
-    height: f64,
-    offsetx: f64,
-    offsety: f64,
-    tilt: f64,
-) -> [f64; 2] {
-    let mut point = [
-        linepoint[0] * width + offsetx,
-        linepoint[1] * height + offsety,
-    ];
-    // Approximate pcbnew text tilt
-    point[0] -= (linepoint[1] + 0.5) * height * tilt;
-    point
-}
-
-fn draw_drawing(
-    ctx: &CanvasRenderingContext2d,
-    scalefactor: f64,
-    item: &FootprintDrawingItem,
-    color: &str,
-    settings: &Settings,
-    font_data: Option<&FontData>,
-) {
-    match item {
-        FootprintDrawingItem::Shape(drawing) => {
-            draw_edge(ctx, scalefactor, drawing, color);
-        }
-        FootprintDrawingItem::Text(text) => {
-            draw_text(ctx, text, color, settings, font_data);
-        }
-    }
-}
-
-fn draw_pad(
-    ctx: &CanvasRenderingContext2d,
-    pad: &Pad,
-    color: &str,
-    outline: bool,
-    cache: &mut PathCache,
-    pad_key: &str,
-) {
-    ctx.save();
-    ctx.translate(pad.pos[0], pad.pos[1]).unwrap();
-    ctx.rotate(-deg2rad(pad.angle.unwrap_or(0.0))).unwrap();
-    if let Some(offset) = pad.offset {
-        ctx.translate(offset[0], offset[1]).unwrap();
-    }
-    ctx.set_fill_style_str(color);
-    ctx.set_stroke_style_str(color);
-    let path = get_pad_path(pad, cache, pad_key);
-    if outline {
-        ctx.stroke_with_path(&path);
-    } else {
-        ctx.fill_with_path_2d(&path);
-    }
-    ctx.restore();
-}
-
-fn draw_pad_hole(ctx: &CanvasRenderingContext2d, pad: &Pad, hole_color: &str) {
-    if pad.pad_type != "th" {
-        return;
-    }
-    ctx.save();
-    ctx.translate(pad.pos[0], pad.pos[1]).unwrap();
-    ctx.rotate(-deg2rad(pad.angle.unwrap_or(0.0))).unwrap();
-    ctx.set_fill_style_str(hole_color);
-
-    if let Some(ref drillsize) = pad.drillsize {
-        let path = match pad.drillshape.as_deref() {
-            Some("oblong") => get_oblong_path(*drillsize),
-            Some("rect") => get_chamfered_rect_path(*drillsize, 0.0, 0, 0.0),
-            _ => get_circle_path(drillsize[0] / 2.0),
+        self.width = width;
+        self.height = height;
+        self.fit = View {
+            rotation: Self::rotation(settings, flipped),
+            mirrored: flipped,
+            ..View::default()
         };
-        ctx.fill_with_path_2d(&path);
-    }
-    ctx.restore();
-}
-
-struct FootprintColors {
-    pad: String,
-    pad_hole: String,
-    outline: String,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_footprint(
-    ctx: &CanvasRenderingContext2d,
-    layer: &str,
-    scalefactor: f64,
-    footprint: &Footprint,
-    fp_index: usize,
-    colors: &FootprintColors,
-    highlight: bool,
-    outline: bool,
-    settings: &Settings,
-    font_data: Option<&FontData>,
-    cache: &mut PathCache,
-) {
-    if highlight && footprint.layer == layer {
-        ctx.save();
-        ctx.set_global_alpha(0.2);
-        ctx.translate(footprint.bbox.pos[0], footprint.bbox.pos[1])
-            .unwrap();
-        ctx.rotate(deg2rad(-footprint.bbox.angle)).unwrap();
-        ctx.translate(footprint.bbox.relpos[0], footprint.bbox.relpos[1])
-            .unwrap();
-        ctx.set_fill_style_str(&colors.pad);
-        ctx.fill_rect(0.0, 0.0, footprint.bbox.size[0], footprint.bbox.size[1]);
-        ctx.set_global_alpha(1.0);
-        ctx.set_stroke_style_str(&colors.pad);
-        ctx.set_line_width(3.0 / scalefactor);
-        ctx.stroke_rect(0.0, 0.0, footprint.bbox.size[0], footprint.bbox.size[1]);
-        ctx.restore();
+        self.fit.fit(&board.scene.bbox, width, height, 0.0);
+        self.fit.zoom_at(width / 2.0, height / 2.0, 0.98);
     }
 
-    for drawing in &footprint.drawings {
-        if drawing.layer == layer {
-            draw_drawing(
-                ctx,
-                scalefactor,
-                &drawing.drawing,
-                &colors.pad,
-                settings,
-                font_data,
-            );
-        }
+    /// Adjust the user pan so the board point at the viewport centre stays
+    /// put when the view is mirrored.
+    pub fn flip_pan(&mut self) {
+        self.user.tx = self.width - self.user.scale * self.width - self.user.tx;
     }
 
-    ctx.set_line_width(3.0 / scalefactor);
-
-    if settings.render_pads {
-        for (pi, pad) in footprint.pads.iter().enumerate() {
-            if pad.layers.iter().any(|l| l == layer) {
-                let pad_key = format!("fp{}pad{}", fp_index, pi);
-                draw_pad(ctx, pad, &colors.pad, outline, cache, &pad_key);
-                if pad.pin1.is_some()
-                    && (settings.highlight_pin1 == "all"
-                        || (settings.highlight_pin1 == "selected" && highlight))
-                {
-                    draw_pad(ctx, pad, &colors.outline, true, cache, &pad_key);
-                }
-            }
-        }
-        for pad in &footprint.pads {
-            draw_pad_hole(ctx, pad, &colors.pad_hole);
-        }
+    pub fn reset_user(&mut self) {
+        self.user = View::default();
     }
 }
 
-pub fn draw_edge_cuts(
-    canvas: &HtmlCanvasElement,
-    scalefactor: f64,
-    pcbdata: &PcbData,
-    colors: &Colors,
-    settings: &Settings,
-    font_data: Option<&FontData>,
-) {
-    let ctx = get_ctx(canvas);
-    for edge in &pcbdata.edges {
-        match edge {
-            Drawing::Polygon { .. } => {
-                draw_polygon_shape(&ctx, scalefactor, edge, &colors.pcb_edge)
-            }
-            _ => draw_edge(&ctx, scalefactor, edge, &colors.pcb_edge),
-        }
-    }
-    let _ = (settings, font_data);
+pub struct Canvases {
+    pub bg: HtmlCanvasElement,
+    pub fab: HtmlCanvasElement,
+    pub silk: HtmlCanvasElement,
+    pub highlight: HtmlCanvasElement,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn draw_footprints(
-    canvas: &HtmlCanvasElement,
-    layer: &str,
-    scalefactor: f64,
-    highlight: bool,
-    pcbdata: &PcbData,
-    colors: &Colors,
-    settings: &Settings,
-    highlighted_footprints: &[usize],
-    marked_footprints: &std::collections::HashSet<usize>,
-    cache: &mut PathCache,
-) {
-    let ctx = get_ctx(canvas);
-    ctx.set_line_width(3.0 / scalefactor);
-    let font_data = pcbdata.font_data.as_ref();
+impl Canvases {
+    fn all(&self) -> [&HtmlCanvasElement; 4] {
+        [&self.bg, &self.fab, &self.silk, &self.highlight]
+    }
 
-    for (i, fp) in pcbdata.footprints.iter().enumerate() {
-        let is_dnp = pcbdata.bom.as_ref().is_some_and(|b| b.skipped.contains(&i));
-        let outline = settings.render_dnp_outline && is_dnp;
-        let h = highlighted_footprints.contains(&i);
-        let d = marked_footprints.contains(&i);
-
-        if highlight {
-            let fp_colors = if h && d {
-                FootprintColors {
-                    pad: colors.pad_highlight_both.clone(),
-                    pad_hole: colors.pad_hole.clone(),
-                    outline: colors.pin1_outline_highlight_both.clone(),
-                }
-            } else if h {
-                FootprintColors {
-                    pad: colors.pad_highlight.clone(),
-                    pad_hole: colors.pad_hole.clone(),
-                    outline: colors.pin1_outline_highlight.clone(),
-                }
-            } else if d {
-                FootprintColors {
-                    pad: colors.pad_highlight_marked.clone(),
-                    pad_hole: colors.pad_hole.clone(),
-                    outline: colors.pin1_outline_highlight_marked.clone(),
-                }
-            } else {
-                continue;
-            };
-            draw_footprint(
-                &ctx,
-                layer,
-                scalefactor,
-                fp,
-                i,
-                &fp_colors,
-                true,
-                outline,
-                settings,
-                font_data,
-                cache,
-            );
-        } else {
-            let fp_colors = FootprintColors {
-                pad: colors.pad.clone(),
-                pad_hole: colors.pad_hole.clone(),
-                outline: colors.pin1_outline.clone(),
-            };
-            draw_footprint(
-                &ctx,
-                layer,
-                scalefactor,
-                fp,
-                i,
-                &fp_colors,
-                false,
-                outline,
-                settings,
-                font_data,
-                cache,
-            );
+    /// Size the backing stores to `width` x `height` CSS px at `dpr`.
+    pub fn resize(&self, width: f64, height: f64, dpr: f64) {
+        for canvas in self.all() {
+            canvas.set_width((width * dpr) as u32);
+            canvas.set_height((height * dpr) as u32);
+            let _ = canvas.style().set_property("width", &format!("{width}px"));
+            let _ = canvas
+                .style()
+                .set_property("height", &format!("{height}px"));
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_bg_layer(
-    canvas: &HtmlCanvasElement,
-    layer_name: &str,
-    layer: &str,
-    scalefactor: f64,
-    pcbdata: &PcbData,
-    edge_color: &str,
-    polygon_color: &str,
-    text_color: &str,
-    settings: &Settings,
-) {
-    let ctx = get_ctx(canvas);
-    let font_data = pcbdata.font_data.as_ref();
-
-    let drawings = match layer_name {
-        "silkscreen" => &pcbdata.drawings.silkscreen,
-        "fabrication" => &pcbdata.drawings.fabrication,
-        _ => return,
-    };
-    let items = match drawings.get(layer) {
-        Some(items) => items,
-        None => return,
-    };
-
-    for d in items {
-        match d {
-            Drawing::Polygon { .. } => draw_polygon_shape(&ctx, scalefactor, d, polygon_color),
-            Drawing::Segment { .. }
-            | Drawing::Arc { .. }
-            | Drawing::Circle { .. }
-            | Drawing::Curve { .. }
-            | Drawing::Rect { .. } => draw_edge(&ctx, scalefactor, d, edge_color),
-        }
-    }
-
-    let _ = (text_color, settings, font_data);
-}
-
-/// Draw drill holes using destination-out compositing to punch through the canvas.
-/// This creates a see-through effect where the page background shows through.
-fn draw_drills(canvas: &HtmlCanvasElement, pcbdata: &PcbData) {
-    let drills = match pcbdata.drawings.fabrication.inner.get("Drills") {
-        Some(d) => d,
-        None => return,
-    };
-    if drills.is_empty() {
-        return;
-    }
-
-    let ctx = get_ctx(canvas);
-    ctx.save();
-    ctx.set_global_composite_operation("destination-out")
-        .unwrap();
-    ctx.set_fill_style_str("rgba(0,0,0,1)");
-
-    for d in drills {
-        if let Drawing::Circle { start, radius, .. } = d {
-            ctx.begin_path();
-            ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
-            ctx.fill();
-        }
-    }
-
-    ctx.restore();
-}
-
-/// Apply Gerber clear-polarity shapes using destination-out compositing.
-/// Clear-polarity geometry punches transparent holes through the layer.
-fn apply_gerber_clear(canvas: &HtmlCanvasElement, drawings: &[Drawing], scalefactor: f64) {
-    if drawings.is_empty() {
-        return;
-    }
-    let ctx = get_ctx(canvas);
-    ctx.save();
-    ctx.set_global_composite_operation("destination-out")
-        .unwrap();
-    let black = "rgba(0,0,0,1)";
-    for d in drawings {
-        match d {
-            Drawing::Polygon { .. } => draw_polygon_shape(&ctx, scalefactor, d, black),
-            _ => draw_edge(&ctx, scalefactor, d, black),
-        }
-    }
-    ctx.restore();
-}
-
-/// Draw a single copper pad shape, filling rects/circles/polygons.
-fn draw_copper_pad_shape(
-    ctx: &CanvasRenderingContext2d,
-    scalefactor: f64,
-    drawing: &Drawing,
-    color: &str,
-) {
-    ctx.set_fill_style_str(color);
-    ctx.set_stroke_style_str(color);
-    match drawing {
-        Drawing::Circle { start, radius, .. } => {
-            ctx.begin_path();
-            ctx.arc(start[0], start[1], *radius, 0.0, 2.0 * PI).unwrap();
-            ctx.close_path();
-            ctx.fill();
-        }
-        Drawing::Rect { start, end, .. } => {
-            ctx.fill_rect(start[0], start[1], end[0] - start[0], end[1] - start[1]);
-        }
-        Drawing::Polygon { .. } => {
-            draw_polygon_shape(ctx, scalefactor, drawing, color);
-        }
-        _ => {
-            draw_edge(ctx, scalefactor, drawing, color);
-        }
-    }
-}
-
-fn draw_copper_pads(
-    canvas: &HtmlCanvasElement,
-    layer: &str,
-    color: &str,
-    scalefactor: f64,
-    pcbdata: &PcbData,
-) {
-    let pads = match pcbdata.copper_pads.as_ref().and_then(|p| p.get(layer)) {
-        Some(p) => p,
-        None => return,
-    };
-    let ctx = get_ctx(canvas);
-    for d in pads {
-        draw_copper_pad_shape(&ctx, scalefactor, d, color);
-    }
-}
-
-pub fn draw_tracks(
-    canvas: &HtmlCanvasElement,
-    layer: &str,
-    default_color: &str,
-    hole_color: &str,
-    highlight: bool,
-    pcbdata: &PcbData,
-    highlighted_net: &Option<String>,
-) {
-    let tracks = match pcbdata.tracks.as_ref().and_then(|t| t.get(layer)) {
-        Some(t) => t,
-        None => return,
-    };
-    let ctx = get_ctx(canvas);
-    ctx.set_line_cap("round");
-
-    for track in tracks {
-        match track {
-            Track::Segment {
-                start,
-                end,
-                width,
-                net,
-                drillsize,
-            } => {
-                if highlight && highlighted_net.as_ref() != net.as_ref() {
-                    continue;
-                }
-                let is_via = drillsize.is_some() && start == end;
-                if !is_via {
-                    ctx.set_stroke_style_str(default_color);
-                    ctx.set_line_width(*width);
-                    ctx.begin_path();
-                    ctx.move_to(start[0], start[1]);
-                    ctx.line_to(end[0], end[1]);
-                    ctx.stroke();
-                }
-            }
-            Track::Arc {
-                center,
-                startangle,
-                endangle,
-                radius,
-                width,
-                net,
-            } => {
-                if highlight && highlighted_net.as_ref() != net.as_ref() {
-                    continue;
-                }
-                ctx.set_stroke_style_str(default_color);
-                ctx.set_line_width(*width);
-                ctx.begin_path();
-                ctx.arc(
-                    center[0],
-                    center[1],
-                    *radius,
-                    deg2rad(*startangle),
-                    deg2rad(*endangle),
-                )
-                .unwrap();
-                ctx.stroke();
-            }
-        }
-    }
-
-    // Second pass: untented vias
-    for track in tracks {
-        if let Track::Segment {
-            start,
-            end,
-            width,
-            net,
-            drillsize: Some(ds),
-        } = track
-        {
-            if start != end {
-                continue;
-            }
-            if highlight && highlighted_net.as_ref() != net.as_ref() {
-                continue;
-            }
-            ctx.set_stroke_style_str(default_color);
-            ctx.set_line_width(*width);
-            ctx.begin_path();
-            ctx.move_to(start[0], start[1]);
-            ctx.line_to(end[0], end[1]);
-            ctx.stroke();
-            // Draw hole
-            ctx.set_stroke_style_str(hole_color);
-            ctx.set_line_width(*ds);
-            ctx.line_to(end[0], end[1]);
-            ctx.stroke();
-        }
-    }
-}
-
-pub fn draw_zones(
-    canvas: &HtmlCanvasElement,
-    layer: &str,
-    default_color: &str,
-    highlight: bool,
-    pcbdata: &PcbData,
-    highlighted_net: &Option<String>,
-    zone_cache: &mut HashMap<String, Path2d>,
-) {
-    let zones = match pcbdata.zones.as_ref().and_then(|z| z.get(layer)) {
-        Some(z) => z,
-        None => return,
-    };
-    let ctx = get_ctx(canvas);
-    ctx.set_line_join("round");
-
-    for (i, zone) in zones.iter().enumerate() {
-        if highlight && highlighted_net.as_ref() != zone.net.as_ref() {
-            continue;
-        }
-        ctx.set_stroke_style_str(default_color);
-        ctx.set_fill_style_str(default_color);
-
-        let cache_key = format!("{}{}", layer, i);
-        let path = zone_cache.entry(cache_key).or_insert_with(|| {
-            if let Some(ref svgpath) = zone.svgpath {
-                Path2d::new_with_path_string(svgpath).unwrap_or_else(|_| Path2d::new().unwrap())
-            } else if let Some(ref polygons) = zone.polygons {
-                get_polygons_path(polygons)
-            } else {
-                Path2d::new().unwrap()
-            }
-        });
-
-        ctx.fill_with_path_2d_and_winding(path, CanvasWindingRule::Evenodd);
-        if let Some(w) = zone.width {
-            if w > 0.0 {
-                ctx.set_line_width(w);
-                ctx.stroke_with_path(path);
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_nets(
-    canvas: &HtmlCanvasElement,
-    layer: &str,
-    highlight: bool,
-    pcbdata: &PcbData,
-    colors: &Colors,
-    settings: &Settings,
-    highlighted_net: &Option<String>,
-    zone_cache: &mut HashMap<String, Path2d>,
-    draw_inner: bool,
-) {
-    let track_color = if highlight {
-        &colors.track_highlight
-    } else if layer == "F" {
-        &colors.track_front
-    } else {
-        &colors.track_back
-    };
-    let zone_color = if highlight {
-        &colors.zone_highlight
-    } else if layer == "F" {
-        &colors.zone_front
-    } else {
-        &colors.zone_back
-    };
-
-    if settings.render_zones {
-        draw_zones(
-            canvas,
-            layer,
-            zone_color,
-            highlight,
-            pcbdata,
-            highlighted_net,
-            zone_cache,
-        );
-        // Dimmed inner-layer zones, gated by the same hidden_layers toggle as inner tracks.
-        if let (true, Some(ref zones)) = (draw_inner, &pcbdata.zones) {
-            let ctx = get_ctx(canvas);
-            ctx.save();
-            ctx.set_global_alpha(0.25);
-            for name in zones.inner_layer_names() {
-                if !settings.hidden_layers.contains(name.as_str()) {
-                    draw_zones(
-                        canvas,
-                        name,
-                        zone_color,
-                        highlight,
-                        pcbdata,
-                        highlighted_net,
-                        zone_cache,
-                    );
-                }
-            }
-            ctx.restore();
-        }
-    }
-    if settings.render_tracks {
-        draw_tracks(
-            canvas,
-            layer,
-            track_color,
-            &colors.pad_hole,
-            highlight,
-            pcbdata,
-            highlighted_net,
-        );
-        // Also draw inner copper layer tracks (not zones - those are plane fills)
-        if let (true, Some(ref tracks)) = (draw_inner, &pcbdata.tracks) {
-            let ctx = get_ctx(canvas);
-            ctx.save();
-            ctx.set_global_alpha(0.25);
-            for name in tracks.inner_layer_names() {
-                if !settings.hidden_layers.contains(name.as_str()) {
-                    draw_tracks(
-                        canvas,
-                        name,
-                        track_color,
-                        &colors.pad_hole,
-                        highlight,
-                        pcbdata,
-                        highlighted_net,
-                    );
-                }
-            }
-            ctx.restore();
-        }
-    }
-}
-
-pub fn clear_canvas(canvas: &HtmlCanvasElement, color: Option<&str>) {
-    let ctx = get_ctx(canvas);
-    ctx.save();
-    ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
-    if let Some(c) = color {
-        ctx.set_fill_style_str(c);
-        ctx.fill_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
-    } else {
-        ctx.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
-    }
-    ctx.restore();
-}
-
-pub fn prepare_canvas(
-    canvas: &HtmlCanvasElement,
-    flip: bool,
-    transform: &Transform,
-    settings: &Settings,
-) {
-    let ctx = get_ctx(canvas);
-    ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
-    ctx.scale(transform.zoom, transform.zoom).unwrap();
-    ctx.translate(transform.panx, transform.pany).unwrap();
-    if flip {
-        ctx.scale(-1.0, 1.0).unwrap();
-    }
-    ctx.translate(transform.x, transform.y).unwrap();
-    let rot = settings.board_rotation
-        + if flip && settings.offset_back_rotation {
-            -180.0
-        } else {
-            0.0
-        };
-    ctx.rotate(deg2rad(rot)).unwrap();
-    ctx.scale(transform.s, transform.s).unwrap();
-}
-
-pub fn prepare_layer(layer: &LayerCanvases, settings: &Settings) {
-    let flip = layer.layer == "B";
-    for canvas in layer.all_canvases() {
-        prepare_canvas(canvas, flip, &layer.transform, settings);
-    }
-}
-
-fn rotate_vector(v: [f64; 2], angle: f64) -> [f64; 2] {
-    let a = deg2rad(angle);
-    [
-        v[0] * a.cos() - v[1] * a.sin(),
-        v[0] * a.sin() + v[1] * a.cos(),
-    ]
-}
-
-fn apply_rotation(bbox: &BBox, flip: bool, settings: &Settings) -> BBox {
-    let corners = [
-        [bbox.minx, bbox.miny],
-        [bbox.minx, bbox.maxy],
-        [bbox.maxx, bbox.miny],
-        [bbox.maxx, bbox.maxy],
-    ];
-    let rot = settings.board_rotation
-        + if flip && settings.offset_back_rotation {
-            -180.0
-        } else {
-            0.0
-        };
-    let rotated: Vec<[f64; 2]> = corners.iter().map(|v| rotate_vector(*v, rot)).collect();
-    BBox {
-        minx: rotated.iter().map(|v| v[0]).fold(f64::INFINITY, f64::min),
-        miny: rotated.iter().map(|v| v[1]).fold(f64::INFINITY, f64::min),
-        maxx: rotated
-            .iter()
-            .map(|v| v[0])
-            .fold(f64::NEG_INFINITY, f64::max),
-        maxy: rotated
-            .iter()
-            .map(|v| v[1])
-            .fold(f64::NEG_INFINITY, f64::max),
-    }
-}
-
-pub fn recalc_layer_scale(
-    layer: &mut LayerCanvases,
-    width: f64,
-    height: f64,
-    pcbdata: &PcbData,
-    settings: &Settings,
-) {
-    let flip = layer.layer == "B";
-    let default_bbox = BBox {
-        minx: 0.0,
-        miny: 0.0,
-        maxx: 100.0,
-        maxy: 100.0,
-    };
-    let edges_bbox = pcbdata.edges_bbox.as_ref().unwrap_or(&default_bbox);
-    let bbox = apply_rotation(edges_bbox, flip, settings);
-    let mut scalefactor =
-        0.98 * (width / (bbox.maxx - bbox.minx)).min(height / (bbox.maxy - bbox.miny));
-    if !scalefactor.is_finite() || scalefactor < 0.1 {
-        scalefactor = 1.0;
-    }
-    layer.transform.s = scalefactor;
-    if flip {
-        layer.transform.x = -((bbox.maxx + bbox.minx) * scalefactor + width) * 0.5;
-    } else {
-        layer.transform.x = -((bbox.maxx + bbox.minx) * scalefactor - width) * 0.5;
-    }
-    layer.transform.y = -((bbox.maxy + bbox.miny) * scalefactor - height) * 0.5;
-
-    let dpr = web_sys::window()
-        .map(|w| w.device_pixel_ratio())
-        .unwrap_or(1.0);
-
-    for canvas in layer.all_canvases() {
-        canvas.set_width(width as u32);
-        canvas.set_height(height as u32);
-        let _ = canvas
-            .style()
-            .set_property("width", &format!("{}px", width / dpr));
-        let _ = canvas
-            .style()
-            .set_property("height", &format!("{}px", height / dpr));
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_background(
-    layer: &LayerCanvases,
-    pcbdata: &PcbData,
-    colors: &Colors,
-    settings: &Settings,
-    highlighted_footprints: &[usize],
-    marked_footprints: &std::collections::HashSet<usize>,
-    highlighted_net: &Option<String>,
-    cache: &mut PathCache,
-    zone_cache: &mut HashMap<String, Path2d>,
-) {
-    clear_canvas(&layer.bg, None);
-    clear_canvas(&layer.fab, None);
-    clear_canvas(&layer.silk, None);
-
-    // Draw opposite layer at reduced opacity (see-through)
-    let opposite = if layer.layer == "F" { "B" } else { "F" };
-    {
-        let ctx = get_ctx(&layer.bg);
-        ctx.save();
-        ctx.set_global_alpha(0.35);
-    }
-    draw_nets(
-        &layer.bg,
-        opposite,
-        false,
-        pcbdata,
-        colors,
-        settings,
-        highlighted_net,
-        zone_cache,
-        false,
-    );
-    if settings.render_tracks {
-        let opp_color = if opposite == "F" {
-            &colors.track_front
-        } else {
-            &colors.track_back
-        };
-        draw_copper_pads(
-            &layer.bg,
-            opposite,
-            opp_color,
-            layer.transform.s * layer.transform.zoom,
-            pcbdata,
-        );
-    }
-    draw_footprints(
-        &layer.bg,
-        opposite,
-        layer.transform.s * layer.transform.zoom,
-        false,
-        pcbdata,
-        colors,
-        settings,
-        highlighted_footprints,
-        marked_footprints,
-        cache,
-    );
-    get_ctx(&layer.bg).restore();
-
-    // Draw primary layer at full opacity (inner layers drawn once, here)
-    draw_nets(
-        &layer.bg,
-        &layer.layer,
-        false,
-        pcbdata,
-        colors,
-        settings,
-        highlighted_net,
-        zone_cache,
-        true,
-    );
-    if settings.render_tracks {
-        let primary_color = if layer.layer == "F" {
-            &colors.track_front
-        } else {
-            &colors.track_back
-        };
-        draw_copper_pads(
-            &layer.bg,
-            &layer.layer,
-            primary_color,
-            layer.transform.s * layer.transform.zoom,
-            pcbdata,
-        );
-        // Inner copper layer pads at reduced opacity
-        if let Some(ref copper_pads) = pcbdata.copper_pads {
-            let ctx = get_ctx(&layer.bg);
-            ctx.save();
-            ctx.set_global_alpha(0.25);
-            for name in copper_pads.inner_layer_names() {
-                if !settings.hidden_layers.contains(name.as_str()) {
-                    draw_copper_pads(
-                        &layer.bg,
-                        name,
-                        primary_color,
-                        layer.transform.s * layer.transform.zoom,
-                        pcbdata,
-                    );
-                }
-            }
-            ctx.restore();
-        }
-    }
-    draw_footprints(
-        &layer.bg,
-        &layer.layer,
-        layer.transform.s * layer.transform.zoom,
-        false,
-        pcbdata,
-        colors,
-        settings,
-        highlighted_footprints,
-        marked_footprints,
-        cache,
-    );
-    if settings.render_edge_cuts {
-        draw_edge_cuts(
-            &layer.bg,
-            layer.transform.s * layer.transform.zoom,
-            pcbdata,
-            colors,
-            settings,
-            pcbdata.font_data.as_ref(),
-        );
-    }
-
-    // Draw drill holes (punch through bg canvas for see-through effect)
-    draw_drills(&layer.bg, pcbdata);
-
-    if settings.render_silkscreen {
-        draw_bg_layer(
-            &layer.silk,
-            "silkscreen",
-            &layer.layer,
-            layer.transform.s * layer.transform.zoom,
-            pcbdata,
-            &colors.silk_edge,
-            &colors.silk_polygon,
-            &colors.silk_text,
-            settings,
-        );
-        let clear_key = format!("{}_Clear", layer.layer);
-        if let Some(clears) = pcbdata.drawings.silkscreen.inner.get(&clear_key) {
-            apply_gerber_clear(
-                &layer.silk,
-                clears,
-                layer.transform.s * layer.transform.zoom,
-            );
-        }
-    }
-    if settings.render_fabrication {
-        draw_bg_layer(
-            &layer.fab,
-            "fabrication",
-            &layer.layer,
-            layer.transform.s * layer.transform.zoom,
-            pcbdata,
-            &colors.fab_edge,
-            &colors.fab_polygon,
-            &colors.fab_text,
-            settings,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_highlights_on_layer(
-    layer: &LayerCanvases,
-    pcbdata: &PcbData,
-    colors: &Colors,
-    settings: &Settings,
-    highlighted_footprints: &[usize],
-    marked_footprints: &std::collections::HashSet<usize>,
-    highlighted_net: &Option<String>,
-    cache: &mut PathCache,
-    zone_cache: &mut HashMap<String, Path2d>,
-) {
-    clear_canvas(&layer.highlight, None);
-
-    if !marked_footprints.is_empty() || !highlighted_footprints.is_empty() {
-        draw_footprints(
-            &layer.highlight,
-            &layer.layer,
-            layer.transform.s * layer.transform.zoom,
-            true,
-            pcbdata,
-            colors,
-            settings,
-            highlighted_footprints,
-            marked_footprints,
-            cache,
-        );
-    }
-    if highlighted_net.is_some() {
-        // Draw both layers at full opacity for saturated highlight
-        let opposite = if layer.layer == "F" { "B" } else { "F" };
-        draw_nets(
-            &layer.highlight,
-            opposite,
-            true,
-            pcbdata,
-            colors,
-            settings,
-            highlighted_net,
-            zone_cache,
-            false,
-        );
-        draw_nets(
-            &layer.highlight,
-            &layer.layer,
-            true,
-            pcbdata,
-            colors,
-            settings,
-            highlighted_net,
-            zone_cache,
-            true,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn redraw_canvas(
-    layer: &LayerCanvases,
-    pcbdata: &PcbData,
-    colors: &Colors,
-    settings: &Settings,
-    highlighted_footprints: &[usize],
-    marked_footprints: &std::collections::HashSet<usize>,
-    highlighted_net: &Option<String>,
-    cache: &mut PathCache,
-    zone_cache: &mut HashMap<String, Path2d>,
-) {
-    prepare_layer(layer, settings);
-    draw_background(
-        layer,
-        pcbdata,
-        colors,
-        settings,
-        highlighted_footprints,
-        marked_footprints,
-        highlighted_net,
-        cache,
-        zone_cache,
-    );
-    draw_highlights_on_layer(
-        layer,
-        pcbdata,
-        colors,
-        settings,
-        highlighted_footprints,
-        marked_footprints,
-        highlighted_net,
-        cache,
-        zone_cache,
-    );
-}
-
-// ─── Hit Testing ────────────────────────────────────────────────────
-
-fn point_within_distance_to_segment(
-    x: f64,
-    y: f64,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-    d: f64,
-) -> bool {
-    let a = x - x1;
-    let b = y - y1;
-    let c = x2 - x1;
-    let dd = y2 - y1;
-    let dot = a * c + b * dd;
-    let len_sq = c * c + dd * dd;
-    let (dx, dy) = if len_sq == 0.0 {
-        (x - x1, y - y1)
-    } else {
-        let param = dot / len_sq;
-        if param < 0.0 {
-            (x - x1, y - y1)
-        } else if param > 1.0 {
-            (x - x2, y - y2)
-        } else {
-            (x - (x1 + param * c), y - (y1 + param * dd))
-        }
-    };
-    dx * dx + dy * dy <= d * d
-}
-
-pub fn bbox_hit_scan(layer: &str, x: f64, y: f64, pcbdata: &PcbData) -> Vec<usize> {
-    let opposite = if layer == "F" { "B" } else { "F" };
-    let mut result = Vec::new();
-    // Check primary layer first, then opposite
-    for check_layer in &[layer, opposite] {
-        for (i, fp) in pcbdata.footprints.iter().enumerate() {
-            if fp.layer == *check_layer {
-                let v = rotate_vector([x - fp.bbox.pos[0], y - fp.bbox.pos[1]], fp.bbox.angle);
-                if fp.bbox.relpos[0] <= v[0]
-                    && v[0] <= fp.bbox.relpos[0] + fp.bbox.size[0]
-                    && fp.bbox.relpos[1] <= v[1]
-                    && v[1] <= fp.bbox.relpos[1] + fp.bbox.size[1]
-                {
-                    result.push(i);
-                }
-            }
-        }
-        if !result.is_empty() {
-            return result;
-        }
-    }
-    result
-}
-
-fn track_hit_scan(tracks: &[Track], x: f64, y: f64) -> Option<String> {
-    for track in tracks {
-        match track {
-            Track::Segment {
-                start,
-                end,
-                width,
-                net,
-                ..
-            } => {
-                if point_within_distance_to_segment(
-                    x,
-                    y,
-                    start[0],
-                    start[1],
-                    end[0],
-                    end[1],
-                    width / 2.0,
-                ) {
-                    return net.clone();
-                }
-            }
-            Track::Arc {
-                center,
-                startangle,
-                endangle,
-                radius,
-                width,
-                net,
-            } => {
-                let dx = x - center[0];
-                let dy = y - center[1];
-                let dist = (dx * dx + dy * dy).sqrt();
-                if (dist - radius).abs() <= width / 2.0 {
-                    // Only hit when the click also falls within the arc's angular
-                    // sweep (canvas default, increasing-angle direction).
-                    let start = deg2rad(*startangle);
-                    let end = deg2rad(*endangle);
-                    let two_pi = std::f64::consts::TAU;
-                    let sweep = (end - start).rem_euclid(two_pi);
-                    let offset = (dy.atan2(dx) - start).rem_euclid(two_pi);
-                    let tol = if *radius > 0.0 {
-                        width / 2.0 / radius
-                    } else {
-                        0.0
-                    };
-                    if offset <= sweep + tol || offset >= two_pi - tol {
-                        return net.clone();
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-pub fn net_hit_scan(
-    layer: &str,
-    x: f64,
-    y: f64,
-    pcbdata: &PcbData,
-    settings: &Settings,
-) -> Option<String> {
-    let opposite = if layer == "F" { "B" } else { "F" };
-
-    // Build layer check order: primary, opposite, then inner layers
-    let mut layers_to_check: Vec<&str> = vec![layer, opposite];
-    if let Some(ref tracks_data) = pcbdata.tracks {
-        for name in tracks_data.inner_layer_names() {
-            layers_to_check.push(name.as_str());
-        }
-    }
-
-    for check_layer in &layers_to_check {
-        if settings.render_tracks {
-            if let Some(tracks) = pcbdata.tracks.as_ref().and_then(|t| t.get(check_layer)) {
-                if let Some(net) = track_hit_scan(tracks, x, y) {
-                    return Some(net);
-                }
-            }
-        }
-        if settings.render_pads {
-            for fp in &pcbdata.footprints {
-                for pad in &fp.pads {
-                    if pad.layers.iter().any(|l| l == *check_layer) {
-                        let v = rotate_vector(
-                            [x - pad.pos[0], y - pad.pos[1]],
-                            pad.angle.unwrap_or(0.0),
-                        );
-                        let hx = pad.size[0] / 2.0;
-                        let hy = pad.size[1] / 2.0;
-                        if v[0].abs() <= hx && v[1].abs() <= hy {
-                            return pad.net.clone();
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Convert screen coordinates to board coordinates
-pub fn screen_to_board(
-    offset_x: f64,
-    offset_y: f64,
-    transform: &Transform,
-    layer: &str,
-    settings: &Settings,
-) -> [f64; 2] {
-    let dpr = web_sys::window()
-        .map(|w| w.device_pixel_ratio())
-        .unwrap_or(1.0);
-    let flip = layer == "B";
-    let x = if flip {
-        (dpr * offset_x / transform.zoom - transform.panx + transform.x) / -transform.s
-    } else {
-        (dpr * offset_x / transform.zoom - transform.panx - transform.x) / transform.s
-    };
-    let y = (dpr * offset_y / transform.zoom - transform.y - transform.pany) / transform.s;
-    let rot = -settings.board_rotation
-        + if flip && settings.offset_back_rotation {
-            -180.0
-        } else {
-            0.0
-        };
-    rotate_vector([x, y], rot)
 }
 
 fn get_ctx(canvas: &HtmlCanvasElement) -> CanvasRenderingContext2d {
@@ -1707,4 +311,408 @@ fn get_ctx(canvas: &HtmlCanvasElement) -> CanvasRenderingContext2d {
         .unwrap()
         .dyn_into::<CanvasRenderingContext2d>()
         .unwrap()
+}
+
+fn clear(canvas: &HtmlCanvasElement) {
+    vr::clear(
+        &get_ctx(canvas),
+        canvas.width() as f64,
+        canvas.height() as f64,
+        None,
+    );
+}
+
+/// Everything that decides what a frame looks like.
+pub struct Frame<'a> {
+    pub board: &'a Board,
+    pub colors: &'a Colors,
+    pub settings: &'a Settings,
+    /// Side being viewed: "F" or "B".
+    pub side: &'a str,
+    pub highlighted_footprints: &'a [usize],
+    pub marked_footprints: &'a HashSet<usize>,
+    pub highlighted_net: Option<NetId>,
+    pub dnp: &'a HashSet<usize>,
+}
+
+/// One pass: an ordered list of (layer, alpha) plus colour overrides.
+struct Pass {
+    layers: Vec<(LayerId, f64)>,
+    colors: HashMap<LayerId, Rgba>,
+    fills: HashMap<LayerId, Rgba>,
+}
+
+impl Pass {
+    fn new() -> Self {
+        Self {
+            layers: Vec::new(),
+            colors: HashMap::new(),
+            fills: HashMap::new(),
+        }
+    }
+
+    fn add(&mut self, layer: Option<LayerId>, alpha: f64, color: Rgba) {
+        if let Some(id) = layer {
+            self.layers.push((id, alpha));
+            self.colors.insert(id, color);
+        }
+    }
+}
+
+impl Frame<'_> {
+    fn opposite(&self) -> &'static str {
+        if self.side == "F" {
+            "B"
+        } else {
+            "F"
+        }
+    }
+
+    fn base_state(&self, vp: &Viewport) -> ViewState {
+        let mut st = ViewState::new(vp.view());
+        st.dpr = vp.dpr;
+        // One device pixel, like the classic renderer's `1 / scalefactor`.
+        st.min_line_px = 1.0 / vp.dpr;
+        st.theme.hole = Some(self.colors.pad_hole);
+        let s = self.settings;
+        if !s.render_references {
+            st.hidden_items.extend(self.board.ref_texts.iter().copied());
+        }
+        if !s.render_values {
+            st.hidden_items
+                .extend(self.board.value_texts.iter().copied());
+        }
+        if s.render_dnp_outline {
+            for g in self.dnp {
+                if let Some(pads) = self.board.pads_by_group.get(&(*g as GroupId)) {
+                    st.outline_items.extend(pads.iter().copied());
+                }
+            }
+        }
+        st
+    }
+
+    fn apply(&self, st: &mut ViewState, pass: Pass) {
+        st.layer_order = Some(pass.layers.iter().map(|(l, _)| *l).collect());
+        for (l, a) in &pass.layers {
+            st.visibility.set(*l, true);
+            st.layer_alpha.insert(*l, *a);
+        }
+        st.theme.layer_colors = pass.colors;
+        st.theme.fill_colors = pass.fills;
+    }
+
+    fn inner_visible(&self) -> impl Iterator<Item = &String> {
+        self.board
+            .inner
+            .iter()
+            .filter(|n| !self.settings.hidden_layers.contains(n.as_str()))
+    }
+
+    /// Copper and pads for one side, as `draw_nets` + pads + footprints did.
+    fn copper(
+        &self,
+        pass: &mut Pass,
+        side: &str,
+        alpha: f64,
+        inner: bool,
+        net_colors: (Rgba, Rgba),
+    ) {
+        let b = self.board;
+        let s = self.settings;
+        let (track_c, zone_c) = net_colors;
+        if s.render_zones {
+            pass.add(b.layer(side, ZONES), alpha, zone_c);
+            if inner {
+                for n in self.inner_visible() {
+                    pass.add(b.layer(n, ZONES), alpha * 0.25, zone_c);
+                }
+            }
+        }
+        if s.render_tracks {
+            pass.add(b.layer(side, TRACKS), alpha, track_c);
+            if inner {
+                for n in self.inner_visible() {
+                    pass.add(b.layer(n, TRACKS), alpha * 0.25, track_c);
+                }
+            }
+        }
+    }
+
+    fn background_pass(&self) -> Pass {
+        let b = self.board;
+        let s = self.settings;
+        let c = self.colors;
+        let (side, opp) = (self.side, self.opposite());
+        let mut pass = Pass::new();
+
+        // See-through opposite side.
+        self.copper(&mut pass, opp, 0.35, false, (c.track(opp), c.zone(opp)));
+        if s.render_tracks {
+            pass.add(b.layer(opp, COPPER_PADS), 0.35, c.track(opp));
+        }
+        pass.add(b.layer(opp, FOOTPRINTS), 0.35, c.pad);
+        if s.render_pads {
+            pass.add(b.layer(opp, PADS), 0.35, c.pad);
+        }
+
+        // Viewed side, inner layers dimmed in its colours.
+        self.copper(&mut pass, side, 1.0, true, (c.track(side), c.zone(side)));
+        if s.render_tracks {
+            pass.add(b.layer(side, COPPER_PADS), 1.0, c.track(side));
+            for n in self.inner_visible() {
+                pass.add(b.layer(n, COPPER_PADS), 0.25, c.track(side));
+            }
+        }
+        pass.add(b.layer(side, FOOTPRINTS), 1.0, c.pad);
+        if s.render_pads {
+            pass.add(b.layer(side, PADS), 1.0, c.pad);
+            pass.add(b.named(HOLES), 1.0, c.pad_hole);
+        }
+        if s.render_edge_cuts {
+            pass.add(b.named(EDGE_CUTS), 1.0, c.pcb_edge);
+        }
+        // Drill hits punch through so the page shows (see `erase_layers`).
+        pass.add(b.named(DRILLS), 1.0, c.pad_hole);
+        pass
+    }
+
+    fn pin1_state(&self, vp: &Viewport, pads: Vec<ItemId>, color: Rgba) -> Option<ViewState> {
+        let layer = self.board.layer(self.side, PADS)?;
+        if pads.is_empty() {
+            return None;
+        }
+        let mut st = self.base_state(vp);
+        let mut pass = Pass::new();
+        pass.add(Some(layer), 1.0, color);
+        self.apply(&mut st, pass);
+        st.outline_items = pads.iter().copied().collect();
+        st.highlight = Highlight::Items(st.outline_items.clone());
+        st.highlight_style = HighlightStyle::Only;
+        st.theme.highlight = Some(color);
+        Some(st)
+    }
+
+    fn side_pin1(&self) -> Vec<ItemId> {
+        self.board
+            .layer(self.side, PADS)
+            .and_then(|l| self.board.pin1_pads.get(&l))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Draw background, fabrication and silkscreen canvases.
+    pub fn draw_background(&self, canvases: &Canvases, vp: &Viewport, cache: &mut PathCache) {
+        let scene = &self.board.scene;
+        let b = self.board;
+        let s = self.settings;
+        let c = self.colors;
+        for canvas in [&canvases.bg, &canvases.fab, &canvases.silk] {
+            clear(canvas);
+        }
+
+        let mut st = self.base_state(vp);
+        self.apply(&mut st, self.background_pass());
+        if let Some(d) = b.named(DRILLS) {
+            st.erase_layers.insert(d);
+        }
+        let bg = get_ctx(&canvases.bg);
+        vr::draw_cached(scene, &bg, &st, cache);
+        if s.render_pads && s.highlight_pin1 == "all" {
+            if let Some(st) = self.pin1_state(vp, self.side_pin1(), c.pin1_outline) {
+                vr::draw_cached(scene, &bg, &st, cache);
+            }
+        }
+
+        if s.render_fabrication {
+            let mut st = self.base_state(vp);
+            let mut pass = Pass::new();
+            let l = b.layer(self.side, FAB);
+            pass.add(l, 1.0, c.fab_edge);
+            if let Some(l) = l {
+                pass.fills.insert(l, c.fab_polygon);
+            }
+            self.apply(&mut st, pass);
+            vr::draw_cached(scene, &get_ctx(&canvases.fab), &st, cache);
+        }
+        if s.render_silkscreen {
+            let mut st = self.base_state(vp);
+            let mut pass = Pass::new();
+            let l = b.layer(self.side, SILKSCREEN);
+            pass.add(l, 1.0, c.silk_edge);
+            if let Some(l) = l {
+                pass.fills.insert(l, c.silk_polygon);
+            }
+            let clear_layer = b.layer(self.side, SILKSCREEN_CLEAR);
+            pass.add(clear_layer, 1.0, c.silk_edge);
+            self.apply(&mut st, pass);
+            if let Some(l) = clear_layer {
+                st.erase_layers.insert(l);
+            }
+            vr::draw_cached(scene, &get_ctx(&canvases.silk), &st, cache);
+        }
+    }
+
+    /// Draw the highlight overlay canvas.
+    pub fn draw_highlights(&self, canvases: &Canvases, vp: &Viewport, cache: &mut PathCache) {
+        let scene = &self.board.scene;
+        let b = self.board;
+        let s = self.settings;
+        let c = self.colors;
+        clear(&canvases.highlight);
+        let ctx = get_ctx(&canvases.highlight);
+
+        // Footprints: highlighted, marked, or both, each in its own colours.
+        let hl: HashSet<usize> = self.highlighted_footprints.iter().copied().collect();
+        let mk = self.marked_footprints;
+        let categories = [
+            (
+                hl.intersection(mk).copied().collect::<Vec<_>>(),
+                c.pad_highlight_both,
+                c.pin1_outline_highlight_both,
+            ),
+            (
+                hl.difference(mk).copied().collect(),
+                c.pad_highlight,
+                c.pin1_outline_highlight,
+            ),
+            (
+                mk.difference(&hl).copied().collect(),
+                c.pad_highlight_marked,
+                c.pin1_outline_highlight_marked,
+            ),
+        ];
+        for (fps, pad_c, pin1_c) in categories {
+            if fps.is_empty() {
+                continue;
+            }
+            let groups: HashSet<GroupId> = fps.iter().map(|i| *i as GroupId).collect();
+            let mut st = self.base_state(vp);
+            let mut pass = Pass::new();
+            pass.add(b.layer(self.side, BOUNDS), 0.2, pad_c);
+            pass.add(b.layer(self.side, FOOTPRINTS), 1.0, pad_c);
+            if s.render_pads {
+                pass.add(b.layer(self.side, PADS), 1.0, pad_c);
+                pass.add(b.named(HOLES), 1.0, c.pad_hole);
+            }
+            self.apply(&mut st, pass);
+            st.highlight = Highlight::Group(groups.clone());
+            st.highlight_style = HighlightStyle::Only;
+            st.theme.highlight = Some(pad_c);
+            vr::draw_cached(scene, &ctx, &st, cache);
+
+            // Bounding-box outline at full opacity.
+            if let Some(l) = b.layer(self.side, BOUNDS) {
+                let outlines: HashSet<ItemId> = groups
+                    .iter()
+                    .filter_map(|g| b.bounds_by_group.get(g).copied())
+                    .collect();
+                let mut st = self.base_state(vp);
+                let mut pass = Pass::new();
+                pass.add(Some(l), 1.0, pad_c);
+                self.apply(&mut st, pass);
+                st.highlight = Highlight::Items(outlines.clone());
+                st.highlight_style = HighlightStyle::Only;
+                st.outline_items = outlines;
+                vr::draw_cached(scene, &ctx, &st, cache);
+            }
+
+            if s.render_pads && s.highlight_pin1 == "selected" {
+                let pads: Vec<ItemId> = self
+                    .side_pin1()
+                    .into_iter()
+                    .filter(|id| {
+                        scene
+                            .items
+                            .get(*id as usize - 1)
+                            .and_then(|i| i.group)
+                            .is_some_and(|g| groups.contains(&g))
+                    })
+                    .collect();
+                if let Some(st) = self.pin1_state(vp, pads, pin1_c) {
+                    vr::draw_cached(scene, &ctx, &st, cache);
+                }
+            }
+        }
+
+        // Net: zones and tracks on both sides (inner layers with the viewed side).
+        if let Some(net) = self.highlighted_net {
+            let mut st = self.base_state(vp);
+            let mut pass = Pass::new();
+            let hlc = (c.track_highlight, c.zone_highlight);
+            self.copper(&mut pass, self.opposite(), 1.0, false, hlc);
+            self.copper(&mut pass, self.side, 1.0, true, hlc);
+            self.apply(&mut st, pass);
+            st.highlight = Highlight::Net(net);
+            st.highlight_style = HighlightStyle::Only;
+            vr::draw_cached(scene, &ctx, &st, cache);
+        }
+    }
+}
+
+/// What a click selects.
+pub enum Pick {
+    Net(String),
+    Footprints(Vec<usize>),
+    Nothing,
+}
+
+/// iBOM click semantics: a net under the cursor (tracks, then pads) wins;
+/// otherwise every footprint whose bounds contain the point, viewed side first.
+pub fn pick(
+    board: &Board,
+    vp: &Viewport,
+    x: f64,
+    y: f64,
+    side: &str,
+    settings: &Settings,
+    nets: bool,
+) -> Pick {
+    let p = vp.view().to_world([x, y]);
+    let mut pickable: HashSet<LayerId> = HashSet::new();
+    let sides: Vec<&str> = ["F", "B"]
+        .into_iter()
+        .chain(board.inner.iter().map(String::as_str))
+        .collect();
+    for s in &sides {
+        if settings.render_tracks {
+            pickable.extend(board.layer(s, TRACKS));
+        }
+        if settings.render_pads {
+            pickable.extend(board.layer(s, PADS));
+        }
+    }
+    let opp = if side == "F" { "B" } else { "F" };
+    let bounds = [board.layer(side, BOUNDS), board.layer(opp, BOUNDS)];
+    pickable.extend(bounds.iter().flatten());
+    let visible = |id: LayerId| pickable.contains(&id);
+    let hits = board.index.hits(&board.scene, p, 0.0, &visible);
+    let item = |id: ItemId| &board.scene.items[id as usize - 1];
+
+    if nets {
+        let net = hits.iter().map(|id| item(*id)).find_map(|i| match i.role {
+            Role::Pad | Role::Track | Role::Via => i.net,
+            _ => None,
+        });
+        if let Some(name) = net.and_then(|n| board.net_name(n)) {
+            if !name.is_empty() {
+                return Pick::Net(name.to_string());
+            }
+        }
+    }
+    for layer in bounds.into_iter().flatten() {
+        let fps: Vec<usize> = hits
+            .iter()
+            .map(|id| item(*id))
+            .filter(|i| i.layer == layer)
+            .filter_map(|i| i.group.map(|g| g as usize))
+            .collect();
+        if !fps.is_empty() {
+            let mut fps = fps;
+            fps.sort_unstable();
+            fps.dedup();
+            return Pick::Footprints(fps);
+        }
+    }
+    Pick::Nothing
 }

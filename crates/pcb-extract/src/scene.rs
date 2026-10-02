@@ -299,24 +299,23 @@ fn rounded_rect(size: [f64; 2], radius: f64, chamf: u8, ratio: f64) -> Vec<Point
     let c = size[0].min(size[1]) * ratio;
     let mut pts = Vec::new();
     // Corners in drawing order with the arc start angle for rounding.
+    // Corners in traversal order (increasing angle: +x toward +y), each with
+    // the start angle of its rounding arc.
     let corners = [
-        (4u8, [-hw, hh], PI / 2.0),
-        (8, [hw, hh], 0.0),
-        (2, [hw, -hh], -PI / 2.0),
+        (8u8, [hw, hh], 0.0),
+        (4, [-hw, hh], PI / 2.0),
         (1, [-hw, -hh], PI),
+        (2, [hw, -hh], 1.5 * PI),
     ];
     for (bit, [x, y], a0) in corners {
         let (sx, sy) = (x.signum(), y.signum());
         if chamf & bit != 0 {
-            // Chamfer: approach along the previous edge, cut diagonally.
-            let (p_from, p_to) = if sy > 0.0 && sx < 0.0 {
-                ([x, y - c], [x + c, y])
-            } else if sy > 0.0 {
-                ([x - c, y], [x, y - c])
-            } else if sx > 0.0 {
-                ([x, y + c], [x - c, y])
-            } else {
-                ([x + c, y], [x, y + c])
+            // Chamfer: leave the incoming edge, cut diagonally to the outgoing one.
+            let (p_from, p_to) = match (sx > 0.0, sy > 0.0) {
+                (true, true) => ([x, y - c], [x - c, y]),
+                (false, true) => ([x + c, y], [x, y - c]),
+                (false, false) => ([x, y + c], [x + c, y]),
+                (true, false) => ([x - c, y], [x, y + c]),
             };
             pts.push(p_from);
             pts.push(p_to);
@@ -1035,11 +1034,33 @@ mod tests {
     #[test]
     fn rounded_and_chamfered_rects() {
         let r = rounded_rect([2.0, 1.0], 0.0, 0, 0.0);
-        assert_eq!(r, vec![[-1.0, 0.5], [1.0, 0.5], [1.0, -0.5], [-1.0, -0.5]]);
+        assert_eq!(r, vec![[1.0, 0.5], [-1.0, 0.5], [-1.0, -0.5], [1.0, -0.5]]);
         let c = rounded_rect([2.0, 2.0], 0.0, 1, 0.25);
         // Top-left corner replaced by a 0.5 chamfer.
         assert!(c.contains(&[-0.5, -1.0]) && c.contains(&[-1.0, -0.5]));
         let o = rounded_rect([2.0, 1.0], 0.5, 0, 0.0);
+        // A simple (non-self-intersecting) outline: shoelace area ~ stadium area.
+        let area: f64 = (0..o.len())
+            .map(|i| {
+                let (a, b) = (o[i], o[(i + 1) % o.len()]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum::<f64>()
+            / 2.0;
+        let stadium = 1.0 * 1.0 + PI * 0.25;
+        assert!((area.abs() - stadium).abs() < 0.01, "area {area}");
+        let cr = rounded_rect([2.0, 2.0], 0.0, 15, 0.25);
+        let carea: f64 = (0..cr.len())
+            .map(|i| {
+                let (a, b) = (cr[i], cr[(i + 1) % cr.len()]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum::<f64>()
+            / 2.0;
+        assert!(
+            (carea.abs() - (4.0 - 4.0 * 0.125)).abs() < 1e-9,
+            "area {carea}"
+        );
         for p in &o {
             assert!(p[0].abs() <= 1.0 + 1e-9 && p[1].abs() <= 0.5 + 1e-9);
         }

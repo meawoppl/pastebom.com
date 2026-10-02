@@ -12,6 +12,8 @@ gloo = { version = "0.11", features = ["net", "events", "storage", "timers", "ut
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+pcb-extract = { path = "../pcb-extract", default-features = false, features = ["vector-view"] }
+vector-view = { path = "../vector-view", features = ["canvas"] }
 wasm-logger = "0.2"
 
 [dependencies.web-sys]

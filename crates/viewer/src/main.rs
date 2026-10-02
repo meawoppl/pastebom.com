@@ -3,12 +3,14 @@ mod render;
 mod state;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use gloo::events::EventListener;
+use vector_view::input::{Input, InputConfig, InputEvent as ViewEvent, InputOutcome, WheelMode};
+use vector_view::render::PathCache;
 use wasm_bindgen::JsCast;
-use web_sys::{HtmlCanvasElement, HtmlElement, HtmlInputElement, Path2d};
+use web_sys::{HtmlCanvasElement, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
 
 use pcbdata::*;
@@ -23,21 +25,38 @@ fn main() {
 // ─── App State ──────────────────────────────────────────────────────
 
 struct ViewerState {
-    canvases: LayerCanvases,
+    canvases: Canvases,
     colors: Colors,
-    path_cache: PathCache,
-    zone_cache: HashMap<String, Path2d>,
-    pointer_states: HashMap<i32, PointerState>,
-}
-
-struct PointerState {
-    distance_travelled: f64,
-    last_x: f64,
-    last_y: f64,
-    down_time: f64,
+    board: Rc<Board>,
+    viewport: Viewport,
+    input: Input,
+    cache: PathCache,
+    side: &'static str,
 }
 
 impl ViewerState {
+    fn frame<'a>(
+        &'a self,
+        data: &'a PcbData,
+        settings: &'a Settings,
+        hl: &'a [usize],
+        mf: &'a HashSet<usize>,
+        hn: &Option<String>,
+        dnp: &'a HashSet<usize>,
+    ) -> Frame<'a> {
+        let _ = data;
+        Frame {
+            board: &self.board,
+            colors: &self.colors,
+            settings,
+            side: self.side,
+            highlighted_footprints: hl,
+            marked_footprints: mf,
+            highlighted_net: hn.as_deref().and_then(|n| self.board.net_id(n)),
+            dnp,
+        }
+    }
+
     fn redraw(
         &mut self,
         data: &PcbData,
@@ -46,16 +65,14 @@ impl ViewerState {
         mf: &HashSet<usize>,
         hn: &Option<String>,
     ) {
-        let ViewerState {
-            ref mut canvases,
-            ref colors,
-            ref mut path_cache,
-            ref mut zone_cache,
-            ..
-        } = *self;
-        render::redraw_canvas(
-            canvases, data, colors, settings, hl, mf, hn, path_cache, zone_cache,
-        );
+        let dnp = dnp_set(data);
+        let mut cache = std::mem::take(&mut self.cache);
+        {
+            let frame = self.frame(data, settings, hl, mf, hn, &dnp);
+            frame.draw_background(&self.canvases, &self.viewport, &mut cache);
+            frame.draw_highlights(&self.canvases, &self.viewport, &mut cache);
+        }
+        self.cache = cache;
     }
 
     fn redraw_highlights(
@@ -66,18 +83,36 @@ impl ViewerState {
         mf: &HashSet<usize>,
         hn: &Option<String>,
     ) {
-        let ViewerState {
-            ref mut canvases,
-            ref colors,
-            ref mut path_cache,
-            ref mut zone_cache,
-            ..
-        } = *self;
-        render::prepare_layer(canvases, settings);
-        render::draw_highlights_on_layer(
-            canvases, data, colors, settings, hl, mf, hn, path_cache, zone_cache,
-        );
+        let dnp = dnp_set(data);
+        let mut cache = std::mem::take(&mut self.cache);
+        {
+            let frame = self.frame(data, settings, hl, mf, hn, &dnp);
+            frame.draw_highlights(&self.canvases, &self.viewport, &mut cache);
+        }
+        self.cache = cache;
     }
+}
+
+fn dnp_set(data: &PcbData) -> HashSet<usize> {
+    data.bom
+        .as_ref()
+        .map(|b| b.skipped.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+/// Board geometry for the canvas, built from the same JSON as the BOM data.
+fn build_board(text: &str) -> Board {
+    match serde_json::from_str::<pcb_extract::types::PcbData>(text) {
+        Ok(pcb) => Board::new(pcb_extract::scene::to_scene(&pcb)),
+        Err(e) => {
+            log::error!("board geometry unavailable: {e}");
+            Board::new(vector_view::Scene::new(vector_view::SceneKind::Pcb, true))
+        }
+    }
+}
+
+fn now_ms() -> f64 {
+    js_sys::Date::now()
 }
 
 // ─── App Component ──────────────────────────────────────────────────
@@ -85,6 +120,7 @@ impl ViewerState {
 #[function_component(App)]
 fn app() -> Html {
     let pcbdata: UseStateHandle<Option<Rc<PcbData>>> = use_state(|| None);
+    let board: UseStateHandle<Option<Rc<Board>>> = use_state(|| None);
     let settings = use_state(Settings::default);
     let highlighted_footprints: UseStateHandle<Vec<usize>> = use_state(Vec::new);
     let highlighted_net: UseStateHandle<Option<String>> = use_state(|| None);
@@ -109,6 +145,7 @@ fn app() -> Html {
     // Fetch pcbdata on mount
     {
         let pcbdata = pcbdata.clone();
+        let board = board.clone();
         let settings = settings.clone();
         let loading = loading.clone();
         let error = error.clone();
@@ -147,6 +184,7 @@ fn app() -> Html {
                                         let s = init_settings(&prefix);
                                         storage_prefix_str.set(prefix);
                                         settings.set(s);
+                                        board.set(Some(Rc::new(build_board(&text))));
                                         pcbdata.set(Some(Rc::new(data)));
                                         loading.set(false);
                                     }
@@ -178,6 +216,7 @@ fn app() -> Html {
     // Initialize canvases after pcbdata is loaded
     {
         let pcbdata = pcbdata.clone();
+        let board = board.clone();
         let settings = settings.clone();
         let viewer_state = viewer_state.clone();
         let highlighted_footprints = highlighted_footprints.clone();
@@ -189,8 +228,8 @@ fn app() -> Html {
         use_effect_with(
             (pcbdata.is_some(), *redraw_trigger, *board_flipped),
             move |_| {
-                if let Some(ref data) = *pcbdata {
-                    let layer_name = if *board_flipped { "B" } else { "F" };
+                if let (Some(data), Some(board)) = (&*pcbdata, &*board) {
+                    let side = if *board_flipped { "B" } else { "F" };
 
                     let state = if viewer_state.is_none() {
                         let document = web_sys::window().unwrap().document().unwrap();
@@ -206,32 +245,38 @@ fn app() -> Html {
                         let topmostdiv = document.get_element_by_id("topmostdiv").unwrap();
                         let colors = Colors::from_element(&topmostdiv);
 
-                        let canvases = LayerCanvases {
+                        let canvases = Canvases {
                             bg: get_canvas("bg"),
                             fab: get_canvas("fab"),
                             silk: get_canvas("slk"),
                             highlight: get_canvas("hl"),
-                            layer: layer_name.to_string(),
-                            transform: Transform::default(),
                         };
 
                         let vs = Rc::new(RefCell::new(ViewerState {
                             canvases,
                             colors,
-                            path_cache: PathCache::new(),
-                            zone_cache: HashMap::new(),
-                            pointer_states: HashMap::new(),
+                            board: board.clone(),
+                            viewport: Viewport::default(),
+                            input: Input::new(InputConfig {
+                                wheel: WheelMode::PanUnlessCtrl,
+                                ..InputConfig::default()
+                            }),
+                            cache: PathCache::new(),
+                            side,
                         }));
 
                         viewer_state.set(Some(vs.clone()));
                         vs
                     } else {
-                        let vs = viewer_state.as_ref().unwrap().clone();
-                        vs.borrow_mut().canvases.layer = layer_name.to_string();
-                        vs
+                        viewer_state.as_ref().unwrap().clone()
                     };
 
                     let mut vs = state.borrow_mut();
+                    if vs.side != side {
+                        // Keep the board point at the viewport centre when flipping.
+                        vs.viewport.flip_pan();
+                        vs.side = side;
+                    }
 
                     // Update colors on dark mode change
                     if let Some(document) = web_sys::window().and_then(|w| w.document()) {
@@ -248,16 +293,19 @@ fn app() -> Html {
                     if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                         if let Some(el) = document.get_element_by_id("canvascontainer") {
                             let el: HtmlElement = el.dyn_into().unwrap();
-                            let width = el.client_width() as f64 * dpr;
-                            let height = el.client_height() as f64 * dpr;
+                            let width = el.client_width() as f64;
+                            let height = el.client_height() as f64;
                             if width > 0.0 && height > 0.0 {
-                                recalc_layer_scale(
-                                    &mut vs.canvases,
-                                    width,
-                                    height,
-                                    data,
-                                    &settings,
-                                );
+                                let flipped = *board_flipped;
+                                let ViewerState {
+                                    ref canvases,
+                                    ref mut viewport,
+                                    ref board,
+                                    ..
+                                } = *vs;
+                                viewport.dpr = dpr;
+                                viewport.refit(board, width, height, &settings, flipped);
+                                canvases.resize(width, height, dpr);
                             }
                         }
                     }
@@ -286,164 +334,8 @@ fn app() -> Html {
         });
     }
 
-    // Canvas event handlers
-    let on_canvas_wheel = {
-        let viewer_state = viewer_state.clone();
-        let pcbdata = pcbdata.clone();
-        let settings = settings.clone();
-        let highlighted_footprints = highlighted_footprints.clone();
-        let highlighted_net = highlighted_net.clone();
-        let marked_footprints = marked_footprints.clone();
-
-        Callback::from(move |e: WheelEvent| {
-            e.prevent_default();
-            if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
-                let mut vs = state.borrow_mut();
-                let dpr = web_sys::window()
-                    .map(|w| w.device_pixel_ratio())
-                    .unwrap_or(1.0);
-
-                if e.ctrl_key() {
-                    let mut wheeldelta = e.delta_y();
-                    if e.delta_mode() == 1 {
-                        wheeldelta *= 30.0;
-                    } else if e.delta_mode() == 2 {
-                        wheeldelta *= 300.0;
-                    }
-                    let m = (1.1f64).powf(-wheeldelta / 40.0).clamp(0.5, 2.0);
-
-                    vs.canvases.transform.zoom *= m;
-                    let zoomd = (1.0 - m) / vs.canvases.transform.zoom;
-                    vs.canvases.transform.panx += dpr * e.offset_x() as f64 * zoomd;
-                    vs.canvases.transform.pany += dpr * e.offset_y() as f64 * zoomd;
-                } else {
-                    vs.canvases.transform.panx -= dpr * e.delta_x() / vs.canvases.transform.zoom;
-                    vs.canvases.transform.pany -= dpr * e.delta_y() / vs.canvases.transform.zoom;
-                }
-
-                let hl = (*highlighted_footprints).clone();
-                let hn = (*highlighted_net).clone();
-                let mf = (*marked_footprints).clone();
-                vs.redraw(data, &settings, &hl, &mf, &hn);
-            }
-        })
-    };
-
-    let on_canvas_pointerdown = {
-        let viewer_state = viewer_state.clone();
-        Callback::from(move |e: PointerEvent| {
-            e.prevent_default();
-            if let Some(canvas) = e.target().and_then(|t| t.dyn_into::<HtmlElement>().ok()) {
-                let _ = canvas.set_pointer_capture(e.pointer_id());
-            }
-            if let Some(ref state) = *viewer_state {
-                let mut vs = state.borrow_mut();
-                vs.pointer_states.insert(
-                    e.pointer_id(),
-                    PointerState {
-                        distance_travelled: 0.0,
-                        last_x: e.offset_x() as f64,
-                        last_y: e.offset_y() as f64,
-                        down_time: js_sys::Date::now(),
-                    },
-                );
-            }
-        })
-    };
-
-    let on_canvas_pointermove = {
-        let viewer_state = viewer_state.clone();
-        let pcbdata = pcbdata.clone();
-        let settings = settings.clone();
-        let highlighted_footprints = highlighted_footprints.clone();
-        let highlighted_net = highlighted_net.clone();
-        let marked_footprints = marked_footprints.clone();
-
-        Callback::from(move |e: PointerEvent| {
-            if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
-                let mut vs = state.borrow_mut();
-                if !vs.pointer_states.contains_key(&e.pointer_id()) {
-                    return;
-                }
-                e.prevent_default();
-
-                {
-                    let ViewerState {
-                        ref mut canvases,
-                        ref mut pointer_states,
-                        ..
-                    } = *vs;
-                    let pointer_count = pointer_states.len();
-
-                    let dpr = web_sys::window()
-                        .map(|w| w.device_pixel_ratio())
-                        .unwrap_or(1.0);
-
-                    if pointer_count == 2 {
-                        // Pinch-to-zoom + simultaneous pan by centroid movement
-                        let other_id = *pointer_states
-                            .keys()
-                            .find(|&&id| id != e.pointer_id())
-                            .unwrap();
-                        let other = pointer_states.get(&other_id).unwrap();
-                        let cur = pointer_states.get(&e.pointer_id()).unwrap();
-
-                        let old_mid_x = (cur.last_x + other.last_x) / 2.0;
-                        let old_mid_y = (cur.last_y + other.last_y) / 2.0;
-                        let new_mid_x = (e.offset_x() as f64 + other.last_x) / 2.0;
-                        let new_mid_y = (e.offset_y() as f64 + other.last_y) / 2.0;
-
-                        let old_dist = ((cur.last_x - other.last_x).powi(2)
-                            + (cur.last_y - other.last_y).powi(2))
-                        .sqrt();
-                        let new_dist = ((e.offset_x() as f64 - other.last_x).powi(2)
-                            + (e.offset_y() as f64 - other.last_y).powi(2))
-                        .sqrt();
-
-                        // Pan by centroid movement (before zoom so units are consistent)
-                        canvases.transform.panx +=
-                            dpr * (new_mid_x - old_mid_x) / canvases.transform.zoom;
-                        canvases.transform.pany +=
-                            dpr * (new_mid_y - old_mid_y) / canvases.transform.zoom;
-
-                        // Zoom around new centroid
-                        if old_dist > 1.0 && new_dist > 1.0 {
-                            let scale = (new_dist / old_dist).clamp(0.5, 2.0);
-                            canvases.transform.zoom *= scale;
-                            let zoomd = (1.0 - scale) / canvases.transform.zoom;
-                            canvases.transform.panx += dpr * new_mid_x * zoomd;
-                            canvases.transform.pany += dpr * new_mid_y * zoomd;
-                        }
-
-                        let ptr = pointer_states.get_mut(&e.pointer_id()).unwrap();
-                        ptr.distance_travelled += 100.0; // prevent click detection
-                        ptr.last_x = e.offset_x() as f64;
-                        ptr.last_y = e.offset_y() as f64;
-                    } else if pointer_count == 1 {
-                        let ptr = pointer_states.get_mut(&e.pointer_id()).unwrap();
-                        let dx = e.offset_x() as f64 - ptr.last_x;
-                        let dy = e.offset_y() as f64 - ptr.last_y;
-                        ptr.distance_travelled += dx.abs() + dy.abs();
-
-                        canvases.transform.panx += dpr * dx / canvases.transform.zoom;
-                        canvases.transform.pany += dpr * dy / canvases.transform.zoom;
-
-                        ptr.last_x = e.offset_x() as f64;
-                        ptr.last_y = e.offset_y() as f64;
-                    }
-                }
-
-                if settings.redraw_on_drag {
-                    let hl = (*highlighted_footprints).clone();
-                    let hn = (*highlighted_net).clone();
-                    let mf = (*marked_footprints).clone();
-                    vs.redraw(data, &settings, &hl, &mf, &hn);
-                }
-            }
-        })
-    };
-
-    let on_canvas_pointerup = {
+    // Canvas event handlers: DOM events become vector-view input events.
+    let on_canvas_input = {
         let viewer_state = viewer_state.clone();
         let pcbdata = pcbdata.clone();
         let settings = settings.clone();
@@ -453,56 +345,57 @@ fn app() -> Html {
         let current_row = current_row.clone();
         let filter = filter.clone();
 
-        Callback::from(move |e: PointerEvent| {
-            if let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) {
-                let mut vs = state.borrow_mut();
-
-                if e.button() == 2 {
-                    vs.canvases.transform.panx = 0.0;
-                    vs.canvases.transform.pany = 0.0;
-                    vs.canvases.transform.zoom = 1.0;
-                    let hl = (*highlighted_footprints).clone();
-                    let hn = (*highlighted_net).clone();
-                    let mf = (*marked_footprints).clone();
-                    vs.redraw(data, &settings, &hl, &mf, &hn);
-                    vs.pointer_states.remove(&e.pointer_id());
-                    return;
+        Callback::from(move |ev: ViewEvent| {
+            let (Some(state), Some(data)) = ((*viewer_state).as_ref(), (*pcbdata).as_ref()) else {
+                return;
+            };
+            let mut vs = state.borrow_mut();
+            let outcome = {
+                let ViewerState {
+                    ref mut input,
+                    ref mut viewport,
+                    ..
+                } = *vs;
+                input.handle(&ev, &mut viewport.user)
+            };
+            let redraw = |vs: &mut ViewerState| {
+                let hl = (*highlighted_footprints).clone();
+                let hn = (*highlighted_net).clone();
+                let mf = (*marked_footprints).clone();
+                vs.redraw(data, &settings, &hl, &mf, &hn);
+            };
+            match outcome {
+                InputOutcome::ViewChanged => {
+                    let wheel = matches!(ev, ViewEvent::Wheel { .. });
+                    if wheel || settings.redraw_on_drag {
+                        redraw(&mut vs);
+                    }
                 }
-
-                let was_click = if let Some(ptr) = vs.pointer_states.get(&e.pointer_id()) {
-                    ptr.distance_travelled < 10.0 && js_sys::Date::now() - ptr.down_time <= 500.0
-                } else {
-                    false
-                };
-
-                if was_click && e.button() == 0 {
-                    let layer_str = vs.canvases.layer.clone();
-                    let board_pt = screen_to_board(
-                        e.offset_x() as f64,
-                        e.offset_y() as f64,
-                        &vs.canvases.transform,
-                        &layer_str,
-                        &settings,
-                    );
-
+                InputOutcome::Reset => {
+                    vs.viewport.reset_user();
+                    redraw(&mut vs);
+                }
+                InputOutcome::Tap { x, y, button: 0 } => {
                     // Decide net vs. component selection from the locally
                     // computed hit, not the deferred highlighted_net handle.
-                    let net = if data.nets.is_some() {
-                        net_hit_scan(&layer_str, board_pt[0], board_pt[1], data, &settings)
-                    } else {
-                        None
-                    };
-                    if net.is_some() {
-                        // A net is under the cursor — highlight it.
-                        if net != *highlighted_net {
-                            highlighted_net.set(net);
-                            highlighted_footprints.set(Vec::new());
-                            current_row.set(None);
+                    match pick(
+                        &vs.board,
+                        &vs.viewport,
+                        x,
+                        y,
+                        vs.side,
+                        &settings,
+                        data.nets.is_some(),
+                    ) {
+                        Pick::Net(net) => {
+                            // A net is under the cursor — highlight it.
+                            if Some(&net) != highlighted_net.as_ref() {
+                                highlighted_net.set(Some(net));
+                                highlighted_footprints.set(Vec::new());
+                                current_row.set(None);
+                            }
                         }
-                    } else {
-                        // No net under the cursor — try a component, else clear.
-                        let fps = bbox_hit_scan(&layer_str, board_pt[0], board_pt[1], data);
-                        if !fps.is_empty() {
+                        Pick::Footprints(fps) => {
                             // Find matching BOM row for the clicked component
                             let bom_entries =
                                 get_bom_entries(data, &settings, &filter.to_lowercase());
@@ -522,32 +415,95 @@ fn app() -> Html {
                             current_row.set(row_id);
                             highlighted_footprints.set(fps);
                             highlighted_net.set(None);
-                        } else if highlighted_net.is_some() {
-                            // Clicked empty space with a net highlighted — clear it.
-                            highlighted_net.set(None);
-                            highlighted_footprints.set(Vec::new());
-                            current_row.set(None);
+                        }
+                        Pick::Nothing => {
+                            if highlighted_net.is_some() {
+                                // Clicked empty space with a net highlighted — clear it.
+                                highlighted_net.set(None);
+                                highlighted_footprints.set(Vec::new());
+                                current_row.set(None);
+                            }
                         }
                     }
-                } else if !settings.redraw_on_drag {
-                    let hl = (*highlighted_footprints).clone();
-                    let hn = (*highlighted_net).clone();
-                    let mf = (*marked_footprints).clone();
-                    vs.redraw(data, &settings, &hl, &mf, &hn);
                 }
-
-                vs.pointer_states.remove(&e.pointer_id());
+                InputOutcome::Tap { .. } | InputOutcome::None => {
+                    let up = matches!(ev, ViewEvent::PointerUp { .. });
+                    if up && !settings.redraw_on_drag {
+                        redraw(&mut vs);
+                    }
+                }
             }
         })
     };
 
-    let on_canvas_pointercancel = {
+    let on_canvas_wheel = {
+        let on_input = on_canvas_input.clone();
+        Callback::from(move |e: WheelEvent| {
+            e.prevent_default();
+            on_input.emit(ViewEvent::Wheel {
+                x: e.offset_x() as f64,
+                y: e.offset_y() as f64,
+                dx: e.delta_x(),
+                dy: e.delta_y(),
+                delta_mode: e.delta_mode(),
+                ctrl: e.ctrl_key(),
+            });
+        })
+    };
+
+    let on_canvas_pointerdown = {
+        let on_input = on_canvas_input.clone();
+        Callback::from(move |e: PointerEvent| {
+            e.prevent_default();
+            if let Some(canvas) = e.target().and_then(|t| t.dyn_into::<HtmlElement>().ok()) {
+                let _ = canvas.set_pointer_capture(e.pointer_id());
+            }
+            on_input.emit(ViewEvent::PointerDown {
+                id: e.pointer_id(),
+                x: e.offset_x() as f64,
+                y: e.offset_y() as f64,
+                button: e.button(),
+                time_ms: now_ms(),
+            });
+        })
+    };
+
+    let on_canvas_pointermove = {
+        let on_input = on_canvas_input.clone();
         let viewer_state = viewer_state.clone();
         Callback::from(move |e: PointerEvent| {
-            if let Some(ref state) = *viewer_state {
-                let mut vs = state.borrow_mut();
-                vs.pointer_states.remove(&e.pointer_id());
+            let pressed = (*viewer_state)
+                .as_ref()
+                .is_some_and(|s| s.borrow().input.active_pointers() > 0);
+            if !pressed {
+                return;
             }
+            e.prevent_default();
+            on_input.emit(ViewEvent::PointerMove {
+                id: e.pointer_id(),
+                x: e.offset_x() as f64,
+                y: e.offset_y() as f64,
+            });
+        })
+    };
+
+    let on_canvas_pointerup = {
+        let on_input = on_canvas_input.clone();
+        Callback::from(move |e: PointerEvent| {
+            on_input.emit(ViewEvent::PointerUp {
+                id: e.pointer_id(),
+                x: e.offset_x() as f64,
+                y: e.offset_y() as f64,
+                button: e.button(),
+                time_ms: now_ms(),
+            });
+        })
+    };
+
+    let on_canvas_pointercancel = {
+        let on_input = on_canvas_input.clone();
+        Callback::from(move |e: PointerEvent| {
+            on_input.emit(ViewEvent::PointerCancel { id: e.pointer_id() });
         })
     };
 
@@ -763,27 +719,9 @@ fn app() -> Html {
     // Flip board callback
     let on_flip = {
         let board_flipped = board_flipped.clone();
-        let viewer_state = viewer_state.clone();
+        // The canvas effect mirrors the pan so the centred board point stays put.
         Callback::from(move |_: MouseEvent| {
             board_flipped.set(!*board_flipped);
-            if let Some(ref state) = *viewer_state {
-                let mut vs = state.borrow_mut();
-                // Adjust panx to keep the same board point at viewport center.
-                // The back view mirrors x, so we need:
-                //   panx_new = width*(1/zoom - 1) - panx_old
-                let dpr = web_sys::window()
-                    .map(|w| w.device_pixel_ratio())
-                    .unwrap_or(1.0);
-                if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-                    if let Some(el) = document.get_element_by_id("canvascontainer") {
-                        let el: HtmlElement = el.dyn_into::<HtmlElement>().unwrap();
-                        let width = el.client_width() as f64 * dpr;
-                        let zoom = vs.canvases.transform.zoom;
-                        vs.canvases.transform.panx =
-                            width * (1.0 / zoom - 1.0) - vs.canvases.transform.panx;
-                    }
-                }
-            }
         })
     };
 
