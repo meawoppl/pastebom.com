@@ -10,11 +10,12 @@ crate-type = ["rlib"]
 [features]
 default = []
 # Canvas2D renderer (wasm32 / web-sys).
-canvas = ["dep:web-sys"]
+canvas = ["dep:web-sys", "dep:wasm-bindgen"]
 
 [dependencies]
 serde = { workspace = true }
-web-sys = { version = "0.3", optional = true, features = ["CanvasRenderingContext2d", "CanvasWindingRule", "Path2d"] }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["CanvasRenderingContext2d", "CanvasWindingRule", "Document", "Element", "HtmlCanvasElement", "Node", "Path2d"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
