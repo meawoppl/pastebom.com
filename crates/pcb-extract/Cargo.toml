@@ -24,7 +24,7 @@ cfb = "0.14"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = { workspace = true }
 tar = "0.4.44"
-postcard = { version = "1", features = ["alloc"] }
+postcard = { version = "1", features = ["alloc"], default-features = false }
 
 [dev-dependencies]
 approx = "0.5.1"

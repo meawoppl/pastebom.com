@@ -25,6 +25,9 @@ jobs:
 
       - name: Run audit
         id: audit
+        # Explicit bash enables pipefail, so the step fails when cargo audit does
+        # rather than taking tee's exit status.
+        shell: bash
         run: cargo audit 2>&1 | tee audit-output.txt
         continue-on-error: true
 
