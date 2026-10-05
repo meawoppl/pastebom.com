@@ -81,13 +81,24 @@ STORAGE_PATH=./localdata cargo run -p pastebom-server
 | `GET` | `/terms` | Terms of service |
 | `POST` | `/upload` | Parse PCB file, store, return viewer link |
 | `GET` | `/api/recent` | Recently uploaded boards |
-| `GET` | `/gh-render` | Render a board straight from a GitHub raw URL |
+| `GET` | `/gh-render` | Render a board straight from GitHub (see below) |
 | `GET` | `/b/{id}` | Interactive viewer |
 | `GET` | `/b/{id}/data` | Parsed PCB data (JSON) |
 | `GET` | `/b/{id}/meta` | Upload metadata |
 | `GET` | `/b/{id}/thumb.svg` | SVG thumbnail of the board |
 | `GET` | `/gerber-view/` | Embeddable Gerber viewer demo; bundle under `/gerber-view/pkg/` |
 | `GET` | `/health` | Health check (reports version) |
+
+### `/gh-render`
+
+`GET /gh-render?file=owner/repo/path/to/board.kicad_pcb[&ref=…][&format=svg|json][&secret=true]`
+
+- `ref` — branch, tag, or commit. Omitted: tries `main`, then `master`. A full 40-hex commit SHA is treated as immutable: no GitHub API call is made and the response is cached for a year.
+- `format=svg` (default) — the board thumbnail. Errors are returned as a `200` error image so `<img>` embeds stay displayable.
+- `format=json` — `{ id, viewer_url, thumb_url, components, blob_sha, ref }`, with real status codes on error (`400`, `404`, `413`, `415`, `422`, `429`, `502`, `503`).
+- `secret=true` — keep the render out of the public recent list.
+
+Both formats set `ETag` and an `X-Pastebom-Id` header. Renders are deduplicated by file content (git blob SHA), so identical bytes on any ref or path are parsed once. Parse failures are remembered until the parser version changes. Branch refs fall back to the last known render when the GitHub API is rate limited.
 
 ## Environment Variables
 
