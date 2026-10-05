@@ -1043,6 +1043,7 @@ mod render_tests {
             s3: crate::s3::S3Client::filesystem(root),
             viewer_dir: PathBuf::from("crates/viewer/dist"),
             gds_viewer_dir: PathBuf::from("crates/gds-viewer/dist"),
+            gerber_view_dir: PathBuf::from("../gerber-view"),
             recent: Arc::new(RwLock::new(Vec::new())),
             http_client: reqwest::Client::new(),
             max_upload_bytes: 1024 * 1024,
