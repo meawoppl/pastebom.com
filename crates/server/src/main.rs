@@ -1,5 +1,6 @@
 mod compressed_assets;
 mod gdsii_tiles;
+mod gerber_view;
 mod github;
 mod reparse;
 mod routes;
@@ -39,6 +40,14 @@ async fn main() {
         gds_viewer_dir.display()
     );
 
+    let gerber_view_dir = PathBuf::from(
+        std::env::var("GERBER_VIEW_DIR").unwrap_or_else(|_| "crates/gerber-view".to_string()),
+    );
+    tracing::info!(
+        "Serving embeddable Gerber viewer from {}",
+        gerber_view_dir.display()
+    );
+
     let recent = routes::load_recent(&s3_client).await;
     tracing::info!("Loaded {} recent public uploads", recent.len());
 
@@ -74,6 +83,7 @@ async fn main() {
         s3: s3_client,
         viewer_dir: viewer_dir.clone(),
         gds_viewer_dir,
+        gerber_view_dir,
         recent: Arc::new(RwLock::new(recent)),
         http_client,
         max_upload_bytes,
@@ -102,6 +112,9 @@ pub fn build_app(state: AppState) -> Router {
         .merge(routes::router(state.max_upload_bytes))
         .route("/viewer/{*path}", get(compressed_assets::serve_viewer))
         .route("/viewer/", get(compressed_assets::serve_viewer))
+        .route("/gerber-view", get(gerber_view::serve))
+        .route("/gerber-view/", get(gerber_view::serve))
+        .route("/gerber-view/{*path}", get(gerber_view::serve))
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         .layer(TimeoutLayer::with_status_code(
@@ -117,6 +130,7 @@ pub struct AppState {
     pub s3: s3::S3Client,
     pub viewer_dir: PathBuf,
     pub gds_viewer_dir: PathBuf,
+    pub gerber_view_dir: PathBuf,
     pub recent: Arc<RwLock<Vec<routes::RecentEntry>>>,
     pub http_client: reqwest::Client,
     pub max_upload_bytes: usize,
@@ -138,6 +152,8 @@ mod tests {
             s3,
             viewer_dir,
             gds_viewer_dir: PathBuf::from("crates/gds-viewer/dist"),
+            // Tests run from crates/server.
+            gerber_view_dir: PathBuf::from("../gerber-view"),
             recent: Arc::new(RwLock::new(Vec::new())),
             http_client: reqwest::Client::new(),
             max_upload_bytes: 50 * 1024 * 1024,
@@ -232,5 +248,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 404);
+    }
+
+    async fn get_status(path: &str) -> (StatusCode, Option<String>) {
+        let app = build_app(test_state().await);
+        let resp = app
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let location = resp
+            .headers()
+            .get("location")
+            .map(|v| v.to_str().unwrap().to_string());
+        (resp.status(), location)
+    }
+
+    #[tokio::test]
+    async fn test_gerber_view_root_redirects_to_example() {
+        for path in ["/gerber-view", "/gerber-view/", "/gerber-view/examples/"] {
+            let (status, location) = get_status(path).await;
+            assert_eq!(status, StatusCode::TEMPORARY_REDIRECT, "{path}");
+            assert_eq!(
+                location.as_deref(),
+                Some("/gerber-view/examples/index.html")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_gerber_view_serves_example_page() {
+        let (status, _) = get_status("/gerber-view/examples/index.html").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_gerber_view_only_serves_public_dirs() {
+        for path in [
+            "/gerber-view/Cargo.toml",
+            "/gerber-view/src/lib.rs",
+            "/gerber-view/pkg/../src/lib.rs",
+            "/gerber-view/examples/../Cargo.toml",
+            "/gerber-view/pkg/missing.js",
+        ] {
+            let (status, _) = get_status(path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
     }
 }
