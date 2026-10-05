@@ -16,16 +16,42 @@ const RECENT_KEY: &str = "recent.json";
 const SEMAPHORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+#[derive(Debug)]
+pub enum ParseError {
+    /// No parse slot was free in time; retrying later may succeed.
+    Busy,
+    /// The file itself could not be parsed (error, panic, or timeout).
+    Failed(String),
+}
+
+impl ParseError {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            ParseError::Busy => StatusCode::SERVICE_UNAVAILABLE,
+            ParseError::Failed(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        }
+    }
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Busy => write!(f, "Server busy — try again later"),
+            ParseError::Failed(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
 /// Acquire parse semaphore (with timeout) and run PCB extraction off the async runtime.
 pub async fn parse_pcb_guarded(
     state: &AppState,
     data: Vec<u8>,
     format: pcb_extract::PcbFormat,
-) -> Result<pcb_extract::types::PcbData, String> {
+) -> Result<pcb_extract::types::PcbData, ParseError> {
     let _permit = tokio::time::timeout(SEMAPHORE_TIMEOUT, state.parse_semaphore.acquire())
         .await
-        .map_err(|_| "Server busy — try again later".to_string())?
-        .map_err(|_| "Server busy".to_string())?;
+        .map_err(|_| ParseError::Busy)?
+        .map_err(|_| ParseError::Busy)?;
     let handle = tokio::task::spawn_blocking(move || {
         let opts = ExtractOptions {
             include_tracks: true,
@@ -38,9 +64,9 @@ pub async fn parse_pcb_guarded(
     // finishes on its own (parser work is itself bounded).
     let result = tokio::time::timeout(PARSE_TIMEOUT, handle)
         .await
-        .map_err(|_| "Parsing timed out".to_string())?
-        .map_err(|_| "Parse task failed".to_string())?
-        .map_err(|e| format!("Failed to parse PCB file: {e}"))?;
+        .map_err(|_| ParseError::Failed("Parsing timed out".to_string()))?
+        .map_err(|_| ParseError::Failed("Parse task failed".to_string()))?
+        .map_err(|e| ParseError::Failed(format!("Failed to parse PCB file: {e}")))?;
     Ok(result)
 }
 
@@ -312,7 +338,7 @@ async fn upload(
 
     let pcb_data = parse_pcb_guarded(&state, data, format).await.map_err(|e| {
         tracing::error!("Parse error for {filename}: {e}");
-        error_response(StatusCode::UNPROCESSABLE_ENTITY, &e)
+        error_response(e.status(), &e.to_string())
     })?;
 
     let component_count = pcb_data.footprints.len();
@@ -438,51 +464,9 @@ async fn get_thumb_svg(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     validate_id(&id)?;
-    let thumb_key = format!("thumbnails/{id}.svg");
-
-    // Try cache first
-    if let Ok(cached) = state.s3.get_object(&thumb_key).await {
-        return Ok((
-            StatusCode::OK,
-            [
-                ("content-type", "image/svg+xml"),
-                ("cache-control", "public, max-age=86400"),
-            ],
-            cached,
-        ));
-    }
-
-    // Cache miss — load PcbData and render
-    let data_key = format!("boms/{id}.json");
-    let json_bytes = state
-        .s3
-        .get_object(&data_key)
+    let svg_bytes = load_thumbnail(&state, &id)
         .await
-        .map_err(|_| error_response(StatusCode::NOT_FOUND, "BOM not found"))?;
-
-    let pcb_data: pcb_extract::types::PcbData =
-        serde_json::from_slice(&json_bytes).map_err(|_| {
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to parse BOM data",
-            )
-        })?;
-
-    let svg = tokio::task::spawn_blocking(move || pcb_extract::thumbnail::render_svg(&pcb_data))
-        .await
-        .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Render failed"))?;
-    let svg_bytes = svg.into_bytes();
-
-    // Store in cache (fire and forget)
-    let s3 = state.s3.clone();
-    let cache_key = thumb_key.clone();
-    let cache_bytes = svg_bytes.clone();
-    tokio::spawn(async move {
-        let _ = s3
-            .put_object(&cache_key, cache_bytes, "image/svg+xml")
-            .await;
-    });
-
+        .map_err(|(status, msg)| error_response(status, msg))?;
     Ok((
         StatusCode::OK,
         [
@@ -491,6 +475,49 @@ async fn get_thumb_svg(
         ],
         svg_bytes,
     ))
+}
+
+/// Load a board's SVG thumbnail, rendering and caching it from the stored
+/// PcbData if it is not in storage yet.
+pub async fn load_thumbnail(
+    state: &AppState,
+    id: &str,
+) -> Result<Vec<u8>, (StatusCode, &'static str)> {
+    let thumb_key = format!("thumbnails/{id}.svg");
+    if let Ok(cached) = state.s3.get_object(&thumb_key).await {
+        return Ok(cached);
+    }
+
+    let data_key = format!("boms/{id}.json");
+    let json_bytes = state
+        .s3
+        .get_object(&data_key)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "BOM not found"))?;
+
+    let pcb_data: pcb_extract::types::PcbData =
+        serde_json::from_slice(&json_bytes).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to parse BOM data",
+            )
+        })?;
+
+    let svg = tokio::task::spawn_blocking(move || pcb_extract::thumbnail::render_svg(&pcb_data))
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Render failed"))?;
+    let svg_bytes = svg.into_bytes();
+
+    // Store in cache (fire and forget)
+    let s3 = state.s3.clone();
+    let cache_bytes = svg_bytes.clone();
+    tokio::spawn(async move {
+        let _ = s3
+            .put_object(&thumb_key, cache_bytes, "image/svg+xml")
+            .await;
+    });
+
+    Ok(svg_bytes)
 }
 
 fn error_response(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>) {

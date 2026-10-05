@@ -35,6 +35,14 @@ impl std::fmt::Display for S3Error {
 impl std::error::Error for S3Error {}
 
 impl S3Client {
+    #[cfg(test)]
+    pub fn filesystem(root: PathBuf) -> Self {
+        std::fs::create_dir_all(&root).expect("Failed to create storage directory");
+        Self {
+            backend: StorageBackend::Filesystem { root },
+        }
+    }
+
     pub async fn from_env() -> Self {
         if let Ok(bucket) = std::env::var("S3_BUCKET") {
             let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;

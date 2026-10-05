@@ -10,6 +10,7 @@ Shareable interactive PCB BOM viewer. Upload a PCB file, get a link to an intera
   - `crates/viewer` — Yew WASM frontend, built with Trunk
 - **Storage**: S3 in production, filesystem locally (`STORAGE_PATH` env var)
 - **Viewer assets**: Trunk builds to `crates/viewer/dist/`, server reads from `VIEWER_DIR`
+- **`/gh-render`** (`crates/server/src/github.rs`): storage indexes `gh/{repo}/{ref}/{sha256(path)}.json` → blob SHA and `gh-blob/{blob_sha}.json` → render outcome (board id or cached parse failure). Commit-SHA refs never call the GitHub API. Old versions' raw uploads and boards are kept, never garbage-collected. Tests run against a stub GitHub server via `GhRender::new(api_base, raw_base)` and `S3Client::filesystem(tmpdir)`
 
 ## Dev Script
 

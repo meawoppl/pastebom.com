@@ -78,6 +78,7 @@ async fn main() {
         http_client,
         max_upload_bytes,
         parse_semaphore: Arc::new(Semaphore::new(max_concurrent_parses)),
+        github: github::GhRender::default(),
     };
 
     // Pre-compress viewer assets at startup
@@ -121,6 +122,7 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub max_upload_bytes: usize,
     pub parse_semaphore: Arc<Semaphore>,
+    pub github: github::GhRender,
 }
 
 #[cfg(test)]
@@ -142,6 +144,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             max_upload_bytes: 50 * 1024 * 1024,
             parse_semaphore: Arc::new(Semaphore::new(4)),
+            github: github::GhRender::default(),
         }
     }
 
