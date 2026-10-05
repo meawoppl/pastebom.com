@@ -42,6 +42,40 @@ jobs:
 
       - run: cargo clippy -p gds-viewer --target wasm32-unknown-unknown -- -D warnings
 
+      - run: cargo clippy -p gerber-view --target wasm32-unknown-unknown -- -D warnings
+
+  gerber-view:
+    name: Gerber Viewer Bundle
+    runs-on: ubuntu-latest
+    needs: fmt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+
+      - name: Build bundle
+        working-directory: crates/gerber-view
+        run: wasm-pack build --release --target web --out-dir pkg
+
+      - name: Assemble artifact
+        run: |
+          mkdir -p gerber-view-dist
+          cp -r crates/gerber-view/pkg crates/gerber-view/examples crates/gerber-view/README.md gerber-view-dist/
+          rm -f gerber-view-dist/pkg/.gitignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gerber-view
+          path: gerber-view-dist
+
   test:
     name: Tests
     runs-on: ubuntu-latest
