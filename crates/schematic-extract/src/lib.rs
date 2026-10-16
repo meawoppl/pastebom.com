@@ -3,6 +3,8 @@
 //! Coordinates are millimetres, with Y pointing down. Embedded `lib_symbols`
 //! supply symbol geometry; no KiCad installation or system libraries are needed.
 
+mod discovery;
+mod pin_graphics;
 mod scene;
 mod schematic_drawing;
 mod symbol_graphics;
@@ -15,6 +17,21 @@ pub use vector_view;
 #[derive(Debug, thiserror::Error)]
 #[error("{0:#}")]
 pub struct Error(#[from] anyhow::Error);
+
+/// Select the most likely project root deterministically. Prefer a schematic
+/// beside a matching `.kicad_pro` or `.kicad_pcb`; otherwise prefer files not
+/// referenced as children. Ties use path depth and then lexical order.
+/// macOS resource forks and `__MACOSX` metadata are ignored.
+pub fn find_root(files: &HashMap<String, Vec<u8>>) -> Option<String> {
+    discovery::find_root(files)
+}
+
+/// Discover a root and parse a collection of project files.
+pub fn parse_files(files: &HashMap<String, Vec<u8>>) -> Result<vector_view::Scene, Error> {
+    let root =
+        find_root(files).ok_or_else(|| Error(anyhow::anyhow!("no KiCad schematic files found")))?;
+    parse_project(&root, files)
+}
 
 /// Parse one standalone `.kicad_sch`. Missing subsheets are reported in scene
 /// metadata (`warning`) so a root sheet remains viewable when uploaded alone.

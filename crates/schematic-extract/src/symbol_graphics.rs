@@ -84,9 +84,12 @@ pub(crate) fn body_prims(
             }
         }
         SymbolGraphic::Rectangle(g) => {
-            let a = map(g.start);
-            let c = map(g.end);
-            let outer = vec![a, [c[0], a[1]], c, [a[0], c[1]]];
+            let outer = vec![
+                map(g.start),
+                map((g.end.0, g.start.1)),
+                map(g.end),
+                map((g.start.0, g.end.1)),
+            ];
             BodyPrims {
                 outline: polygon(outer.clone(), false, width(g.stroke_width)),
                 fill: fill_of(&g.fill_type, polygon(outer, true, 0.0)),
@@ -249,5 +252,38 @@ mod tests {
             arc_prim([1., 0.], [0., 1.], [-1., 0.], 0.2),
             Prim::Arc { .. }
         ))
+    }
+
+    #[test]
+    fn rectangle_transforms_each_corner_under_arbitrary_rotation() {
+        let angle = 30_f64.to_radians();
+        let rotate = |(x, y): (f64, f64)| {
+            [
+                x * angle.cos() - y * angle.sin(),
+                x * angle.sin() + y * angle.cos(),
+            ]
+        };
+        let result = body_prims(&rect("background"), rotate, w).unwrap();
+        let Prim::Polygon { outer, .. } = result.outline else {
+            panic!("expected rectangle polygon")
+        };
+        assert_eq!(
+            outer,
+            vec![
+                rotate((-1.0, -2.0)),
+                rotate((1.0, -2.0)),
+                rotate((1.0, 2.0)),
+                rotate((-1.0, 2.0))
+            ]
+        );
+        for (pair, length) in outer.windows(2).zip([2.0, 4.0, 2.0]) {
+            assert!(
+                ((pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]) - length).abs() < 1e-12
+            );
+        }
+        let Some((_, Prim::Polygon { outer: fill, .. })) = result.fill else {
+            panic!("expected filled rectangle")
+        };
+        assert_eq!(fill, outer);
     }
 }

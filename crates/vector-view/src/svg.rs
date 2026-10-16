@@ -3,6 +3,7 @@
 //! Layer and item identifiers are preserved as `data-layer` and `data-item`
 //! attributes. Exporting a document page is a matter of selecting its item ids.
 
+use std::collections::HashSet;
 use std::fmt::Write;
 
 use crate::{BBox, ItemId, LayerId, Point, Prim, Scene};
@@ -42,27 +43,30 @@ impl Scene {
 
 /// Export geometry without a browser, native dependencies, or external fonts.
 pub fn to_svg(scene: &Scene, options: &SvgOptions) -> String {
+    let requested_layers: Option<HashSet<_>> = options
+        .layers
+        .as_ref()
+        .map(|ids| ids.iter().copied().collect());
+    let requested_items: Option<HashSet<_>> = options
+        .item_ids
+        .as_ref()
+        .map(|ids| ids.iter().copied().collect());
     let mut layers: Vec<_> = scene
         .layers
         .iter()
         .filter(|layer| {
-            options
-                .layers
+            requested_layers
                 .as_ref()
                 .map_or(layer.visible, |ids| ids.contains(&layer.id))
         })
         .collect();
     layers.sort_by_key(|layer| layer.z);
-    let selected = |id: ItemId| {
-        options
-            .item_ids
-            .as_ref()
-            .is_none_or(|ids| ids.contains(&id))
-    };
+    let selected_layers: HashSet<_> = layers.iter().map(|layer| layer.id).collect();
+    let selected = |id: ItemId| requested_items.as_ref().is_none_or(|ids| ids.contains(&id));
     let mut bounds = options.bbox.unwrap_or(BBox::EMPTY);
     if options.bbox.is_none() {
         for item in &scene.items {
-            if selected(item.id) && layers.iter().any(|layer| layer.id == item.layer) {
+            if selected(item.id) && selected_layers.contains(&item.layer) {
                 bounds.union(&item.prim.bbox());
             }
         }
@@ -294,6 +298,30 @@ mod tests {
             ..SvgOptions::default()
         });
         assert!(!svg.contains("layer-1"));
+
+        // Selections are sets: their order and duplicates cannot alter paint
+        // order or multiply items. Explicit selection includes hidden layers.
+        scene.layers[1].visible = false;
+        let selected = scene.to_svg(&SvgOptions {
+            layers: Some(vec![0, 1]),
+            item_ids: Some(vec![0, 1]),
+            ..SvgOptions::default()
+        });
+        assert!(selected.contains("data-item=\"1\""));
+        assert_eq!(
+            selected,
+            scene.to_svg(&SvgOptions {
+                layers: Some(vec![1, 0, 1, 999]),
+                item_ids: Some(vec![1, 0, 1, 999]),
+                ..SvgOptions::default()
+            })
+        );
+        let empty = scene.to_svg(&SvgOptions {
+            item_ids: Some(vec![]),
+            ..SvgOptions::default()
+        });
+        assert!(!empty.contains("data-item="));
+        assert!(empty.contains("viewBox=\"-1 -2 3 3\""));
     }
 
     #[test]
