@@ -285,10 +285,7 @@ fn has_atom(node: &SExp, atom: &str) -> bool {
 /// `bold`/`italic`/`hide` appear as bare atoms (KiCad 6–7) or as
 /// `(bold yes)` lists (KiCad 8+).
 fn flag(node: &SExp, name: &str) -> bool {
-    has_atom(node, name)
-        || node
-            .get(name)
-            .is_some_and(|c| c.string_at(0).is_none_or(|v| v == "yes"))
+    node.flag(name)
 }
 
 /// Stroke width and dash style of a graphic.

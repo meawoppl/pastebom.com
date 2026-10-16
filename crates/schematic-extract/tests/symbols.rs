@@ -233,3 +233,18 @@ fn numeric_magnitudes_above_limit_are_rejected() {
         );
     }
 }
+#[test]
+fn literal_hide_label_is_visible() {
+    let scene = schematic_extract::parse(
+        r#"(kicad_sch (label "hide" (at 10 10 0) (effects (font (size 1 1))) (uuid literal)))"#,
+    )
+    .unwrap();
+    assert!(scene
+        .items
+        .iter()
+        .any(|item| item.role == vector_view::Role::Label
+            && item
+                .props
+                .iter()
+                .any(|p| p.key == "text" && p.value == "hide")));
+}
