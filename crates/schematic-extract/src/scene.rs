@@ -11,8 +11,23 @@ use vector_view::{
 
 pub(crate) fn parse_project(root: &str, files: &HashMap<String, Vec<u8>>) -> Result<Scene> {
     let root = resolve_path("", root)?;
+    let mut normalized = HashMap::new();
+    for (name, data) in files {
+        let path = resolve_path("", name)?;
+        if normalized.insert(path.clone(), data.as_slice()).is_some() {
+            return Err(anyhow!("duplicate normalized project path: {path}"));
+        }
+    }
     let mut builder = Builder::new();
-    collect_page(files, &root, "/", None, &mut HashSet::new(), &mut builder)?;
+    collect_page(
+        &normalized,
+        &root,
+        "/",
+        None,
+        None,
+        &mut HashSet::new(),
+        &mut builder,
+    )?;
     builder.scene.meta.push(Prop::new("root", root));
     builder.finish();
     Ok(builder.scene)
@@ -39,6 +54,24 @@ fn resolve_path(parent: &str, name: &str) -> Result<String> {
         return Err(anyhow!("empty schematic path"));
     }
     Ok(parts.join("/"))
+}
+
+fn validate_numbers(node: &SExp) -> Result<()> {
+    use kicad_schema::sexp::Value;
+    let number = match node.value.as_ref() {
+        Some(Value::Int(value)) => Some(*value as f64),
+        Some(Value::Float(value)) => Some(*value),
+        _ => None,
+    };
+    if number.is_some_and(|value| value.abs() > 1e9) {
+        return Err(anyhow!(
+            "schematic numeric magnitude exceeds supported range"
+        ));
+    }
+    for child in &node.children {
+        validate_numbers(child)?;
+    }
+    Ok(())
 }
 
 // Layer ids. Each schematic element class gets its own layer so the viewer
@@ -193,13 +226,14 @@ impl Builder {
             pages: vec![],
         }
     }
-    fn net(&mut self, n: Option<&str>) -> Option<u32> {
+    fn net(&mut self, n: Option<&str>, page: &str) -> Option<u32> {
         let n = n.filter(|x| !x.is_empty())?;
-        if let Some(id) = self.nets.get(n) {
+        let key = format!("{page}\0{n}");
+        if let Some(id) = self.nets.get(&key) {
             return Some(*id);
         }
         let id = self.nets.len() as u32 + 1;
-        self.nets.insert(n.into(), id);
+        self.nets.insert(key, id);
         self.scene.nets.push(Net { id, name: n.into() });
         Some(id)
     }
@@ -223,7 +257,11 @@ impl Builder {
         props: Vec<Prop>,
     ) {
         self.item += 1;
-        let net = self.net(net);
+        let page = props
+            .iter()
+            .find(|p| p.key == "page")
+            .map_or("/", |p| p.value.as_str());
+        let net = self.net(net, page);
         self.scene.items.push(Item {
             id: self.item,
             layer,
@@ -282,11 +320,13 @@ impl Builder {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_page(
-    files: &HashMap<String, Vec<u8>>,
+    files: &HashMap<String, &[u8]>,
     file: &str,
     page: &str,
     parent: Option<&str>,
+    instance_path: Option<&str>,
     seen: &mut HashSet<String>,
     b: &mut Builder,
 ) -> Result<()> {
@@ -302,8 +342,12 @@ fn collect_page(
         .get(file)
         .ok_or_else(|| anyhow!("missing schematic: {file}"))?;
     let text = std::str::from_utf8(data).with_context(|| format!("reading {file}"))?;
-    let s = Schematic::new(kicad_schema::sexp::parse(text)?, None)
-        .with_context(|| format!("parsing {file}"))?;
+    let tree = kicad_schema::sexp::parse(text)?;
+    validate_numbers(&tree)?;
+    let s = Schematic::new(tree, None).with_context(|| format!("parsing {file}"))?;
+    let instance_path = instance_path
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("/{}", s.uuid().unwrap_or_default()));
     let nets = connectivity_names(&s);
     b.scene
         .meta
@@ -389,49 +433,38 @@ fn collect_page(
             identity(page, &n.uuid),
         )
     }
-    for l in s.labels() {
-        add_text(
-            b,
-            LABELS,
-            page,
-            &l.uuid,
-            &l.text,
-            l.position,
-            l.rotation,
-            Some(&l.text),
-            Role::Label,
-            None,
-        )
+    for (tag, layer) in [
+        ("label", LABELS),
+        ("hierarchical_label", GLOBAL_LABELS),
+        ("global_label", GLOBAL_LABELS),
+    ] {
+        for node in s.sexp().children_named(tag) {
+            let text = node.string_at(0).unwrap_or_default();
+            let id = node
+                .get("uuid")
+                .and_then(|n| n.string_at(0))
+                .unwrap_or_default();
+            if let Some(mut spec) = schematic_drawing::text_spec(node, text) {
+                // Labels attach at their left baseline rather than their centre.
+                if node.get("effects").and_then(|e| e.get("justify")).is_none() {
+                    spec.justify_h = kicad_strokes::HJustify::Left;
+                    spec.justify_v = kicad_strokes::VJustify::Bottom;
+                }
+                add_text_spec(
+                    b,
+                    layer,
+                    page,
+                    id,
+                    text,
+                    spec,
+                    Some(text),
+                    Role::Label,
+                    None,
+                );
+            }
+        }
     }
-    for l in s.hierarchical_labels() {
-        add_text(
-            b,
-            GLOBAL_LABELS,
-            page,
-            &l.uuid,
-            &l.text,
-            l.position,
-            l.rotation,
-            Some(&l.text),
-            Role::Label,
-            None,
-        )
-    }
-    for l in s.global_labels() {
-        add_text(
-            b,
-            GLOBAL_LABELS,
-            page,
-            &l.uuid,
-            &l.text,
-            l.position,
-            l.rotation,
-            Some(&l.text),
-            Role::Label,
-            None,
-        )
-    }
-    add_symbols(&s, page, &nets, b)?;
+    add_symbols(&s, page, &instance_path, &nets, b)?;
     let mut used_pages = HashSet::new();
     let sheets: Vec<_> = s
         .sheets()
@@ -480,12 +513,81 @@ fn collect_page(
             None,
             Some(gid),
             vec![Prop::new("page", page)],
-        )
+        );
+        if let Some(raw) = s
+            .sexp()
+            .children_named("sheet")
+            .find(|node| node.get("uuid").and_then(|u| u.string_at(0)) == Some(x.uuid.as_str()))
+        {
+            for property in raw.children_named("property") {
+                let name = property.string_at(0).unwrap_or_default();
+                let text = property.string_at(1).unwrap_or_default();
+                if let Some(spec) = schematic_drawing::text_spec(property, text) {
+                    add_text_spec(
+                        b,
+                        SHEETS,
+                        page,
+                        &format!("{}:{name}", x.uuid),
+                        text,
+                        spec,
+                        None,
+                        Role::Field,
+                        Some(gid),
+                    );
+                }
+            }
+            for pin in raw.children_named("pin") {
+                let text = pin.string_at(0).unwrap_or_default();
+                let id = pin
+                    .get("uuid")
+                    .and_then(|node| node.string_at(0))
+                    .unwrap_or_default();
+                if let Some(mut spec) = schematic_drawing::text_spec(pin, text) {
+                    let a = spec.angle_deg.to_radians();
+                    let direction = [a.cos(), -a.sin()];
+                    let at = spec.pos;
+                    let end = [at[0] + direction[0] * 1.27, at[1] + direction[1] * 1.27];
+                    b.add(
+                        SHEETS,
+                        Role::Pin,
+                        Prim::Polyline {
+                            points: vec![at, end],
+                            width: 0.2,
+                        },
+                        None,
+                        Some(gid),
+                        identity(page, id),
+                    );
+                    spec.pos = [end[0] + direction[0] * 0.5, end[1] + direction[1] * 0.5];
+                    spec.justify_h = kicad_strokes::HJustify::Left;
+                    add_text_spec(
+                        b,
+                        SHEETS,
+                        page,
+                        id,
+                        text,
+                        spec,
+                        None,
+                        Role::Label,
+                        Some(gid),
+                    );
+                }
+            }
+        }
     }
     for (x, child) in sheets {
         let target = resolve_path(file.rsplit_once('/').map_or("", |(p, _)| p), &x.filename)?;
         if files.contains_key(&target) {
-            collect_page(files, &target, &child, Some(page), seen, b)?
+            let child_instance = format!("{instance_path}/{}", x.uuid);
+            collect_page(
+                files,
+                &target,
+                &child,
+                Some(page),
+                Some(&child_instance),
+                seen,
+                b,
+            )?
         } else {
             b.scene.meta.push(Prop::new(
                 "warning",
@@ -548,19 +650,47 @@ fn add_annotations(s: &Schematic, page: &str, b: &mut Builder) {
 fn add_symbols(
     s: &Schematic,
     page: &str,
+    instance_path: &str,
     nets: &HashMap<String, String>,
     b: &mut Builder,
 ) -> Result<()> {
-    for inst in s.symbols() {
-        let convert = s
-            .sexp()
-            .children_named("symbol")
-            .find(|node| node.get("uuid").and_then(|u| u.string_at(0)) == Some(inst.uuid.as_str()))
+    let mut library_cache = HashMap::new();
+    let instances: HashMap<_, _> = s
+        .sexp()
+        .children_named("symbol")
+        .filter_map(|node| Some((node.get("uuid")?.string_at(0)?, node)))
+        .collect();
+    for original in s.symbols() {
+        let mut inst = original.clone();
+        let raw = instances.get(inst.uuid.as_str()).copied();
+        if let Some(path) = raw
+            .and_then(|node| node.get("instances"))
+            .into_iter()
+            .flat_map(|node| node.children_named("project"))
+            .flat_map(|node| node.children_named("path"))
+            .find(|path| path.string_at(0) == Some(instance_path))
+        {
+            if let Some(reference) = path.get("reference").and_then(|node| node.string_at(0)) {
+                if let Some(property) = inst.properties.get_mut("Reference") {
+                    property.value = reference.to_owned();
+                }
+            }
+            if let Some(unit) = path.get("unit").and_then(|node| node.int_at(0)) {
+                inst.unit = unit;
+            }
+        }
+        let convert = raw
             .and_then(|node| node.get("convert"))
             .and_then(|node| node.int_at(0))
             .unwrap_or(1);
-        let Some(lib) = s.get_lib_symbol_resolved_for_unit(&inst.lib_id, inst.unit, convert)?
-        else {
+        let cache_key = (inst.lib_id.clone(), inst.unit, convert);
+        if !library_cache.contains_key(&cache_key) {
+            library_cache.insert(
+                cache_key.clone(),
+                s.get_lib_symbol_resolved_for_unit(&inst.lib_id, inst.unit, convert)?,
+            );
+        }
+        let Some(lib) = library_cache.get(&cache_key).and_then(Option::as_ref) else {
             b.scene.meta.push(Prop::new(
                 "warning",
                 format!("Missing embedded symbol {} on {page}", inst.lib_id),
@@ -645,17 +775,9 @@ fn add_symbols(
                 Prop::new("electrical_type", &pin.pin_type),
                 Prop::new("shape", &pin.shape),
             ]);
-            b.add(
-                pin_layer,
-                Role::Pin,
-                Prim::Polyline {
-                    points: vec![at, end],
-                    width: 0.2,
-                },
-                n,
-                Some(gid),
-                props,
-            );
+            for prim in crate::pin_graphics::primitives(at, end, &pin.shape) {
+                b.add(pin_layer, Role::Pin, prim, n, Some(gid), props.clone());
+            }
             if !power {
                 for (role, text, spec) in
                     pin_text(&style, &pin_style, &pin.name, &pin.number, at, end)
@@ -675,18 +797,23 @@ fn add_symbols(
             }
         }
         for p in inst.properties.values().filter(|p| p.visible) {
-            add_text(
-                b,
-                field_layer,
-                page,
-                &format!("{}:{}", inst.uuid, p.name),
-                &p.value,
-                p.position,
-                p.rotation,
-                None,
-                Role::Field,
-                Some(gid),
-            )
+            let node = raw.and_then(|node| {
+                node.children_named("property")
+                    .find(|node| node.string_at(0) == Some(p.name.as_str()))
+            });
+            if let Some(spec) = node.and_then(|node| schematic_drawing::text_spec(node, &p.value)) {
+                add_text_spec(
+                    b,
+                    field_layer,
+                    page,
+                    &format!("{}:{}", inst.uuid, p.name),
+                    &p.value,
+                    spec,
+                    None,
+                    Role::Field,
+                    Some(gid),
+                );
+            }
         }
     }
     Ok(())
@@ -725,6 +852,7 @@ fn connectivity_names(s: &Schematic) -> HashMap<String, String> {
     n
 }
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn add_text(
     b: &mut Builder,
     layer: u16,
@@ -1035,7 +1163,7 @@ mod tests {
     fn scene() -> Scene {
         let s = Schematic::new(kicad_schema::sexp::parse(SCH).unwrap(), None).unwrap();
         let mut b = Builder::new();
-        add_symbols(&s, "/", &HashMap::new(), &mut b).unwrap();
+        add_symbols(&s, "/", "", &HashMap::new(), &mut b).unwrap();
         b.scene
     }
     fn filled(p: &Prim) -> bool {

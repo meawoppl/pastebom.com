@@ -459,6 +459,16 @@ impl Schematic {
         let Some(lib_symbols) = self.lib_symbols() else {
             return Ok(None);
         };
+        let Some(source) = lib_symbols
+            .children_named("symbol")
+            .find(|symbol| symbol.string_at(0) == Some(lib_id))
+        else {
+            return Ok(None);
+        };
+        let symbol = LibrarySymbol::from_sexp_for_unit(source, unit, convert);
+        if symbol.extends.is_none() || !symbol.pins.is_empty() {
+            return Ok(Some(symbol));
+        }
         let mut all = OrderedMap::new();
         for symbol in lib_symbols.children_named("symbol") {
             let parsed = LibrarySymbol::from_sexp_for_unit(symbol, unit, convert);

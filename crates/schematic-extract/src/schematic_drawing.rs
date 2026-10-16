@@ -26,6 +26,10 @@ const CELL: f64 = 50.0;
 pub(crate) const FRAME_LINE: f64 = 0.15;
 /// KiCad's default schematic graphic line width (6 mil).
 const GRAPHIC_LINE: f64 = 0.1524;
+/// Maximum supported custom sheet extent (10 metres), bounding reference-grid work.
+const MAX_PAPER_SIZE: f64 = 10_000.0;
+/// Maximum dash subdivisions per graphic; denser patterns render as solid.
+const MAX_DASH_STEPS: usize = 16_384;
 
 /// Paper name and size in mm (landscape unless `portrait`), from `(paper ...)`.
 pub(crate) fn paper(root: &SExp) -> (String, f64, f64) {
@@ -56,11 +60,18 @@ pub(crate) fn paper(root: &SExp) -> (String, f64, f64) {
         "GERBER" => (812.8, 812.8),
         _ => (297.0, 210.0),
     };
+    if !valid_paper_extent(w) || !valid_paper_extent(h) {
+        return ("A4".into(), 297.0, 210.0);
+    }
     if portrait && name != "User" {
         (name, h, w)
     } else {
         (name, w, h)
     }
+}
+
+fn valid_paper_extent(value: f64) -> bool {
+    value.is_finite() && value > 0.0 && value <= MAX_PAPER_SIZE
 }
 
 /// Values substituted into the default title block.
@@ -106,6 +117,9 @@ fn rect(a: [f64; 2], b: [f64; 2]) -> Vec<[f64; 2]> {
 /// KiCad's default drawing sheet for a `w` x `h` mm page.
 pub(crate) fn frame(w: f64, h: f64, info: &TitleInfo) -> Furniture {
     let mut f = Furniture::default();
+    if !valid_paper_extent(w) || !valid_paper_extent(h) {
+        return f;
+    }
     let (l, t, r, b) = (MARGIN, MARGIN, w - MARGIN, h - MARGIN);
     if r - l < 4.0 * BAND || b - t < 4.0 * BAND {
         return f;
@@ -307,6 +321,16 @@ pub(crate) fn text_spec(node: &SExp, text: &str) -> Option<TextSpec> {
         .and_then(|f| f.get("size"))
         .and_then(|s| Some([s.float_at(1)?, s.float_at(0)?]))
         .unwrap_or([1.27, 1.27]);
+    // Text outside the supported page scale cannot be laid out usefully;
+    // rejecting it also prevents overflow in stroke-font transforms.
+    if !size
+        .iter()
+        .all(|s| s.is_finite() && *s > 0.0 && *s <= MAX_PAPER_SIZE)
+        || !pos.iter().all(|p| p.is_finite())
+        || !angle.is_finite()
+    {
+        return None;
+    }
     let bold = font.is_some_and(|f| flag(f, "bold"));
     let italic = font.is_some_and(|f| flag(f, "italic"));
     let thickness = font
@@ -349,7 +373,8 @@ pub(crate) fn text_spec(node: &SExp, text: &str) -> Option<TextSpec> {
 }
 
 /// Split a path into dash runs for KiCad `dash`/`dot`/`dash_dot`/
-/// `dash_dot_dot` strokes; `None` for solid strokes.
+/// `dash_dot_dot` strokes; `None` for solid strokes or patterns requiring more
+/// than the subdivision budget. A solid fallback keeps oversized paths usable.
 pub(crate) fn dashes(path: &[[f64; 2]], width: f64, kind: &str) -> Option<Vec<Vec<[f64; 2]>>> {
     let (dash, dot, gap) = (6.0 * width, 0.2 * width, 3.0 * width);
     let pattern: Vec<f64> = match kind {
@@ -359,19 +384,33 @@ pub(crate) fn dashes(path: &[[f64; 2]], width: f64, kind: &str) -> Option<Vec<Ve
         "dash_dot_dot" => vec![dash, gap, dot, gap, dot, gap],
         _ => return None,
     };
+    if !pattern.iter().all(|step| step.is_finite() && *step > 0.0) {
+        return None;
+    }
     let mut runs = vec![];
     let mut current: Vec<[f64; 2]> = vec![];
     let (mut index, mut left) = (0, pattern[0]);
+    let mut steps = 0;
     for w in path.windows(2) {
         let (a, z) = (w[0], w[1]);
-        let length = ((z[0] - a[0]).powi(2) + (z[1] - a[1]).powi(2)).sqrt();
+        let length = (z[0] - a[0]).hypot(z[1] - a[1]);
+        if !length.is_finite() {
+            return None;
+        }
         let mut done = 0.0;
         while done < length - 1e-9 {
+            steps += 1;
+            if steps > MAX_DASH_STEPS {
+                return None;
+            }
             let step = left.min(length - done);
+            if done + step <= done {
+                return None;
+            }
             let p = |s: f64| {
                 [
-                    a[0] + (z[0] - a[0]) * s / length,
-                    a[1] + (z[1] - a[1]) * s / length,
+                    a[0] + (z[0] - a[0]) * (s / length),
+                    a[1] + (z[1] - a[1]) * (s / length),
                 ]
             };
             if index % 2 == 0 {
@@ -656,6 +695,36 @@ pub(crate) fn annotations(root: &SExp) -> Vec<Annotation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extreme_paper_dimensions_do_not_expand_reference_grid() {
+        for value in [f64::INFINITY, f64::NAN, -1.0, 0.0, 1e100] {
+            assert!(frame(value, 210.0, &TitleInfo::default()).lines.is_empty());
+        }
+        let (name, w, h) = paper(&parse("(kicad_sch (paper User 1e100 210))"));
+        assert_eq!((name.as_str(), w, h), ("A4", 297.0, 210.0));
+        assert!(
+            frame(MAX_PAPER_SIZE, MAX_PAPER_SIZE, &TitleInfo::default())
+                .lines
+                .len()
+                < 1000
+        );
+    }
+
+    #[test]
+    fn excessive_dash_density_falls_back_to_solid() {
+        let path = [[0.0, 0.0], [1e100, 0.0]];
+        for width in [0.0, 1e-100, 0.1, f64::INFINITY, f64::NAN] {
+            assert!(dashes(&path, width, "dash").is_none());
+        }
+        assert!(dashes(&[[0.0, 0.0], [10.0, 0.0]], 0.2, "dash").is_some());
+    }
+
+    #[test]
+    fn extreme_annotation_text_size_is_not_laid_out() {
+        let node = parse("(text hi (at 1 2) (effects (font (size 1e100 1e100))))");
+        assert!(text_spec(&node, "hi").is_none());
+    }
 
     fn parse(s: &str) -> SExp {
         kicad_schema::sexp::parse(s).unwrap()

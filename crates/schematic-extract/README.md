@@ -20,6 +20,12 @@ separately. Missing child files or embedded symbols produce `warning` scene
 metadata so a standalone root upload can still be viewed. Limits are 64 levels,
 512 pages, and 128 nested s-expressions.
 
+`find_root(&files)` selects the likely root: a schematic beside a matching
+`.kicad_pro` or `.kicad_pcb` first, otherwise a schematic not referenced as a
+child. Ties prefer shallower paths, then lexical order. Resource forks and
+`__MACOSX` metadata are ignored. `parse_files(&files)` discovers and parses in
+one call; use explicit `parse_project` when the caller knows the intended root.
+
 Coordinates are millimetres, Y down. Sixteen layers distinguish wires, buses,
 symbol outlines/fills, pins, pin text, fields, labels, power, no-connects, sheets,
 notes, graphics, and page/title frames. Text uses NewStroke polylines, shared
@@ -45,9 +51,10 @@ The scene is a drawing model, not an electrical netlist. Wire endpoint labels
 are propagated for selection; full cross-sheet electrical connectivity and
 implicit power connectivity are not inferred. Embedded raster images, custom
 `.kicad_wks` templates, legacy `.sch` files, and external symbol libraries are
-not supported. Sheet pins and decorative pin shapes currently use simplified
-geometry. Instance-specific reference overrides in repeated-sheet projects
-are not yet applied.
+not supported. Sheet pins and global-label outlines currently use simplified
+geometry. Symbol instance paths select per-sheet reference and unit overrides.
+Net identities are scoped to a page, so same-named local nets on different
+sheets cannot accidentally highlight each other.
 
 Native preview example:
 
