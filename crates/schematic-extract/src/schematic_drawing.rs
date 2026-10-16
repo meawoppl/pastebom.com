@@ -189,7 +189,6 @@ pub(crate) fn frame(w: f64, h: f64, info: &TitleInfo) -> Furniture {
             f.texts.push(text(s, at(x, y), size, left, bold, italic))
         };
         put(format!("Date: {}", info.date), 87.0, 6.9, 1.0, false, false);
-        put("kicadmium".into(), 109.0, 4.1, 1.5, false, false);
         put(format!("Rev: {}", info.rev), 24.0, 6.9, 1.5, true, false);
         put(
             format!("Size: {}", info.paper),
@@ -285,10 +284,7 @@ fn has_atom(node: &SExp, atom: &str) -> bool {
 /// `bold`/`italic`/`hide` appear as bare atoms (KiCad 6–7) or as
 /// `(bold yes)` lists (KiCad 8+).
 fn flag(node: &SExp, name: &str) -> bool {
-    has_atom(node, name)
-        || node
-            .get(name)
-            .is_some_and(|c| c.string_at(0).is_none_or(|v| v == "yes"))
+    node.flag(name)
 }
 
 /// Stroke width and dash style of a graphic.

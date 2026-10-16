@@ -324,7 +324,9 @@ impl SExp {
     /// Whether a bare flag atom (e.g. `hide`, `locked`) or `(flag yes)` is set.
     pub fn flag(&self, name: &str) -> bool {
         self.children.iter().any(|c| {
-            (c.is_atom() && c.value.as_ref().and_then(Value::as_str) == Some(name))
+            (c.is_atom()
+                && c.token != Token::Quoted
+                && c.value.as_ref().and_then(Value::as_str) == Some(name))
                 || (c.has_tag(name) && c.string_at(0).is_none_or(|v| v == "yes" || v == "true"))
         })
     }
