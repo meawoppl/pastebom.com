@@ -497,14 +497,7 @@ fn app() -> Html {
     });
 
     // Parent sheet, for an "up" button on child pages.
-    let parent = index
-        .pages
-        .iter()
-        .find(|(p, _)| {
-            prop(&scene.meta, &format!("page:{p}:parent"))
-                .is_some_and(|kids| kids.split(',').any(|k| k == current))
-        })
-        .map(|(p, _)| p.clone());
+    let parent = prop(&scene.meta, &format!("page:{current}:parent")).map(str::to_owned);
     let up = parent.map(|p| {
         let open_page = open_page.clone();
         html! { <button onclick={Callback::from(move |_| open_page.emit(p.clone()))}>{"↑ Parent"}</button> }

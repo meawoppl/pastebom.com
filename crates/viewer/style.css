@@ -229,6 +229,34 @@ body {
   background: rgba(255, 255, 255, 0.16);
 }
 
+.schematic-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.05);
+  color: inherit;
+  text-decoration: none;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.schematic-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.dark .schematic-btn {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dark .schematic-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
 .sidebar-title {
   font-size: 16px;
   font-weight: bold;

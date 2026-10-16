@@ -60,6 +60,7 @@
         .result.show { display: block; }
         .result a { color: #4ecca3; word-break: break-all; font-size: 1.1rem; }
         .result .meta { color: #888; margin-top: 0.5rem; font-size: 0.9rem; }
+        .result .warning { color: #e0af68; margin-top: 0.5rem; font-size: 0.9rem; }
         .error { background: #3d1a1a; border: 1px solid #ff4444; }
         .loading { opacity: 0.6; pointer-events: none; }
         button {
@@ -222,7 +223,7 @@
     <div class="page-layout">
         <div class="main-column">
             <div class="upload-zone" id="dropzone">
-                <input type="file" id="fileInput" accept=".kicad_pcb,.json,.brd,.fbrd,.pcbdoc,.zip,.tgz,.tar.gz">
+                <input type="file" id="fileInput" multiple accept=".kicad_pcb,.kicad_sch,.kicad_pro,.json,.brd,.fbrd,.pcbdoc,.zip,.tgz,.tar.gz">
                 <p>Drop your PCB file here or click to browse</p>
                 <div class="formats">
                     <ul style="text-align: left; display: inline-block; margin: 0.5rem 0 0 0; padding-left: 1.5rem;">
@@ -232,6 +233,7 @@
                         <li>EasyEDA (.json)</li>
                         <li>Gerber (.zip)</li>
                         <li>KiCad (.kicad_pcb)</li>
+                        <li>KiCad schematic (.kicad_sch, or several KiCad files / a project .zip for board + schematic)</li>
                         <li>ODB++ (.tgz, .zip, .tar.gz)</li>
                     </ul>
                 </div>
@@ -316,6 +318,7 @@
         function detectFormat(filename) {
             const name = filename.toLowerCase();
             if (name.endsWith('.kicad_pcb')) return 'KiCad';
+            if (name.endsWith('.kicad_sch')) return 'KiCad schematic';
             if (name.endsWith('.json')) return 'EasyEDA';
             if (name.endsWith('.brd') || name.endsWith('.fbrd')) return 'Eagle';
             if (name.endsWith('.pcbdoc')) return 'Altium';
@@ -360,16 +363,17 @@
         dropzone.addEventListener('drop', e => {
             e.preventDefault();
             dropzone.classList.remove('dragover');
-            if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+            if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
         });
-        fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
+        fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadFiles(fileInput.files); });
 
-        async function uploadFile(file) {
+        // Several files are sent together as one KiCad project (board + sheets).
+        async function uploadFiles(files) {
             dropzone.classList.add('loading');
             result.className = 'result show';
             result.innerHTML = '<span class="spinner"></span>Generating BOM...';
             const formData = new FormData();
-            formData.append('file', file);
+            for (const f of files) formData.append('file', f);
             if (secretCheck.checked) formData.append('secret', 'true');
             try {
                 const response = await fetch('/upload', { method: 'POST', body: formData });
@@ -377,12 +381,18 @@
                 let data;
                 try { data = JSON.parse(text); } catch { throw new Error(text || `Server error (${response.status})`); }
                 if (!response.ok) throw new Error(data.error || 'Upload failed');
-                saveToHistory({ url: data.url, filename: file.name });
+                saveToHistory({ url: data.url, filename: data.filename });
                 if (!secretCheck.checked) loadRecent();
                 result.innerHTML = `
                     <p>Your PasteBOM is ready:</p>
                     <a href="${data.url}" target="_blank">${data.url}</a>
                     <button onclick="navigator.clipboard.writeText('${data.url}').then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy Link',2000)})">Copy Link</button>`;
+                if (data.warning) {
+                    const note = document.createElement('p');
+                    note.className = 'warning';
+                    note.textContent = data.warning;
+                    result.appendChild(note);
+                }
             } catch (err) {
                 result.classList.add('error');
                 result.innerHTML = `<p>Error: ${err.message}</p>`;

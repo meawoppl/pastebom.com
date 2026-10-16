@@ -254,6 +254,9 @@ struct UploadResponse {
     id: String,
     filename: String,
     components: usize,
+    /// Why part of the upload (a project's schematic) could not be shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -273,6 +276,9 @@ struct BomMeta {
     /// A schematic scene is stored at `boms/{id}.schematic.json`.
     #[serde(default)]
     has_schematic: bool,
+    /// Why a project's schematic failed while its board parsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schematic_error: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -291,7 +297,13 @@ async fn upload(
     let mut total = 0usize;
     let mut secret = false;
 
-    while let Ok(Some(mut field)) = multipart.next_field().await {
+    // A malformed body fails the upload rather than keeping the files read
+    // so far, which could silently drop part of a project.
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| error_response(StatusCode::BAD_REQUEST, &format!("Upload error: {e}")))?
+    {
         let name = field.name().unwrap_or("").to_string();
         if name == "file" {
             let filename = field.file_name().unwrap_or("upload.bin").to_string();
@@ -344,6 +356,7 @@ async fn upload(
             id,
             filename,
             components: 0,
+            warning: None,
         }));
     }
 
@@ -391,6 +404,7 @@ async fn upload(
         file_size,
         has_pcb: true,
         has_schematic: false,
+        schematic_error: None,
     };
     let meta_key = format!("boms/{id}.meta.json");
     if let Ok(meta_json) = serde_json::to_vec(&meta) {
@@ -421,6 +435,7 @@ async fn upload(
         id,
         filename,
         components: component_count,
+        warning: None,
     }))
 }
 
@@ -474,6 +489,7 @@ async fn upload_project(
         None => false,
     };
 
+    let mut schematic_error = None;
     let has_schematic = if project.has_schematic() {
         match crate::schematic::parse_guarded(state, project.files).await {
             Ok(scene) => {
@@ -504,6 +520,7 @@ async fn upload_project(
             }
             Err(e) if has_pcb => {
                 tracing::warn!("Schematic skipped for {upload_name}: {e}");
+                schematic_error = Some(format!("Schematic not shown: {e}"));
                 false
             }
             Err(e) => {
@@ -529,6 +546,7 @@ async fn upload_project(
         file_size,
         has_pcb,
         has_schematic,
+        schematic_error: schematic_error.clone(),
     };
     if let Ok(meta_json) = serde_json::to_vec(&meta) {
         let _ = state
@@ -563,6 +581,7 @@ async fn upload_project(
         id,
         filename: upload_name,
         components,
+        warning: schematic_error,
     })
 }
 

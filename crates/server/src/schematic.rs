@@ -30,6 +30,8 @@ const SVG_BACKGROUND: [u8; 4] = [0x1a, 0x1b, 0x26, 255];
 const ROOT_PAGE: &str = "/";
 
 /// Project files kept from uploads; everything else in a zip is ignored.
+/// KiCad always writes these lowercase, and sheet references use the exact
+/// filename, so matching is case-sensitive throughout.
 const KICAD_EXTENSIONS: [&str; 3] = [".kicad_sch", ".kicad_pcb", ".kicad_pro"];
 
 pub fn scene_key(id: &str) -> String {
@@ -41,8 +43,7 @@ fn svg_key(id: &str) -> String {
 }
 
 fn is_kicad_file(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    KICAD_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+    KICAD_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
 }
 
 /// macOS archive debris (`__MACOSX/`, `._name` resource forks).
@@ -61,10 +62,7 @@ pub fn zip_has_kicad(data: &[u8]) -> bool {
         return false;
     };
     let found = archive.file_names().any(|n| {
-        !is_resource_fork(n) && {
-            let lower = n.to_lowercase();
-            lower.ends_with(".kicad_sch") || lower.ends_with(".kicad_pcb")
-        }
+        !is_resource_fork(n) && (n.ends_with(".kicad_sch") || n.ends_with(".kicad_pcb"))
     });
     found
 }
@@ -72,9 +70,7 @@ pub fn zip_has_kicad(data: &[u8]) -> bool {
 /// Whether an upload of these filenames goes through [`Project`] ingest.
 pub fn is_project_upload(uploads: &[(String, Vec<u8>)]) -> bool {
     match uploads {
-        [(name, data)] => {
-            name.to_lowercase().ends_with(".kicad_sch") || (is_zip(name) && zip_has_kicad(data))
-        }
+        [(name, data)] => name.ends_with(".kicad_sch") || (is_zip(name) && zip_has_kicad(data)),
         [] => false,
         _ => true,
     }
@@ -114,14 +110,14 @@ impl Project {
                         return Err("Project is too large once unzipped".into());
                     }
                     total += buf.len();
-                    files.insert(path, buf);
+                    insert_unique(&mut files, path, buf)?;
                 }
             } else if is_kicad_file(&name) {
                 total += data.len();
                 if total > max_bytes {
                     return Err("Project is too large".into());
                 }
-                files.insert(base_name(&name).to_string(), data);
+                insert_unique(&mut files, base_name(&name).to_string(), data)?;
             } else {
                 return Err(format!(
                     "{name}: only KiCad files (.kicad_sch, .kicad_pcb, .kicad_pro) or a zip of them can be uploaded together"
@@ -157,6 +153,19 @@ impl Project {
     }
 }
 
+/// Two uploads with the same path would make sheet references ambiguous.
+fn insert_unique(
+    files: &mut HashMap<String, Vec<u8>>,
+    path: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    if files.contains_key(&path) {
+        return Err(format!("{path} appears more than once in the upload"));
+    }
+    files.insert(path, data);
+    Ok(())
+}
+
 /// Final path component of a client filename.
 fn base_name(name: &str) -> &str {
     name.rsplit(['/', '\\']).next().unwrap_or(name)
@@ -167,11 +176,17 @@ pub async fn parse_guarded(
     state: &AppState,
     files: HashMap<String, Vec<u8>>,
 ) -> Result<Scene, ParseError> {
-    let _permit = tokio::time::timeout(SEMAPHORE_TIMEOUT, state.parse_semaphore.acquire())
+    let semaphore = state.parse_semaphore.clone();
+    let permit = tokio::time::timeout(SEMAPHORE_TIMEOUT, semaphore.acquire_owned())
         .await
         .map_err(|_| ParseError::Busy)?
         .map_err(|_| ParseError::Busy)?;
-    let handle = tokio::task::spawn_blocking(move || schematic_extract::parse_files(&files));
+    // The permit lives with the blocking task, so a timed-out parse still
+    // counts against MAX_CONCURRENT_PARSES until it actually finishes.
+    let handle = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        schematic_extract::parse_files(&files)
+    });
     tokio::time::timeout(PARSE_TIMEOUT, handle)
         .await
         .map_err(|_| ParseError::Failed("Schematic parsing timed out".to_string()))?
@@ -416,6 +431,22 @@ mod tests {
         assert_eq!(p.pcb().unwrap().0, "a/main.kicad_pcb");
         p.files.remove("a/main.kicad_pro");
         assert_eq!(p.pcb().unwrap().0, "a/aaa.kicad_pcb");
+    }
+
+    #[test]
+    fn collect_rejects_duplicate_paths() {
+        let uploads = vec![
+            ("a/board.kicad_sch".into(), b"x".to_vec()),
+            ("b/board.kicad_sch".into(), b"y".to_vec()),
+        ];
+        assert!(Project::collect(uploads, 1 << 20).is_err());
+    }
+
+    #[test]
+    fn extensions_are_case_sensitive() {
+        assert!(!is_project_upload(&[("A.KICAD_SCH".into(), Vec::new())]));
+        let uploads = vec![("A.KICAD_SCH".into(), b"x".to_vec())];
+        assert!(Project::collect(uploads, 1 << 20).is_err());
     }
 
     #[test]
