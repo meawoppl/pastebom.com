@@ -233,8 +233,14 @@ fn err(status: StatusCode, msg: &str) -> Response {
     (status, msg.to_string()).into_response()
 }
 
+/// Whether the upload has a stored schematic, from its small metadata record
+/// rather than the (possibly multi-megabyte) scene.
 pub async fn exists(state: &AppState, id: &str) -> bool {
-    state.s3.get_object(&scene_key(id)).await.is_ok()
+    let Ok(meta) = state.s3.get_object(&format!("boms/{id}.meta.json")).await else {
+        return false;
+    };
+    serde_json::from_slice::<serde_json::Value>(&meta)
+        .is_ok_and(|m| m["has_schematic"].as_bool() == Some(true))
 }
 
 /// Root sheet SVG, rendered from the stored scene and cached in storage.
