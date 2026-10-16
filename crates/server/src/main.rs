@@ -6,6 +6,7 @@ mod reparse;
 mod routes;
 mod s3;
 mod schematic;
+mod static_path;
 
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -307,6 +308,20 @@ mod tests {
         ] {
             let (status, _) = get_status(path).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_viewer_asset_dirs_reject_absolute_suffixes() {
+        // A doubled slash leaves an absolute suffix, which `Path::join` would
+        // let replace the asset directory; this file exists, so a 200 is a leak.
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        for prefix in ["/sview/", "/gview/"] {
+            for suffix in [manifest, "/../Cargo.toml"] {
+                let path = format!("{prefix}{suffix}");
+                let (status, _) = get_status(&path).await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            }
         }
     }
 }

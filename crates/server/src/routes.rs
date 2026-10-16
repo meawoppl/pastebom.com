@@ -504,11 +504,7 @@ async fn upload_project(
                 })?;
                 state
                     .s3
-                    .put_object(
-                        &crate::schematic::scene_key(&id),
-                        json,
-                        "application/json",
-                    )
+                    .put_object(&crate::schematic::scene_key(&id), json, "application/json")
                     .await
                     .map_err(|_| {
                         error_response(
@@ -551,7 +547,11 @@ async fn upload_project(
     if let Ok(meta_json) = serde_json::to_vec(&meta) {
         let _ = state
             .s3
-            .put_object(&format!("boms/{id}.meta.json"), meta_json, "application/json")
+            .put_object(
+                &format!("boms/{id}.meta.json"),
+                meta_json,
+                "application/json",
+            )
             .await;
     }
 

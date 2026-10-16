@@ -61,9 +61,9 @@ pub fn zip_has_kicad(data: &[u8]) -> bool {
     let Ok(archive) = zip::ZipArchive::new(std::io::Cursor::new(data)) else {
         return false;
     };
-    let found = archive.file_names().any(|n| {
-        !is_resource_fork(n) && (n.ends_with(".kicad_sch") || n.ends_with(".kicad_pcb"))
-    });
+    let found = archive
+        .file_names()
+        .any(|n| !is_resource_fork(n) && (n.ends_with(".kicad_sch") || n.ends_with(".kicad_pcb")));
     found
 }
 
@@ -214,17 +214,13 @@ pub fn page_svg(scene: &Scene, page: &str) -> String {
         .map(|i| i.id)
         .collect();
     let size_key = format!("page:{page}:size");
-    let bbox = scene
-        .meta
-        .iter()
-        .find(|p| p.key == size_key)
-        .and_then(|p| {
-            let (w, h) = p.value.split_once(',')?;
-            Some(BBox {
-                min: [0.0, 0.0],
-                max: [w.parse().ok()?, h.parse().ok()?],
-            })
-        });
+    let bbox = scene.meta.iter().find(|p| p.key == size_key).and_then(|p| {
+        let (w, h) = p.value.split_once(',')?;
+        Some(BBox {
+            min: [0.0, 0.0],
+            max: [w.parse().ok()?, h.parse().ok()?],
+        })
+    });
     scene.to_svg(&SvgOptions {
         bbox,
         background: Some(SVG_BACKGROUND),
@@ -322,10 +318,9 @@ pub async fn get_svg(State(state): State<AppState>, Path(id): Path<String>) -> R
 pub async fn serve_assets(State(state): State<AppState>, uri: Uri) -> Response {
     let rel = uri.path().trim_start_matches("/sview/");
     let rel = if rel.is_empty() { "index.html" } else { rel };
-    if rel.contains("..") || rel.contains('\\') {
+    let Some(path) = crate::static_path::resolve(&state.sch_viewer_dir, rel) else {
         return err(StatusCode::NOT_FOUND, "not found");
-    }
-    let path = state.sch_viewer_dir.join(rel);
+    };
     let Ok(bytes) = tokio::fs::read(&path).await else {
         return err(StatusCode::NOT_FOUND, "asset not found");
     };

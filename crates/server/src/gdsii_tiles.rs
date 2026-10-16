@@ -246,10 +246,9 @@ pub async fn serve_gview(State(state): State<AppState>, uri: Uri) -> Response {
     let rel = uri.path().trim_start_matches("/gview/");
     let rel = if rel.is_empty() { "index.html" } else { rel };
     // Reject traversal; only serve plain relative paths.
-    if rel.contains("..") {
+    let Some(path) = crate::static_path::resolve(&state.gds_viewer_dir, rel) else {
         return err(StatusCode::NOT_FOUND, "not found");
-    }
-    let path = state.gds_viewer_dir.join(rel);
+    };
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
         Err(_) => match tokio::fs::read(state.gds_viewer_dir.join("index.html")).await {
