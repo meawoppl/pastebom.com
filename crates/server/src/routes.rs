@@ -1,7 +1,7 @@
 use axum::{
     extract::{multipart::MultipartRejection, DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post},
     Json, Router,
 };
@@ -15,6 +15,8 @@ const MAX_RECENT: usize = 50;
 const RECENT_KEY: &str = "recent.json";
 const SEMAPHORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const PARSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Decompressed KiCad file budget for one project upload.
+const MAX_PROJECT_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -203,6 +205,11 @@ pub fn router(max_upload_bytes: usize) -> Router<AppState> {
         .route("/b/{id}/data", get(get_bom_data))
         .route("/b/{id}/meta", get(get_meta))
         .route("/b/{id}/thumb.svg", get(get_thumb_svg))
+        .route("/b/{id}/schematic", get(crate::schematic::get_viewer))
+        .route("/b/{id}/schematic.json", get(crate::schematic::get_scene))
+        .route("/b/{id}/schematic.svg", get(crate::schematic::get_svg))
+        .route("/sview/{*path}", get(crate::schematic::serve_assets))
+        .route("/sview/", get(crate::schematic::serve_assets))
         .route("/gh-render", get(crate::github::gh_render))
         // GDSII tile viewer
         .route("/g/{id}", get(crate::gdsii_tiles::get_gds_viewer))
@@ -260,6 +267,16 @@ struct BomMeta {
     filename: String,
     components: usize,
     file_size: usize,
+    /// A board is stored at `boms/{id}.json`; false for schematic-only uploads.
+    #[serde(default = "default_true")]
+    has_pcb: bool,
+    /// A schematic scene is stored at `boms/{id}.schematic.json`.
+    #[serde(default)]
+    has_schematic: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 async fn upload(
@@ -268,7 +285,10 @@ async fn upload(
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let mut multipart = multipart_result
         .map_err(|e| error_response(StatusCode::BAD_REQUEST, &format!("Upload error: {e}")))?;
-    let mut file_data: Option<(String, Vec<u8>)> = None;
+    // Several `file` fields upload a KiCad project's files together; the
+    // size limit applies to their total.
+    let mut uploads: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total = 0usize;
     let mut secret = false;
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
@@ -283,7 +303,8 @@ async fn upload(
                 .map_err(|_| error_response(StatusCode::BAD_REQUEST, "Failed to read upload"))?
             {
                 data.extend_from_slice(&chunk);
-                if data.len() > limit {
+                total += chunk.len();
+                if total > limit {
                     let limit_mb = limit / (1024 * 1024);
                     return Err(error_response(
                         StatusCode::PAYLOAD_TOO_LARGE,
@@ -291,15 +312,20 @@ async fn upload(
                     ));
                 }
             }
-            file_data = Some((filename, data));
+            uploads.push((filename, data));
         } else if name == "secret" {
             let val = field.text().await.unwrap_or_default();
             secret = val == "true";
         }
     }
 
-    let (filename, data) =
-        file_data.ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "No file uploaded"))?;
+    if uploads.is_empty() {
+        return Err(error_response(StatusCode::BAD_REQUEST, "No file uploaded"));
+    }
+    if crate::schematic::is_project_upload(&uploads) {
+        return upload_project(&state, uploads, secret).await.map(Json);
+    }
+    let (filename, data) = uploads.remove(0);
 
     // GDSII goes to the tile-viewer pipeline, not the PcbData/BOM path.
     let lower = filename.to_lowercase();
@@ -363,6 +389,8 @@ async fn upload(
         filename: filename.clone(),
         components: component_count,
         file_size,
+        has_pcb: true,
+        has_schematic: false,
     };
     let meta_key = format!("boms/{id}.meta.json");
     if let Ok(meta_json) = serde_json::to_vec(&meta) {
@@ -396,6 +424,148 @@ async fn upload(
     }))
 }
 
+/// Ingest a KiCad project: a `.kicad_sch`, several KiCad files, or a project
+/// zip. The board (if any) is parsed as usual; the schematic hierarchy is
+/// stored as a scene. A schematic failure only fails the upload when there is
+/// no board to show instead.
+async fn upload_project(
+    state: &AppState,
+    uploads: Vec<(String, Vec<u8>)>,
+    secret: bool,
+) -> Result<UploadResponse, (StatusCode, Json<ErrorResponse>)> {
+    let id = Uuid::new_v4().to_string();
+    let file_size: usize = uploads.iter().map(|(_, d)| d.len()).sum();
+    for (name, data) in &uploads {
+        let key = format!("uploads/{id}/{}", safe_filename(name));
+        let _ = state
+            .s3
+            .put_object(&key, data.clone(), "application/octet-stream")
+            .await;
+    }
+    let upload_name = uploads[0].0.clone();
+    let project = crate::schematic::Project::collect(uploads, MAX_PROJECT_BYTES)
+        .map_err(|e| error_response(StatusCode::BAD_REQUEST, &e))?;
+
+    let mut components = 0;
+    let has_pcb = match project.pcb() {
+        Some((name, data)) => {
+            let pcb = parse_pcb_guarded(state, data.to_vec(), pcb_extract::PcbFormat::KiCad)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Parse error for {name} in {upload_name}: {e}");
+                    error_response(e.status(), &e.to_string())
+                })?;
+            components = pcb.footprints.len();
+            let json = serde_json::to_vec(&pcb).map_err(|_| {
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "JSON serialization failed",
+                )
+            })?;
+            state
+                .s3
+                .put_object(&format!("boms/{id}.json"), json, "application/json")
+                .await
+                .map_err(|_| {
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to store BOM")
+                })?;
+            true
+        }
+        None => false,
+    };
+
+    let has_schematic = if project.has_schematic() {
+        match crate::schematic::parse_guarded(state, project.files).await {
+            Ok(scene) => {
+                if !has_pcb {
+                    components = crate::schematic::symbol_count(&scene);
+                }
+                let json = serde_json::to_vec(&scene).map_err(|_| {
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "JSON serialization failed",
+                    )
+                })?;
+                state
+                    .s3
+                    .put_object(
+                        &crate::schematic::scene_key(&id),
+                        json,
+                        "application/json",
+                    )
+                    .await
+                    .map_err(|_| {
+                        error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to store schematic",
+                        )
+                    })?;
+                true
+            }
+            Err(e) if has_pcb => {
+                tracing::warn!("Schematic skipped for {upload_name}: {e}");
+                false
+            }
+            Err(e) => {
+                tracing::error!("Schematic parse error for {upload_name}: {e}");
+                return Err(error_response(e.status(), &e.to_string()));
+            }
+        }
+    } else {
+        false
+    };
+
+    if !has_pcb && !has_schematic {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "No .kicad_pcb or .kicad_sch found in upload",
+        ));
+    }
+
+    let meta = BomMeta {
+        id: id.clone(),
+        filename: upload_name.clone(),
+        components,
+        file_size,
+        has_pcb,
+        has_schematic,
+    };
+    if let Ok(meta_json) = serde_json::to_vec(&meta) {
+        let _ = state
+            .s3
+            .put_object(&format!("boms/{id}.meta.json"), meta_json, "application/json")
+            .await;
+    }
+
+    if !secret {
+        add_recent(
+            state,
+            RecentEntry {
+                id: id.clone(),
+                filename: upload_name.clone(),
+                components,
+                file_size,
+                created: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
+    }
+
+    let base_url =
+        std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+    let path = if has_pcb {
+        format!("/b/{id}")
+    } else {
+        format!("/b/{id}/schematic")
+    };
+    Ok(UploadResponse {
+        url: format!("{base_url}{path}"),
+        id,
+        filename: upload_name,
+        components,
+    })
+}
+
 async fn get_recent(State(state): State<AppState>) -> Json<Vec<RecentEntry>> {
     let recent = state.recent.read().await;
     Json(recent.clone())
@@ -407,20 +577,21 @@ async fn get_bom(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     validate_id(&id)?;
-    // Verify the BOM exists
+    // Verify the BOM exists; schematic-only uploads open the schematic viewer.
     let key = format!("boms/{id}.json");
-    let _ = state
-        .s3
-        .get_object(&key)
-        .await
-        .map_err(|_| error_response(StatusCode::NOT_FOUND, "BOM not found"))?;
+    if state.s3.get_object(&key).await.is_err() {
+        if crate::schematic::exists(&state, &id).await {
+            return Ok(Redirect::temporary(&format!("/b/{id}/schematic")).into_response());
+        }
+        return Err(error_response(StatusCode::NOT_FOUND, "BOM not found"));
+    }
 
     // Serve the viewer index.html
     let index_path = state.viewer_dir.join("index.html");
     let html = tokio::fs::read_to_string(&index_path)
         .await
         .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "Viewer not available"))?;
-    Ok(Html(html))
+    Ok(Html(html).into_response())
 }
 
 /// Serve pcbdata JSON at /b/{id}/data
@@ -489,11 +660,12 @@ pub async fn load_thumbnail(
     }
 
     let data_key = format!("boms/{id}.json");
-    let json_bytes = state
-        .s3
-        .get_object(&data_key)
-        .await
-        .map_err(|_| (StatusCode::NOT_FOUND, "BOM not found"))?;
+    let Ok(json_bytes) = state.s3.get_object(&data_key).await else {
+        // Schematic-only uploads use their root sheet.
+        return crate::schematic::load_svg(state, id)
+            .await
+            .map_err(|_| (StatusCode::NOT_FOUND, "BOM not found"));
+    };
 
     let pcb_data: pcb_extract::types::PcbData =
         serde_json::from_slice(&json_bytes).map_err(|_| {

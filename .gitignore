@@ -22,3 +22,4 @@ crates/gds-viewer/dist/
 
 # Reference specs (downloaded, not checked in)
 specs/
+crates/sch-viewer/dist/

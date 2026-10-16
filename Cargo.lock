@@ -2735,6 +2735,7 @@ dependencies = [
  "mime_guess",
  "pcb-extract",
  "reqwest",
+ "schematic-extract",
  "serde",
  "serde_json",
  "sha1",
