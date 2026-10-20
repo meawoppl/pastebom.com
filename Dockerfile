@@ -32,10 +32,11 @@ COPY crates/kicad-schema/Cargo.toml crates/kicad-schema/Cargo.toml
 COPY crates/kicad-strokes/Cargo.toml crates/kicad-strokes/Cargo.toml
 COPY crates/schematic-extract/Cargo.toml crates/schematic-extract/Cargo.toml
 COPY crates/sch-viewer/Cargo.toml crates/sch-viewer/Cargo.toml
+COPY crates/vector-view-yew/Cargo.toml crates/vector-view-yew/Cargo.toml
 
 # Create dummy source files for dependency caching
 RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src crates/gds-viewer/src crates/gerber-view/src \
-        crates/vector-view/src crates/kicad-schema/src crates/kicad-strokes/src crates/schematic-extract/src crates/sch-viewer/src \
+        crates/vector-view/src crates/kicad-schema/src crates/kicad-strokes/src crates/schematic-extract/src crates/sch-viewer/src crates/vector-view-yew/src \
     && echo "pub fn main() {}" > crates/pcb-extract/src/main.rs \
     && echo "pub fn lib() {}" > crates/pcb-extract/src/lib.rs \
     && echo "fn main() {}" > crates/server/src/main.rs \
@@ -47,7 +48,8 @@ RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crate
     && echo "pub fn lib() {}" > crates/kicad-schema/src/lib.rs \
     && echo "pub fn lib() {}" > crates/kicad-strokes/src/lib.rs \
     && echo "pub fn lib() {}" > crates/schematic-extract/src/lib.rs \
-    && echo "fn main() {}" > crates/sch-viewer/src/main.rs
+    && echo "fn main() {}" > crates/sch-viewer/src/main.rs \
+    && echo "pub fn lib() {}" > crates/vector-view-yew/src/lib.rs
 
 # Build dependencies only (cached layer)
 RUN cargo build --release --locked 2>/dev/null || true
@@ -66,7 +68,8 @@ RUN touch crates/pcb-extract/src/main.rs \
     crates/kicad-schema/src/lib.rs \
     crates/kicad-strokes/src/lib.rs \
     crates/schematic-extract/src/lib.rs \
-    crates/sch-viewer/src/main.rs
+    crates/sch-viewer/src/main.rs \
+    crates/vector-view-yew/src/lib.rs
 
 # Build release binaries
 RUN cargo build --release --locked

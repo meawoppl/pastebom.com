@@ -44,6 +44,8 @@ jobs:
 
       - run: cargo clippy -p sch-viewer --target wasm32-unknown-unknown -- -D warnings
 
+      - run: cargo clippy -p vector-view-yew --target wasm32-unknown-unknown -- -D warnings
+
       - run: cargo clippy -p gerber-view --target wasm32-unknown-unknown -- -D warnings
 
   gerber-view:
