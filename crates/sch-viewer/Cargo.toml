@@ -9,7 +9,7 @@ gloo-events = "0.2"
 gloo-net = "0.6"
 js-sys = "0.3.106"
 serde_json.workspace = true
-vector-view = { version = "1.10.0", path = "../vector-view", features = ["canvas"] }
+vector-view = { workspace = true, features = ["canvas"] }
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4.79"
 web-sys = { version = "0.3.106", features = ["CanvasRenderingContext2d", "DomRect", "Element", "HtmlCanvasElement", "HtmlInputElement", "HtmlSelectElement", "Location", "PointerEvent", "ResizeObserver", "UrlSearchParams", "WheelEvent", "Window", "History"] }

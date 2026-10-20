@@ -1,7 +1,13 @@
 [package]
 name = "vector-view"
-version.workspace = true
+version = "0.1.0"
+repository = "https://github.com/meawoppl/pastebom.com"
+readme = "README.md"
+keywords = ["kicad", "schematic", "eda", "graphics"]
+categories = ["graphics", "parsing"]
+include = ["src/**", "README.md", "LICENSE*", "NOTICE.md", "docs/**", "examples/**", "tests/**"]
 edition = "2021"
+license = "MIT"
 description = "Reified 2D vector scenes (PCB, schematic, Gerber, footprint, symbol) and a minimal Canvas2D viewer core"
 
 [lib]

@@ -1,16 +1,21 @@
 [package]
 name = "schematic-extract"
-version.workspace = true
+version = "0.1.0"
+repository = "https://github.com/meawoppl/pastebom.com"
+readme = "README.md"
+keywords = ["kicad", "schematic", "eda", "graphics"]
+categories = ["graphics", "parsing"]
+include = ["src/**", "README.md", "LICENSE*", "NOTICE.md", "docs/**", "examples/**", "tests/**"]
 edition = "2021"
 license = "MIT"
 description = "Filesystem-free KiCad schematic extraction into reusable layered vector scenes"
 
 [dependencies]
 anyhow = "1"
-kicad-schema = { path = "../kicad-schema" }
-kicad-strokes = { path = "../kicad-strokes" }
+kicad-schema = { version = "0.1.0", path = "../kicad-schema" }
+kicad-strokes = { version = "0.1.0", path = "../kicad-strokes" }
 thiserror = "2"
-vector-view = { path = "../vector-view" }
+vector-view.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

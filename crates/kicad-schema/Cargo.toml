@@ -1,6 +1,11 @@
 [package]
 name = "kicad-schema"
-version.workspace = true
+version = "0.1.0"
+repository = "https://github.com/meawoppl/pastebom.com"
+readme = "README.md"
+keywords = ["kicad", "schematic", "eda", "graphics"]
+categories = ["graphics", "parsing"]
+include = ["src/**", "README.md", "LICENSE*", "NOTICE.md", "docs/**", "examples/**", "tests/**"]
 edition = "2021"
 license = "MIT"
 description = "Reusable KiCad schematic models and lossless s-expression parser"
