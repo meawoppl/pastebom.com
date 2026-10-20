@@ -12,6 +12,7 @@ mod symbol_graphics;
 use std::collections::HashMap;
 
 pub use vector_view;
+pub use vector_view::schematic;
 
 /// An invalid schematic or unresolved project input.
 #[derive(Debug, thiserror::Error)]

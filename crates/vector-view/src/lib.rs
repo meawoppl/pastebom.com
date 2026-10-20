@@ -15,6 +15,7 @@
 pub mod hit;
 pub mod input;
 pub mod scene;
+pub mod schematic;
 pub mod style;
 pub mod svg;
 pub mod view;
