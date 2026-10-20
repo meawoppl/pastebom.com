@@ -2426,6 +2426,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kicad-schema"
+version = "1.10.0"
+dependencies = [
+ "anyhow",
+ "serde",
+]
+
+[[package]]
+name = "kicad-strokes"
+version = "1.10.0"
+dependencies = [
+ "sha2",
+ "vector-view",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3312,6 +3328,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "schematic-extract"
+version = "1.10.0"
+dependencies = [
+ "anyhow",
+ "kicad-schema",
+ "kicad-strokes",
+ "serde_json",
+ "thiserror 2.0.18",
+ "vector-view",
 ]
 
 [[package]]

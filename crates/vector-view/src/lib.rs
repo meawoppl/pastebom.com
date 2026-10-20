@@ -16,6 +16,7 @@ pub mod hit;
 pub mod input;
 pub mod scene;
 pub mod style;
+pub mod svg;
 pub mod view;
 
 #[cfg(feature = "canvas")]

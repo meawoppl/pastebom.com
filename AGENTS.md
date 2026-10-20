@@ -10,6 +10,9 @@ Shareable interactive PCB BOM viewer. Upload a PCB file, get a link to an intera
   - `crates/viewer` — Yew WASM frontend, built with Trunk
   - `crates/gds-viewer` — Yew WASM frontend for tiled GDSII, built with Trunk
   - `crates/vector-view` — reified 2D vector scene schema (PCB, schematic, Gerber, footprint, symbol) plus an optional Canvas2D viewer core (`canvas` feature). Shared with kicadmium, which pins it by git rev
+  - `crates/schematic-extract` — filesystem-free KiCad schematic/project parser to `vector_view::Scene`; page, symbol, and layer metadata support SVG export and cross-probing
+  - `crates/kicad-schema` — reusable KiCad s-expression and schematic/library models extracted from KiCadmium
+  - `crates/kicad-strokes` — NewStroke font and text layout to vector polylines, shared by Canvas and SVG
   - `crates/gerber-view` — framework-free embeddable Gerber viewer (wasm-bindgen library, built with wasm-pack, NOT Trunk). Consumed by external hosts (Backplane); keep its JS API stable and documented in its README
 - **Storage**: S3 in production, filesystem locally (`STORAGE_PATH` env var)
 - **Viewer assets**: Trunk builds to `crates/viewer/dist/`, server reads from `VIEWER_DIR`
