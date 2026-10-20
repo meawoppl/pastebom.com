@@ -17,10 +17,15 @@ pub(crate) fn parse_project(
     let root = resolve_path("", root)?;
     let mut normalized = HashMap::new();
     for (name, data) in files {
-        let path = resolve_path("", name)?;
-        if normalized.insert(path.clone(), data.as_slice()).is_some() {
-            return Err(anyhow!("duplicate normalized project path: {path}"));
-        }
+        let Ok(path) = resolve_path("", name) else {
+            continue;
+        };
+        // Ambiguous entries are errors only when a visited sheet needs them.
+        // Never choose a winner based on HashMap iteration order.
+        normalized
+            .entry(path)
+            .and_modify(|value| *value = None)
+            .or_insert(Some(data.as_slice()));
     }
     let mut builder = Builder::new();
     builder.frame_label = options.frame_label.clone();
@@ -400,7 +405,7 @@ impl Builder {
 
 #[allow(clippy::too_many_arguments)]
 fn collect_page(
-    files: &HashMap<String, &[u8]>,
+    files: &HashMap<String, Option<&[u8]>>,
     file: &str,
     page: &str,
     parent: Option<&str>,
@@ -408,20 +413,26 @@ fn collect_page(
     seen: &mut HashSet<String>,
     b: &mut Builder,
 ) -> Result<()> {
+    if seen.contains(file) {
+        b.scene.meta.push(Prop::new(
+            "warning",
+            format!("Skipping recursive schematic sheet {file} at {page}"),
+        ));
+        return Ok(());
+    }
     if seen.len() >= 64 || b.pages.len() >= 512 {
         return Err(anyhow!(
             "schematic hierarchy exceeds 64 levels or 512 pages"
         ));
     }
-    if !seen.insert(file.to_owned()) {
-        return Err(anyhow!("recursive schematic sheet: {file}"));
-    }
+    seen.insert(file.to_owned());
     let data = files
         .get(file)
-        .ok_or_else(|| anyhow!("missing schematic: {file}"))?;
+        .ok_or_else(|| anyhow!("missing schematic: {file}"))?
+        .ok_or_else(|| anyhow!("duplicate normalized project path: {file}"))?;
     let text = std::str::from_utf8(data).with_context(|| format!("reading {file}"))?;
-    let tree = kicad_schema::sexp::parse(text)?;
-    validate_numbers(&tree)?;
+    let tree = kicad_schema::sexp::parse(text).with_context(|| format!("parsing {file}"))?;
+    validate_numbers(&tree).with_context(|| format!("parsing {file}"))?;
     let s = Schematic::new(tree, None).with_context(|| format!("parsing {file}"))?;
     let instance_path = instance_path
         .map(str::to_owned)
@@ -654,7 +665,19 @@ fn collect_page(
         }
     }
     for (x, child) in sheets {
-        let target = resolve_path(file.rsplit_once('/').map_or("", |(p, _)| p), &x.filename)?;
+        let target = match resolve_path(file.rsplit_once('/').map_or("", |(p, _)| p), &x.filename) {
+            Ok(target) => target,
+            Err(error) => {
+                b.scene.meta.push(Prop::new(
+                    "warning",
+                    format!(
+                        "Skipping sheet {} referenced by {file}: {error}",
+                        x.filename
+                    ),
+                ));
+                continue;
+            }
+        };
         if files.contains_key(&target) {
             let child_instance = format!("{instance_path}/{}", x.uuid);
             collect_page(

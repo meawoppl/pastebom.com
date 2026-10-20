@@ -14,8 +14,13 @@ let svg = scene.to_svg(&schematic_extract::vector_view::svg::SvgOptions {
 
 For hierarchy, call `parse_project(root, &HashMap<String, Vec<u8>>)`. Map keys
 are project-relative paths using `/`. Child files resolve relative to their
-parent, including `../` within the supplied project. Paths escaping the project
-and recursive hierarchies return errors. Repeated sheet instances render
+parent, including `../` within the supplied project. Escaping or recursive
+child references are skipped with warning metadata while their sheet frames
+and other reachable sheets remain visible. Invalid root paths still return
+errors. Unrelated invalid file-map keys are ignored; normalized collisions
+return errors only if the root or a reachable sheet uses that path. Syntax
+and numeric-validation errors include the affected filename.
+Repeated sheet instances render
 separately. Missing child files or embedded symbols produce `warning` scene
 metadata so a standalone root upload can still be viewed. Limits are 64 levels,
 512 pages, and 128 nested s-expressions.
