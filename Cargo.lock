@@ -2212,7 +2212,7 @@ dependencies = [
 
 [[package]]
 name = "kicad-schema"
-version = "1.11.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "kicad-strokes"
-version = "1.11.0"
+version = "0.1.0"
 dependencies = [
  "sha2",
  "vector-view",
@@ -3116,7 +3116,7 @@ dependencies = [
 
 [[package]]
 name = "schematic-extract"
-version = "1.11.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "kicad-schema",
@@ -3892,7 +3892,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vector-view"
-version = "1.11.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",

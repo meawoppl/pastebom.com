@@ -9,7 +9,11 @@ use vector_view::{
     BBox, Group, GroupKind, Item, Layer, LayerKind, Net, Prim, Prop, Role, Scene, SceneKind, Side,
 };
 
-pub(crate) fn parse_project(root: &str, files: &HashMap<String, Vec<u8>>) -> Result<Scene> {
+pub(crate) fn parse_project(
+    root: &str,
+    files: &HashMap<String, Vec<u8>>,
+    options: &crate::ExtractOptions,
+) -> Result<Scene> {
     let root = resolve_path("", root)?;
     let mut normalized = HashMap::new();
     for (name, data) in files {
@@ -19,6 +23,10 @@ pub(crate) fn parse_project(root: &str, files: &HashMap<String, Vec<u8>>) -> Res
         }
     }
     let mut builder = Builder::new();
+    builder.frame_label = options.frame_label.clone();
+    for layer in &mut builder.scene.layers {
+        layer.color = options.palette.layer_color(layer.id);
+    }
     collect_page(
         &normalized,
         &root,
@@ -95,7 +103,7 @@ const BUSES: u16 = 15;
 
 /// Default schematic palette: the Agent Portal's Tokyo Night colours, drawn
 /// over the #1a1b26 canvas the schematic tab sets.
-pub(crate) mod palette {
+pub mod palette {
     pub type Rgba = [u8; 4];
     /// Wires and junctions (green).
     pub const WIRE: Rgba = [0x9e, 0xce, 0x6a, 255];
@@ -131,6 +139,73 @@ pub(crate) mod palette {
     pub const NOTES: Rgba = [0xa9, 0xb1, 0xd6, 255];
     /// Buses and bus entries (teal).
     pub const BUS: Rgba = [0x7d, 0xcf, 0xff, 255];
+
+    /// Overridable RGBA colours; defaults match the Tokyo Night palette.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Palette {
+        pub wire: Rgba,
+        pub body: Rgba,
+        pub body_fill: Rgba,
+        pub pin: Rgba,
+        pub pin_text: Rgba,
+        pub field: Rgba,
+        pub label: Rgba,
+        pub global_label: Rgba,
+        pub power: Rgba,
+        pub no_connect: Rgba,
+        pub sheet: Rgba,
+        pub frame: Rgba,
+        pub frame_text: Rgba,
+        pub graphics: Rgba,
+        pub notes: Rgba,
+        pub bus: Rgba,
+    }
+
+    impl Default for Palette {
+        fn default() -> Self {
+            Self {
+                wire: WIRE,
+                body: BODY,
+                body_fill: BODY_FILL,
+                pin: PIN,
+                pin_text: PIN_TEXT,
+                field: FIELD,
+                label: LABEL,
+                global_label: GLOBAL_LABEL,
+                power: POWER,
+                no_connect: NO_CONNECT,
+                sheet: SHEET,
+                frame: FRAME,
+                frame_text: FRAME_TEXT,
+                graphics: GRAPHICS,
+                notes: NOTES,
+                bus: BUS,
+            }
+        }
+    }
+
+    impl Palette {
+        pub(super) fn layer_color(&self, id: u16) -> Rgba {
+            [
+                self.wire,
+                self.body,
+                self.field,
+                self.sheet,
+                self.body_fill,
+                self.pin,
+                self.pin_text,
+                self.no_connect,
+                self.label,
+                self.global_label,
+                self.power,
+                self.frame,
+                self.frame_text,
+                self.graphics,
+                self.notes,
+                self.bus,
+            ][id as usize]
+        }
+    }
 }
 
 struct Builder {
@@ -140,6 +215,7 @@ struct Builder {
     nets: HashMap<String, u32>,
     /// Pages in traversal order, framed once the sheet count is known.
     pages: Vec<PageFrame>,
+    frame_label: Option<String>,
 }
 /// What a page's drawing sheet needs: path, paper and title block values.
 struct PageFrame {
@@ -224,6 +300,7 @@ impl Builder {
             group: 0,
             nets: HashMap::new(),
             pages: vec![],
+            frame_label: None,
         }
     }
     fn net(&mut self, n: Option<&str>, page: &str) -> Option<u32> {
@@ -280,6 +357,7 @@ impl Builder {
             let info = TitleInfo {
                 sheet: i + 1,
                 sheets: count,
+                frame_label: self.frame_label.clone(),
                 ..p.info
             };
             let f = schematic_drawing::frame(p.size.0, p.size.1, &info);
