@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/pcb-extract", "crates/server", "crates/viewer", "crates/gds-viewer", "crates/gerber-view", "crates/vector-view", "crates/kicad-schema", "crates/kicad-strokes", "crates/schematic-extract"]
+members = ["crates/pcb-extract", "crates/server", "crates/viewer", "crates/gds-viewer", "crates/sch-viewer", "crates/gerber-view", "crates/vector-view", "crates/kicad-schema", "crates/kicad-strokes", "crates/schematic-extract"]
 resolver = "2"
 
 [workspace.package]
-version = "1.10.0"
+version = "1.11.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

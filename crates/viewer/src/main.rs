@@ -105,6 +105,7 @@ fn app() -> Html {
     let bom_sidebar_open = use_state(move || !is_mobile);
     let view_sidebar_open = use_state(move || !is_mobile);
     let upload_filename: UseStateHandle<Option<String>> = use_state(|| None);
+    let has_schematic = use_state(|| false);
 
     // Fetch pcbdata on mount
     {
@@ -114,6 +115,7 @@ fn app() -> Html {
         let error = error.clone();
         let storage_prefix_str = storage_prefix_str.clone();
         let upload_filename = upload_filename.clone();
+        let has_schematic = has_schematic.clone();
 
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
@@ -128,6 +130,11 @@ fn app() -> Html {
                             if let Some(name) = meta.get("filename").and_then(|v| v.as_str()) {
                                 upload_filename.set(Some(name.to_string()));
                             }
+                            has_schematic.set(
+                                meta.get("has_schematic")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                            );
                         }
                     }
                 }
@@ -271,6 +278,33 @@ fn app() -> Html {
                 || ()
             },
         );
+    }
+
+    // `#ref=R1` (the schematic viewer's cross-probe link) highlights that part.
+    {
+        let pcbdata = pcbdata.clone();
+        let highlighted_footprints = highlighted_footprints.clone();
+        let redraw_trigger = redraw_trigger.clone();
+        use_effect_with(pcbdata.is_some(), move |_| {
+            let wanted = web_sys::window()
+                .and_then(|w| w.location().hash().ok())
+                .and_then(|h| h.strip_prefix("#ref=").map(str::to_owned))
+                .and_then(|r| js_sys::decode_uri_component(&r).ok())
+                .map(String::from);
+            if let (Some(data), Some(wanted)) = ((*pcbdata).as_ref(), wanted) {
+                let fps: Vec<usize> = data
+                    .footprints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.ref_.eq_ignore_ascii_case(&wanted))
+                    .map(|(i, _)| i)
+                    .collect();
+                if !fps.is_empty() {
+                    highlighted_footprints.set(fps);
+                    redraw_trigger.set(*redraw_trigger + 1);
+                }
+            }
+        });
     }
 
     // Window resize handler. Re-registered when redraw_trigger changes so the
@@ -847,6 +881,24 @@ fn app() -> Html {
 
     let bom_entries = get_bom_entries(&data, &settings, &filter);
 
+    // Cross-probe: open the schematic on the first highlighted part.
+    let schematic_href = {
+        let base = web_sys::window()
+            .and_then(|w| w.location().pathname().ok())
+            .unwrap_or_default();
+        let base = base.trim_end_matches('/');
+        match highlighted_footprints
+            .first()
+            .and_then(|i| data.footprints.get(*i))
+        {
+            Some(fp) => format!(
+                "{base}/schematic?ref={}",
+                String::from(js_sys::encode_uri_component(&fp.ref_))
+            ),
+            None => format!("{base}/schematic"),
+        }
+    };
+
     let dark_class = if settings.dark_mode { "dark" } else { "" };
 
     let oncontextmenu = Callback::from(|e: MouseEvent| e.prevent_default());
@@ -907,6 +959,9 @@ fn app() -> Html {
                                 }
                             </div>
                         </div>
+                        if *has_schematic {
+                            <a class="schematic-btn" href={schematic_href} title="Open the schematic">{"Schematic"}</a>
+                        }
                     </div>
                     <div class="sidebar-controls">
                         <div class="button-container">

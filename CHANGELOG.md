@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.0
+
+- Add KiCad schematic uploads and project ZIPs with an interactive schematic viewer, hierarchical sheet navigation, layer controls, and SVG export
+- Cross-probe component references between schematic and PCB BOM views
+- Add reusable, WebAssembly-compatible schematic parsing, KiCad models, stroke fonts, vector scenes, and layered SVG libraries
+- Restrict schematic and GDS viewer asset paths to prevent directory traversal
+
 ## 1.10.0
 
 - Add `gerber-view`, an embeddable, framework-free Gerber/Excellon viewer compiled to WebAssembly (#271). It exposes a `GerberViewer` JS class (mount, `setSources`/`addSources` from Files, content, or URLs including zips, per-layer visibility/colour/opacity, top/bottom view, fit, `onChange`, `exportProject`) and a headless `parseSources`

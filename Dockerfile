@@ -27,16 +27,27 @@ COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/viewer/Cargo.toml crates/viewer/Cargo.toml
 COPY crates/gds-viewer/Cargo.toml crates/gds-viewer/Cargo.toml
 COPY crates/gerber-view/Cargo.toml crates/gerber-view/Cargo.toml
+COPY crates/vector-view/Cargo.toml crates/vector-view/Cargo.toml
+COPY crates/kicad-schema/Cargo.toml crates/kicad-schema/Cargo.toml
+COPY crates/kicad-strokes/Cargo.toml crates/kicad-strokes/Cargo.toml
+COPY crates/schematic-extract/Cargo.toml crates/schematic-extract/Cargo.toml
+COPY crates/sch-viewer/Cargo.toml crates/sch-viewer/Cargo.toml
 
 # Create dummy source files for dependency caching
 RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src crates/gds-viewer/src crates/gerber-view/src \
+        crates/vector-view/src crates/kicad-schema/src crates/kicad-strokes/src crates/schematic-extract/src crates/sch-viewer/src \
     && echo "pub fn main() {}" > crates/pcb-extract/src/main.rs \
     && echo "pub fn lib() {}" > crates/pcb-extract/src/lib.rs \
     && echo "fn main() {}" > crates/server/src/main.rs \
     && echo "<html></html>" > crates/server/static/index.html \
     && echo "fn main() {}" > crates/viewer/src/main.rs \
     && echo "fn main() {}" > crates/gds-viewer/src/main.rs \
-    && echo "pub fn lib() {}" > crates/gerber-view/src/lib.rs
+    && echo "pub fn lib() {}" > crates/gerber-view/src/lib.rs \
+    && echo "pub fn lib() {}" > crates/vector-view/src/lib.rs \
+    && echo "pub fn lib() {}" > crates/kicad-schema/src/lib.rs \
+    && echo "pub fn lib() {}" > crates/kicad-strokes/src/lib.rs \
+    && echo "pub fn lib() {}" > crates/schematic-extract/src/lib.rs \
+    && echo "fn main() {}" > crates/sch-viewer/src/main.rs
 
 # Build dependencies only (cached layer)
 RUN cargo build --release --locked 2>/dev/null || true
@@ -50,7 +61,12 @@ RUN touch crates/pcb-extract/src/main.rs \
     crates/server/src/main.rs \
     crates/viewer/src/main.rs \
     crates/gds-viewer/src/main.rs \
-    crates/gerber-view/src/lib.rs
+    crates/gerber-view/src/lib.rs \
+    crates/vector-view/src/lib.rs \
+    crates/kicad-schema/src/lib.rs \
+    crates/kicad-strokes/src/lib.rs \
+    crates/schematic-extract/src/lib.rs \
+    crates/sch-viewer/src/main.rs
 
 # Build release binaries
 RUN cargo build --release --locked
@@ -60,6 +76,9 @@ RUN cd crates/viewer && trunk build --release
 
 # Build GDSII tile viewer WASM
 RUN cd crates/gds-viewer && trunk build --release
+
+# Build schematic viewer WASM
+RUN cd crates/sch-viewer && trunk build --release
 
 # Build the embeddable Gerber viewer bundle
 RUN cd crates/gerber-view && wasm-pack build --release --target web --out-dir pkg
@@ -81,12 +100,14 @@ COPY --from=builder /build/target/release/pastebom-server /app/pastebom-server
 COPY --from=builder /build/target/release/pcb-extract /app/pcb-extract
 COPY --from=builder /build/crates/viewer/dist /app/viewer
 COPY --from=builder /build/crates/gds-viewer/dist /app/gview
+COPY --from=builder /build/crates/sch-viewer/dist /app/sview
 COPY --from=builder /build/crates/gerber-view/pkg /app/gerber-view/pkg
 COPY --from=builder /build/crates/gerber-view/examples /app/gerber-view/examples
 
 ENV BIND_ADDR=0.0.0.0:8080
 ENV VIEWER_DIR=/app/viewer
 ENV GDS_VIEWER_DIR=/app/gview
+ENV SCH_VIEWER_DIR=/app/sview
 ENV GERBER_VIEW_DIR=/app/gerber-view
 ENV STORAGE_PATH=/app/data
 ENV RUST_LOG=info

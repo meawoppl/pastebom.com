@@ -51,6 +51,14 @@ fn is_unsupported_upload(filename: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("gds") || e.eq_ignore_ascii_case("gdsii"))
 }
 
+/// Board id of a `boms/{uuid}.json` PcbData key; metadata and schematic
+/// records sharing the prefix are not boards.
+fn board_id(key: &str) -> Option<&str> {
+    key.strip_prefix("boms/")
+        .and_then(|k| k.strip_suffix(".json"))
+        .filter(|k| uuid::Uuid::parse_str(k).is_ok())
+}
+
 /// Current resident set size in MiB from `/proc/self/status`. Returns 0 when unreadable
 /// (e.g. non-Linux); coarse is fine — it only has to flag a board that spikes but survives.
 fn rss_mb() -> u64 {
@@ -89,13 +97,7 @@ pub async fn reparse_stale_boards(s3: S3Client) {
 
     let mut boms: Vec<(String, u64)> = bom_objects
         .iter()
-        .filter_map(|o| {
-            o.key
-                .strip_prefix("boms/")
-                .and_then(|k| k.strip_suffix(".json"))
-                .filter(|k| !k.ends_with(".meta"))
-                .map(|k| (k.to_string(), o.size))
-        })
+        .filter_map(|o| board_id(&o.key).map(|k| (k.to_string(), o.size)))
         .collect();
 
     // Ascending board-id order so "the board it dies on" is reproducible run-to-run.
@@ -283,6 +285,15 @@ async fn check_and_reparse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn board_ids_exclude_sidecar_records() {
+        let id = "0b9e4a3c-2f4e-4c52-9d0e-6f1a2b3c4d5e";
+        assert_eq!(board_id(&format!("boms/{id}.json")), Some(id));
+        assert_eq!(board_id(&format!("boms/{id}.meta.json")), None);
+        assert_eq!(board_id(&format!("boms/{id}.schematic.json")), None);
+        assert_eq!(board_id("recent.json"), None);
+    }
 
     #[test]
     fn skips_legacy_gdsii_uploads_by_extension() {
