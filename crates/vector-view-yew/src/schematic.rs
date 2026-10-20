@@ -76,6 +76,13 @@ pub struct SchematicViewProps {
     pub show_search: bool,
     #[prop_or(true)]
     pub show_layers: bool,
+    /// Symbol-level selection: tapping any part of a symbol selects the whole
+    /// symbol (every unit lights up), the properties panel is titled with the
+    /// reference and lists the symbol's fields first, and Enter in search
+    /// selects an exact reference. Off, selection is per item, as kicadmium
+    /// draws it.
+    #[prop_or_default]
+    pub symbol_selection: bool,
     #[prop_or_default]
     pub theme: Option<Theme>,
     #[prop_or(Some(DEFAULT_BACKGROUND))]
@@ -194,22 +201,43 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
         .filter(|p| index.has_page(p))
         .unwrap_or_else(|| index.first_page());
 
+    // Deselect and tell the host.
+    let clear_selection = {
+        let selection = selection.clone();
+        let on_select = props.on_select.clone();
+        let on_select_ref = props.on_select_ref.clone();
+        Rc::new(move || {
+            selection.set(Selection::None);
+            on_select.emit(None);
+            on_select_ref.emit(None);
+        })
+    };
+
     let open_page = {
         let own_page = own_page.clone();
         let on_page = props.on_page.clone();
         let focus = focus.clone();
+        let clear_selection = clear_selection.clone();
         Callback::from(move |p: String| {
             // The canvas remounts per sheet; a kept focus would replay there.
             focus.set(None);
+            clear_selection();
             own_page.set(Some(p.clone()));
             on_page.emit(p);
         })
     };
 
-    // A new scene invalidates item ids; keep the query, drop the selection.
+    // A new scene (live refresh) resets selection and query; the sheet stays.
     {
-        let selection = selection.clone();
-        use_effect_with(props.scene.clone(), move |_| selection.set(Selection::None));
+        let clear_selection = clear_selection.clone();
+        let selected = *selection != Selection::None;
+        let query = query.clone();
+        use_effect_with(props.scene.clone(), move |_| {
+            query.set(String::new());
+            if selected {
+                clear_selection();
+            }
+        });
     }
 
     let select_ref = {
@@ -295,21 +323,25 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
         match (*selection, selected_group) {
             (Selection::Net(n), _) => Highlight::Net(n),
             // Every unit of a multi-unit symbol lights up together.
-            (Selection::Item(_), Some(g)) if g.kind == GroupKind::Symbol => Highlight::Group(
-                index
-                    .refs
-                    .get(&g.label.to_uppercase())
-                    .map_or_else(|| HashSet::from([g.id]), |u| u.iter().copied().collect()),
-            ),
-            (Selection::Item(_), Some(g)) => Highlight::Group(HashSet::from([g.id])),
-            (Selection::Item(id), None) => Highlight::Items(HashSet::from([id])),
+            (Selection::Item(_), Some(g))
+                if props.symbol_selection && g.kind == GroupKind::Symbol =>
+            {
+                Highlight::Group(
+                    index
+                        .refs
+                        .get(&g.label.to_uppercase())
+                        .map_or_else(|| HashSet::from([g.id]), |u| u.iter().copied().collect()),
+                )
+            }
+            (Selection::Item(id), _) => Highlight::Items(HashSet::from([id])),
             (Selection::None, _) => Highlight::None,
         }
     };
 
     let on_query = {
         let query = query.clone();
-        let selection = selection.clone();
+        let clear_selection = clear_selection.clone();
+        let selected = *selection != Selection::None;
         let scene = scene.clone();
         let current = current.clone();
         let open_page = open_page.clone();
@@ -325,15 +357,18 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
                     open_page.emit(page_of(&i.props).to_owned());
                 }
             }
-            selection.set(Selection::None);
+            if selected {
+                clear_selection();
+            }
             query.set(text);
         })
     };
     let on_submit = {
         let select_ref = select_ref.clone();
         let query = query.clone();
+        let enabled = props.symbol_selection;
         Callback::from(move |text: String| {
-            if select_ref(&text) {
+            if enabled && select_ref(&text) {
                 query.set(String::new());
             }
         })
@@ -431,15 +466,10 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
 
     let properties = selected_item.map(|item| {
         let close = {
-            let selection = selection.clone();
-            let on_select = props.on_select.clone();
-            let on_select_ref = props.on_select_ref.clone();
-            Callback::from(move |_| {
-                selection.set(Selection::None);
-                on_select.emit(None);
-                on_select_ref.emit(None);
-            })
+            let clear_selection = clear_selection.clone();
+            Callback::from(move |_| clear_selection())
         };
+        let symbol = selected_group.filter(|g| props.symbol_selection && g.kind == GroupKind::Symbol);
         let child = (item.role == Role::SheetFrame)
             .then_some(selected_group)
             .flatten()
@@ -470,11 +500,11 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
         html! {
             <aside class="pcbv-props" aria-label="Schematic selection properties">
                 <div class="pcbv-props-head">
-                    <strong>{selected_group.map_or_else(|| format!("Item {}", item.id), |g| g.label.clone())}</strong>
+                    <strong>{symbol.map_or_else(|| format!("Item {}", item.id), |g| g.label.clone())}</strong>
                     {child}{net}{probe}
                     <button onclick={close}>{"Close"}</button>
                 </div>
-                <dl>{ for property_rows(scene, item, selected_group).into_iter().map(|(k, v)| html! { <><dt>{k}</dt><dd>{v}</dd></> }) }</dl>
+                <dl>{ for property_rows(scene, item, selected_group, symbol.is_some()).into_iter().map(|(k, v)| html! { <><dt>{k}</dt><dd>{v}</dd></> }) }</dl>
             </aside>
         }
     });
@@ -528,16 +558,21 @@ fn property_rows(
     scene: &Scene,
     item: &vector_view::Item,
     group: Option<&vector_view::Group>,
+    symbol_fields: bool,
 ) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
-    for p in group
-        .into_iter()
-        .flat_map(|g| g.props.iter())
-        .chain(&item.props)
-    {
-        if !rows.iter().any(|(k, _)| *k == p.key) {
-            rows.push((p.key.clone(), p.value.clone()));
+    if symbol_fields {
+        for p in group
+            .into_iter()
+            .flat_map(|g| g.props.iter())
+            .chain(&item.props)
+        {
+            if !rows.iter().any(|(k, _)| *k == p.key) {
+                rows.push((p.key.clone(), p.value.clone()));
+            }
         }
+    } else {
+        rows.extend(item.props.iter().map(|p| (p.key.clone(), p.value.clone())));
     }
     rows.push(("role".into(), format!("{:?}", item.role)));
     if let Some(net) = item.net.and_then(|n| scene.net(n)) {
@@ -654,8 +689,23 @@ mod tests {
     #[test]
     fn property_rows_put_symbol_fields_first_without_duplicates() {
         let s = two_sheet_scene();
-        let rows = property_rows(&s, &s.items[0], s.group(1));
+        let rows = property_rows(&s, &s.items[0], s.group(1), true);
         let keys: Vec<_> = rows.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["reference", "page", "role", "group"]);
+    }
+
+    #[test]
+    fn item_property_rows_match_kicadmium() {
+        // Item props verbatim, then role, net and group label.
+        let s = two_sheet_scene();
+        let rows = property_rows(&s, &s.items[0], s.group(1), false);
+        assert_eq!(
+            rows,
+            [
+                ("page".to_owned(), "/".to_owned()),
+                ("role".to_owned(), "SymbolBody".to_owned()),
+                ("group".to_owned(), "U1".to_owned()),
+            ]
+        );
     }
 }

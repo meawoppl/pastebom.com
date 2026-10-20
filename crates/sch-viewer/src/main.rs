@@ -173,6 +173,7 @@ fn app() -> Html {
                     {on_select_ref}
                     {on_cross_probe}
                     cross_probe_label="Show on PCB"
+                    symbol_selection=true
                 />
             </main>
         </div>

@@ -21,6 +21,10 @@
     gap: 8px;
     padding: 6px 10px;
 }
+.schematicv-pages {
+    max-width: 100%;
+    min-width: 0;
+}
 .schematicv-warnings {
     padding: 4px 10px;
     background: #2a2416;
