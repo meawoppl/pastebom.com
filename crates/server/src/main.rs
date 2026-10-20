@@ -5,6 +5,8 @@ mod github;
 mod reparse;
 mod routes;
 mod s3;
+mod schematic;
+mod static_path;
 
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -38,6 +40,14 @@ async fn main() {
     tracing::info!(
         "Serving GDSII viewer assets from {}",
         gds_viewer_dir.display()
+    );
+
+    let sch_viewer_dir = PathBuf::from(
+        std::env::var("SCH_VIEWER_DIR").unwrap_or_else(|_| "crates/sch-viewer/dist".to_string()),
+    );
+    tracing::info!(
+        "Serving schematic viewer assets from {}",
+        sch_viewer_dir.display()
     );
 
     let gerber_view_dir = PathBuf::from(
@@ -83,6 +93,7 @@ async fn main() {
         s3: s3_client,
         viewer_dir: viewer_dir.clone(),
         gds_viewer_dir,
+        sch_viewer_dir,
         gerber_view_dir,
         recent: Arc::new(RwLock::new(recent)),
         http_client,
@@ -131,6 +142,7 @@ pub struct AppState {
     pub s3: s3::S3Client,
     pub viewer_dir: PathBuf,
     pub gds_viewer_dir: PathBuf,
+    pub sch_viewer_dir: PathBuf,
     pub gerber_view_dir: PathBuf,
     pub recent: Arc<RwLock<Vec<routes::RecentEntry>>>,
     pub http_client: reqwest::Client,
@@ -154,6 +166,7 @@ mod tests {
             s3,
             viewer_dir,
             gds_viewer_dir: PathBuf::from("crates/gds-viewer/dist"),
+            sch_viewer_dir: PathBuf::from("../sch-viewer/dist"),
             // Tests run from crates/server.
             gerber_view_dir: PathBuf::from("../gerber-view"),
             recent: Arc::new(RwLock::new(Vec::new())),
@@ -295,6 +308,20 @@ mod tests {
         ] {
             let (status, _) = get_status(path).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_viewer_asset_dirs_reject_absolute_suffixes() {
+        // A doubled slash leaves an absolute suffix, which `Path::join` would
+        // let replace the asset directory; this file exists, so a 200 is a leak.
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        for prefix in ["/sview/", "/gview/"] {
+            for suffix in [manifest, "/../Cargo.toml"] {
+                let path = format!("{prefix}{suffix}");
+                let (status, _) = get_status(&path).await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            }
         }
     }
 }

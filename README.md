@@ -21,13 +21,14 @@ Shareable interactive PCB BOM viewer. Upload a PCB design file, get a link to an
 | EDA Tool | Extension | Notes |
 |----------|-----------|-------|
 | KiCad | `.kicad_pcb` | S-expression format |
+| KiCad schematic | `.kicad_sch`, project `.zip`, or several KiCad files at once | Hierarchical sheets; with a `.kicad_pcb` the BOM and schematic viewers cross-link by reference |
 | EasyEDA | `.json` | Exported JSON |
 | Eagle | `.brd`, `.fbrd` | XML and legacy binary board files |
 | Altium | `.pcbdoc` | Binary compound document |
 | Gerber | `.zip` | Zipped Gerber + Excellon drill set |
 | ODB++ | `.tgz`, `.tar.gz`, `.zip` | Archived ODB++ job |
 
-`.zip` archives are inspected to distinguish Gerber from ODB++. GDSII (`.gds`) is
+`.zip` archives are inspected to distinguish KiCad projects, Gerber, and ODB++. GDSII (`.gds`) is
 supported by the `pcb-extract` CLI via an explicit `--format gdsii`, but is not
 auto-detected for web upload.
 
@@ -41,8 +42,18 @@ crates/
 ├── server/         Axum web server. Handles uploads, serves viewer.
 ├── viewer/         Yew WASM frontend. Canvas-based board rendering.
 ├── gds-viewer/     Yew WASM frontend for tiled GDSII layouts.
+├── sch-viewer/     Yew WASM schematic viewer (sheets, search, layers, cross-probe).
+├── vector-view/    Reified 2D vector scene schema + Canvas2D/SVG rendering.
+├── schematic-extract/  KiCad schematic hierarchy → vector-view scene (reusable, no I/O).
+├── kicad-schema/   KiCad s-expression and schematic/symbol models.
+├── kicad-strokes/  KiCad NewStroke font → polylines.
 └── gerber-view/    Embeddable, framework-free Gerber viewer (wasm-bindgen).
 ```
+
+`schematic-extract` is a standalone library: `parse_files(&HashMap<path, bytes>)`
+turns a KiCad project into a layered `vector_view::Scene` (one layer per element
+class, symbols grouped with reference/value/footprint properties) that renders to
+Canvas or SVG. See [`crates/schematic-extract/README.md`](crates/schematic-extract/README.md).
 
 `gerber-view` lets other sites reuse pastebom's Gerber parsing and rendering
 without the app shell. See [`crates/gerber-view/README.md`](crates/gerber-view/README.md).
@@ -107,6 +118,7 @@ Both formats set `ETag` and an `X-Pastebom-Id` header. Renders are deduplicated 
 | `BIND_ADDR` | `0.0.0.0:8000` | Server listen address |
 | `VIEWER_DIR` | `crates/viewer/dist` | Path to built WASM assets |
 | `GERBER_VIEW_DIR` | `crates/gerber-view` | Directory with the `gerber-view` `pkg/` bundle and `examples/` |
+| `SCH_VIEWER_DIR` | `crates/sch-viewer/dist` | Path to built schematic viewer assets |
 | `STORAGE_PATH` | `./data` | Filesystem storage root (when S3 is not configured) |
 | `S3_BUCKET` | — | S3 bucket name; enables S3 backend when set |
 | `S3_PREFIX` | — | Key prefix for S3 objects |

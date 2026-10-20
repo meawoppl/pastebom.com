@@ -9,9 +9,15 @@ Shareable interactive PCB BOM viewer. Upload a PCB file, get a link to an intera
   - `crates/server` — Axum web server, handles uploads and serves viewer
   - `crates/viewer` — Yew WASM frontend, built with Trunk
   - `crates/gds-viewer` — Yew WASM frontend for tiled GDSII, built with Trunk
+  - `crates/sch-viewer` — Yew WASM schematic viewer over a stored `vector_view::Scene`, built with Trunk (public_url `/sview/`), opened at `/b/{id}/schematic`
+  - `crates/vector-view` — reified 2D vector scene schema (PCB, schematic, Gerber, footprint, symbol) plus an optional Canvas2D viewer core (`canvas` feature). Shared with kicadmium, which pins it by git rev
+  - `crates/schematic-extract` — filesystem-free KiCad schematic/project parser to `vector_view::Scene`; page, symbol, and layer metadata support SVG export and cross-probing
+  - `crates/kicad-schema` — reusable KiCad s-expression and schematic/library models extracted from KiCadmium
+  - `crates/kicad-strokes` — NewStroke font and text layout to vector polylines, shared by Canvas and SVG
   - `crates/gerber-view` — framework-free embeddable Gerber viewer (wasm-bindgen library, built with wasm-pack, NOT Trunk). Consumed by external hosts (Backplane); keep its JS API stable and documented in its README
 - **Storage**: S3 in production, filesystem locally (`STORAGE_PATH` env var)
 - **Viewer assets**: Trunk builds to `crates/viewer/dist/`, server reads from `VIEWER_DIR`
+- **Schematics** (`crates/server/src/schematic.rs`): a `.kicad_sch` upload, several KiCad files in one multipart (repeated `file` fields), or a zip containing `.kicad_sch`/`.kicad_pcb` is a KiCad project. Its board goes down the PcbData path (`boms/{id}.json`); its sheets become `boms/{id}.schematic.json` via `schematic_extract::parse_files`. `boms/{id}.meta.json` records `has_pcb`/`has_schematic`; schematic-only uploads redirect `/b/{id}` to `/b/{id}/schematic`. A schematic failure only fails the upload when there is no board (else `schematic_error` in meta). Cross-probe: BOM viewer links `/b/{id}/schematic?ref=R1`, schematic viewer links `/b/{id}#ref=R1`
 - **`/gh-render`** (`crates/server/src/github.rs`): storage indexes `gh/{repo}/{ref}/{sha256(path)}.json` → blob SHA and `gh-blob/{blob_sha}.json` → render outcome (board id or cached parse failure). Commit-SHA refs never call the GitHub API. Old versions' raw uploads and boards are kept, never garbage-collected. Tests run against a stub GitHub server via `GhRender::new(api_base, raw_base)` and `S3Client::filesystem(tmpdir)`
 
 ## Dev Script
@@ -28,8 +34,9 @@ Builds everything inside Docker (`Dockerfile`): server binaries + viewer WASM vi
 ## Local Development (without Docker)
 
 ```bash
-# Build viewer WASM
+# Build viewer WASM (and the schematic viewer)
 cd crates/viewer && trunk build --release && cd ../..
+cd crates/sch-viewer && trunk build --release && cd ../..
 
 # Run server
 STORAGE_PATH=./localdata cargo run -p pastebom-server
@@ -64,6 +71,7 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 | `STORAGE_PATH` | `./data` | Filesystem storage root (used when `S3_BUCKET` is not set) |
 | `VIEWER_DIR` | `crates/viewer/dist` | Path to built viewer assets |
 | `GERBER_VIEW_DIR` | `crates/gerber-view` | Dir holding the gerber-view `pkg/` bundle and `examples/`, served at `/gerber-view/` |
+| `SCH_VIEWER_DIR` | `crates/sch-viewer/dist` | Built schematic viewer assets, served at `/sview/` |
 | `BIND_ADDR` | `0.0.0.0:8000` | Server listen address |
 | `S3_BUCKET` | — | Enables S3 storage backend |
 | `S3_PREFIX` | — | Key prefix for S3 objects |
