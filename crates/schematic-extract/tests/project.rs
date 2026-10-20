@@ -3,6 +3,32 @@ use std::collections::{HashMap, HashSet};
 use schematic_extract::{parse, parse_project};
 use vector_view::{svg::SvgOptions, GroupKind, Prop, Role, Scene, SceneKind};
 
+#[test]
+fn options_preserve_defaults_and_allow_branding_and_palette() {
+    let input = document("");
+    let plain = parse(&input).unwrap();
+    assert_eq!(
+        plain,
+        schematic_extract::parse_with(&input, &Default::default()).unwrap()
+    );
+    let mut options = schematic_extract::ExtractOptions {
+        frame_label: Some("kicadmium".into()),
+        ..Default::default()
+    };
+    options.palette.frame = [1, 2, 3, 255];
+    let branded = schematic_extract::parse_with(&input, &options).unwrap();
+    assert_eq!(branded.layer(11).unwrap().color, [1, 2, 3, 255]);
+    assert!(branded
+        .items
+        .iter()
+        .any(|i| prop(&i.props, "text") == Some("kicadmium")));
+    assert!(!plain
+        .items
+        .iter()
+        .any(|i| prop(&i.props, "text") == Some("kicadmium")));
+    assert_eq!(plain.items.len() + 1, branded.items.len());
+}
+
 fn document(contents: &str) -> String {
     format!(
         "(kicad_sch (version 20250114) (generator eeschema) (uuid root) (paper A4) (lib_symbols) {contents})"
