@@ -8,6 +8,7 @@ repository = "https://github.com/meawoppl/pastebom.com"
 readme = "README.md"
 keywords = ["yew", "kicad", "schematic", "canvas", "viewer"]
 categories = ["gui", "wasm", "visualization"]
+include = ["src/**", "README.md", "LICENSE*"]
 
 [dependencies]
 gloo-events = "0.2"
