@@ -73,8 +73,10 @@ pub fn parse_with(source: &str, options: &ExtractOptions) -> Result<vector_view:
 /// Parse a schematic hierarchy from an in-memory project.
 ///
 /// Keys use relative slash-separated paths. Child paths resolve relative to
-/// their parent file; paths escaping the project are rejected. Repeated sheet
-/// instances are rendered separately; recursive references are rejected.
+/// their parent file. Invalid root paths are errors; escaping and recursive
+/// child references are skipped with warnings, preserving their sheet frames.
+/// Repeated nonrecursive instances are rendered separately. Unrelated invalid
+/// map keys are ignored; normalized collisions are errors only when referenced.
 pub fn parse_project(
     root: &str,
     files: &HashMap<String, Vec<u8>>,

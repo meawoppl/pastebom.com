@@ -165,15 +165,17 @@ fn punctuation_and_duplicate_sheet_names_do_not_merge_pages() {
 }
 
 #[test]
-fn direct_and_indirect_recursive_sheets_are_rejected() {
+fn direct_and_indirect_recursive_sheets_warn_and_preserve_frames() {
     let direct = files(&[(
         "root.kicad_sch",
         document(&sheet("loop", "Loop", "./root.kicad_sch")),
     )]);
-    assert!(parse_project("root.kicad_sch", &direct)
-        .unwrap_err()
-        .to_string()
-        .contains("recursive"));
+    let scene = parse_project("root.kicad_sch", &direct).unwrap();
+    assert_eq!(pages(&scene).len(), 1);
+    assert!(scene.items.iter().any(|i| i.role == Role::SheetFrame));
+    assert!(scene.meta.iter().any(|p| p.key == "warning"
+        && p.value.contains("recursive")
+        && p.value.contains("root.kicad_sch")));
     let indirect = files(&[
         (
             "root.kicad_sch",
@@ -184,10 +186,20 @@ fn direct_and_indirect_recursive_sheets_are_rejected() {
             document(&sheet("loop", "Loop", "../root.kicad_sch")),
         ),
     ]);
-    assert!(parse_project("root.kicad_sch", &indirect)
-        .unwrap_err()
-        .to_string()
-        .contains("recursive"));
+    let scene = parse_project("root.kicad_sch", &indirect).unwrap();
+    assert_eq!(pages(&scene).len(), 2);
+    assert_eq!(
+        scene
+            .items
+            .iter()
+            .filter(|i| i.role == Role::SheetFrame)
+            .count(),
+        2
+    );
+    assert!(scene
+        .meta
+        .iter()
+        .any(|p| p.key == "warning" && p.value.contains("recursive")));
 }
 
 #[test]
@@ -293,11 +305,84 @@ fn paths_cannot_escape_project_or_use_host_absolute_paths() {
         "folder\\outside.kicad_sch",
     ] {
         assert!(parse_project(path, &HashMap::new()).is_err(), "{path}");
-        let root = document(&sheet("bad", "Bad", path));
+        let root = document(&format!(
+            "{WIRE} {} {}",
+            sheet("bad", "Bad", path),
+            sheet("good", "Good", "good.kicad_sch")
+        ));
+        let scene = parse_project(
+            "root.kicad_sch",
+            &files(&[("root.kicad_sch", root), ("good.kicad_sch", document(WIRE))]),
+        )
+        .unwrap();
+        assert_eq!(pages(&scene).len(), 2, "{path}");
+        assert!(scene.items.iter().any(|i| i.role == Role::Wire));
+        assert!(scene.items.iter().any(|i| i.role == Role::SheetFrame));
         assert!(
-            parse_project("root.kicad_sch", &files(&[("root.kicad_sch", root)])).is_err(),
+            scene
+                .meta
+                .iter()
+                .any(|p| p.key == "warning" && p.value.contains(path)),
             "{path}"
         );
+    }
+}
+
+#[test]
+fn unrelated_invalid_and_ambiguous_keys_do_not_break_project() {
+    let mut input = files(&[("root.kicad_sch", document(WIRE))]);
+    for key in [
+        "/absolute.kicad_sch",
+        "C:/drive.kicad_sch",
+        "bad\\path.kicad_sch",
+        "../outside.kicad_sch",
+        "unused.kicad_sch",
+        "./unused.kicad_sch",
+    ] {
+        input.insert(key.into(), b"malformed unrelated source".to_vec());
+    }
+    let scene = parse_project("root.kicad_sch", &input).unwrap();
+    assert!(scene.items.iter().any(|i| i.role == Role::Wire));
+    input.insert("./root.kicad_sch".into(), document("").into_bytes());
+    assert!(parse_project("root.kicad_sch", &input)
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate normalized project path: root.kicad_sch"));
+    input.remove("./root.kicad_sch");
+    input.insert(
+        "root.kicad_sch".into(),
+        document(&sheet("used", "Used", "unused.kicad_sch")).into_bytes(),
+    );
+    assert!(parse_project("root.kicad_sch", &input)
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate normalized project path: unused.kicad_sch"));
+}
+
+#[test]
+fn parse_errors_identify_root_and_child_files() {
+    for source in [
+        "(kicad_sch",
+        "(kicad_sch (version 20231120) (uuid root) (at 10000000000 0))",
+    ] {
+        let error = parse_project(
+            "broken.kicad_sch",
+            &files(&[("broken.kicad_sch", source.into())]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("parsing broken.kicad_sch:"), "{error}");
+        let input = files(&[
+            (
+                "root.kicad_sch",
+                document(&sheet("broken", "Broken", "sub/broken.kicad_sch")),
+            ),
+            ("sub/broken.kicad_sch", source.into()),
+        ]);
+        let error = parse_project("root.kicad_sch", &input)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("parsing sub/broken.kicad_sch:"), "{error}");
     }
 }
 
