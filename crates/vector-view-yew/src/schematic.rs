@@ -181,12 +181,13 @@ enum Selection {
 #[function_component(SchematicView)]
 pub fn schematic_view(props: &SchematicViewProps) -> Html {
     let index = use_memo(props.scene.clone(), |scene| Index::new(scene));
-    let own_page = use_state(|| None::<String>);
-    let selection = use_state(|| Selection::None);
-    let query = use_state(String::new);
-    let focus = use_state(|| None::<Focus>);
-    let visibility = use_state(LayerVisibility::default);
-    let layers_open = use_state(|| false);
+    // `_eq` states skip renders for sets that change nothing.
+    let own_page = use_state_eq(|| None::<String>);
+    let selection = use_state_eq(|| Selection::None);
+    let query = use_state_eq(String::new);
+    let focus = use_state_eq(|| None::<Focus>);
+    let visibility = use_state_eq(LayerVisibility::default);
+    let layers_open = use_state_eq(|| false);
     // Last camera per sheet; survives scene refreshes and sheet switches.
     let views = use_mut_ref(HashMap::<String, View>::new);
 
@@ -231,9 +232,14 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
     {
         let clear_selection = clear_selection.clone();
         let selected = *selection != Selection::None;
+        let searching = !query.is_empty();
         let query = query.clone();
+        // Only touch state that is set: this also runs on mount, and a no-op
+        // set would cost an extra render and canvas redraw after first paint.
         use_effect_with(props.scene.clone(), move |_| {
-            query.set(String::new());
+            if searching {
+                query.set(String::new());
+            }
             if selected {
                 clear_selection();
             }
