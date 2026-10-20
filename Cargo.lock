@@ -1448,7 +1448,7 @@ dependencies = [
  "gloo-events",
  "gloo-file",
  "gloo-history",
- "gloo-net",
+ "gloo-net 0.5.0",
  "gloo-render",
  "gloo-storage",
  "gloo-timers",
@@ -1548,7 +1548,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-sink",
- "gloo-utils 0.2.0",
+ "gloo-utils",
  "http 1.4.0",
  "js-sys",
  "pin-project",
@@ -3095,11 +3095,10 @@ dependencies = [
 name = "sch-viewer"
 version = "1.11.0"
 dependencies = [
- "gloo-events 0.2.0",
  "gloo-net 0.6.0",
  "js-sys",
  "serde_json",
- "vector-view",
+ "vector-view-yew",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3899,6 +3898,18 @@ dependencies = [
  "serde_json",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "vector-view-yew"
+version = "0.1.0"
+dependencies = [
+ "gloo-events",
+ "js-sys",
+ "vector-view",
+ "wasm-bindgen",
+ "web-sys",
+ "yew",
 ]
 
 [[package]]

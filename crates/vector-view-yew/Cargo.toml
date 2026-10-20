@@ -1,0 +1,18 @@
+[package]
+name = "vector-view-yew"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Yew components for vector-view scenes: an interactive Canvas2D scene host, scene search, and a KiCad schematic viewer"
+repository = "https://github.com/meawoppl/pastebom.com"
+readme = "README.md"
+keywords = ["yew", "kicad", "schematic", "canvas", "viewer"]
+categories = ["gui", "wasm", "visualization"]
+
+[dependencies]
+gloo-events = "0.2"
+js-sys = "0.3"
+vector-view = { version = "1.11.0", path = "../vector-view", features = ["canvas"] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3.106", features = ["CanvasRenderingContext2d", "DomRect", "Element", "HtmlCanvasElement", "HtmlInputElement", "HtmlSelectElement", "PointerEvent", "ResizeObserver", "WheelEvent", "Window"] }
+yew = { version = "0.23", features = ["csr"] }

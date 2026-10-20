@@ -5,12 +5,11 @@ edition = "2021"
 description = "Interactive schematic viewer over vector-view scenes"
 
 [dependencies]
-gloo-events = "0.2"
 gloo-net = "0.6"
-js-sys = "0.3.106"
+js-sys = "0.3"
 serde_json.workspace = true
-vector-view = { version = "1.10.0", path = "../vector-view", features = ["canvas"] }
-wasm-bindgen = "0.2.129"
+vector-view-yew = { version = "0.1.0", path = "../vector-view-yew" }
+wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["CanvasRenderingContext2d", "DomRect", "Element", "HtmlCanvasElement", "HtmlInputElement", "HtmlSelectElement", "Location", "PointerEvent", "ResizeObserver", "UrlSearchParams", "WheelEvent", "Window", "History"] }
-yew = { version = "0.21", features = ["csr"] }
+web-sys = { version = "0.3.106", features = ["Document", "History", "Location", "UrlSearchParams", "Window"] }
+yew = { version = "0.23", features = ["csr"] }
