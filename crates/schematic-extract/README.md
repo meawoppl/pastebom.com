@@ -48,8 +48,8 @@ the matching body and common graphics.
   SVG export with stable layer/item/group/net attributes.
 
 The scene is a drawing model, not an electrical netlist. Wire endpoint labels
-are propagated for selection; full cross-sheet electrical connectivity and
-implicit power connectivity are not inferred. Embedded raster images, custom
+and hidden power-input symbol names are propagated for selection; full
+cross-sheet electrical connectivity is not inferred. Embedded raster images, custom
 `.kicad_wks` templates, legacy `.sch` files, and external symbol libraries are
 not supported. Sheet pins and global-label outlines currently use simplified
 geometry. Symbol instance paths select per-sheet reference and unit overrides.
@@ -65,6 +65,32 @@ cargo run -p schematic-extract --example render -- path/root.kicad_sch output.sv
 KiCadmium can replace its backend-specific schematic renderer with
 `parse_project`, retaining its project revision checks and supplying file
 contents itself. Scene properties and layer IDs preserve its viewer contract.
+
+## Host configuration and reusable APIs
+
+`parse_with`, `parse_project_with`, and `parse_files_with` take an
+`&ExtractOptions` after the usual arguments. `Palette` exposes all sixteen
+schematic RGBA colours and defaults to Tokyo Night. `frame_label: Some(...)`
+adds a host label in the title block; the default is unbranded. KiCadmium uses
+`Some("kicadmium".into())` to preserve its drawing frame.
+
+`symbol_scene(&LibrarySymbol, &Palette)` renders an already-resolved library
+model. `symbol_scene_for_unit(&SExp, unit, body_style, &Palette)` selects common
+and unit/body-specific graphics from a resolved symbol expression before
+flattening it. `LibrarySymbol`, `SExp`, and `kicad_schema` are re-exported so
+consumers use the same model types. Resolve library inheritance before calling
+the unit-specific expression API.
+
+`vector_view::schematic` supplies typed `Page` and `Symbol` records and
+`pages`, `page_box`, `page_item_ids`, `symbols`, `parent`, `child_page`, and
+`warnings` accessors. It is re-exported here as `schematic`. Browser consumers
+can depend only on `vector-view`, without linking parsing or glyph data.
+Page accessors preserve metadata traversal order; symbol records represent
+placed units, so several records can share a reference.
+
+See [the parity report](docs/kicadmium-parity.md) for the capture-corpus
+assertions, documented rendering improvements, and model deduplication gaps.
+See [packaging](docs/packaging.md) for dry-run verification without publishing.
 
 ## Provenance
 
