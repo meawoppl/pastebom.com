@@ -12,6 +12,7 @@ use std::{
 };
 
 use vector_view::{
+    schematic,
     style::{Highlight, LayerVisibility, Rgba, Theme},
     view::View,
     BBox, GroupId, GroupKind, ItemId, NetId, Prop, Role, Scene,
@@ -97,8 +98,8 @@ fn page_of(props: &[Prop]) -> &str {
 
 /// Lookups derived once per scene.
 struct Index {
-    /// `(page path, file)` in traversal order, from `page:{path}:file`.
-    pages: Vec<(String, String)>,
+    pages: Vec<schematic::Page>,
+    /// Items hidden while a sheet is open (everything on other sheets).
     hidden: HashMap<String, Rc<HashSet<ItemId>>>,
     /// Upper-cased symbol reference to its groups, one per placed unit.
     refs: HashMap<String, Vec<GroupId>>,
@@ -108,21 +109,22 @@ struct Index {
 
 impl Index {
     fn new(scene: &Scene) -> Self {
-        let pages: Vec<(String, String)> = scene
-            .meta
+        let pages = schematic::pages(scene);
+        let hidden = pages
             .iter()
-            .filter_map(|p| {
-                let path = p.key.strip_prefix("page:")?.strip_suffix(":file")?;
-                Some((path.to_owned(), p.value.clone()))
+            .map(|page| {
+                let shown = schematic::page_item_ids(scene, &page.path);
+                let h = scene
+                    .items
+                    .iter()
+                    .map(|i| i.id)
+                    .filter(|id| !shown.contains(id))
+                    .collect();
+                (page.path.clone(), Rc::new(h))
             })
             .collect();
-        let mut on_page: HashMap<&str, HashSet<ItemId>> = HashMap::new();
         let mut group_bbox: HashMap<GroupId, BBox> = HashMap::new();
         for item in &scene.items {
-            on_page
-                .entry(page_of(&item.props))
-                .or_default()
-                .insert(item.id);
             if let Some(g) = item.group {
                 group_bbox
                     .entry(g)
@@ -130,30 +132,17 @@ impl Index {
                     .union(&item.prim.bbox());
             }
         }
-        let hidden = pages
-            .iter()
-            .map(|(page, _)| {
-                let shown = on_page.get(page.as_str());
-                let h = scene
-                    .items
-                    .iter()
-                    .map(|i| i.id)
-                    .filter(|id| !shown.is_some_and(|s| s.contains(id)))
-                    .collect();
-                (page.clone(), Rc::new(h))
-            })
-            .collect();
         let mut refs: HashMap<String, Vec<GroupId>> = HashMap::new();
-        for g in &scene.groups {
-            if g.kind == GroupKind::Symbol && !g.label.is_empty() {
-                refs.entry(g.label.to_uppercase()).or_default().push(g.id);
+        for s in schematic::symbols(scene) {
+            if !s.reference.is_empty() {
+                refs.entry(s.reference.to_uppercase())
+                    .or_default()
+                    .push(s.group);
             }
         }
-        let warnings = scene
-            .meta
-            .iter()
-            .filter(|p| p.key == "warning")
-            .map(|p| p.value.clone())
+        let warnings = schematic::warnings(scene)
+            .into_iter()
+            .map(str::to_owned)
             .collect();
         Self {
             pages,
@@ -165,23 +154,14 @@ impl Index {
     }
 
     fn has_page(&self, page: &str) -> bool {
-        self.pages.iter().any(|(p, _)| p == page)
+        self.pages.iter().any(|p| p.path == page)
     }
 
     fn first_page(&self) -> String {
         self.pages
             .first()
-            .map_or_else(|| ROOT.to_owned(), |(p, _)| p.clone())
+            .map_or_else(|| ROOT.to_owned(), |p| p.path.clone())
     }
-}
-
-/// The sheet's paper area (`page:{path}:size` = "w,h" in mm).
-fn page_box(scene: &Scene, page: &str) -> Option<BBox> {
-    let (w, h) = prop(&scene.meta, &format!("page:{page}:size"))?.split_once(',')?;
-    Some(BBox {
-        min: [0.0, 0.0],
-        max: [w.parse().ok()?, h.parse().ok()?],
-    })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -394,13 +374,13 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
         });
         html! {
             <select class="schematicv-pages" aria-label="Schematic sheet" {onchange}>
-                { for index.pages.iter().enumerate().map(|(i, (p, file))| html! {
-                    <option value={p.clone()} selected={*p == current}>{format!("{}. {p} ({file})", i + 1)}</option>
+                { for index.pages.iter().enumerate().map(|(i, p)| html! {
+                    <option value={p.path.clone()} selected={p.path == current}>{format!("{}. {} ({})", i + 1, p.path, p.file)}</option>
                 }) }
             </select>
         }
     });
-    let parent = prop(&scene.meta, &format!("page:{current}:parent")).map(|p| {
+    let parent = schematic::parent(scene, &current).map(|p| {
         let open_page = open_page.clone();
         let p = p.to_owned();
         html! {
@@ -463,7 +443,7 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
         let child = (item.role == Role::SheetFrame)
             .then_some(selected_group)
             .flatten()
-            .and_then(|g| prop(&g.props, "child_page"))
+            .and_then(|g| schematic::child_page(scene, g.id))
             .map(|p| {
                 let open_page = open_page.clone();
                 let p = p.to_owned();
@@ -516,7 +496,7 @@ pub fn schematic_view(props: &SchematicViewProps) -> Html {
                 on_select={on_canvas_select}
                 visibility={(*visibility).clone()}
                 hidden_items={(*hidden).clone()}
-                fit_bbox={page_box(scene, &current)}
+                fit_bbox={schematic::page_box(scene, &current)}
                 {theme}
                 background={props.background}
                 {initial_view}
@@ -626,13 +606,12 @@ mod tests {
     #[test]
     fn index_splits_items_by_sheet() {
         let index = Index::new(&two_sheet_scene());
-        assert_eq!(
-            index.pages,
-            [
-                ("/".into(), "root.kicad_sch".into()),
-                ("/sub".into(), "sub.kicad_sch".into())
-            ]
-        );
+        let pages: Vec<_> = index
+            .pages
+            .iter()
+            .map(|p| (p.path.as_str(), p.file.as_str()))
+            .collect();
+        assert_eq!(pages, [("/", "root.kicad_sch"), ("/sub", "sub.kicad_sch")]);
         assert_eq!(*index.hidden["/"], HashSet::from([2, 3]));
         assert_eq!(*index.hidden["/sub"], HashSet::from([1]));
         assert_eq!(index.warnings, ["missing.kicad_sch not supplied"]);
@@ -647,14 +626,6 @@ mod tests {
         assert_eq!(index.refs["R1"], [3]);
         assert!(!index.refs.contains_key("u1"));
         assert!(index.group_bbox.contains_key(&2));
-    }
-
-    #[test]
-    fn paper_box_comes_from_sheet_size() {
-        let s = two_sheet_scene();
-        let b = page_box(&s, "/").unwrap();
-        assert_eq!((b.min, b.max), ([0.0, 0.0], [297.0, 210.0]));
-        assert!(page_box(&s, "/sub").is_none());
     }
 
     #[test]
