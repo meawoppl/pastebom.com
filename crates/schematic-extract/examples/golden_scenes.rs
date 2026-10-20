@@ -45,6 +45,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             serde_json::to_vec(&scene)?,
         )?;
         eprintln!("{name}: {} items", scene.items.len());
+        let library_output = output.join(name);
+        std::fs::create_dir_all(&library_output)?;
+        for entry in std::fs::read_dir(root.join(name).join("golden"))? {
+            let path = entry?.path();
+            let Some(file) = path.file_name().and_then(|p| p.to_str()) else {
+                continue;
+            };
+            let Some(stem) = file.strip_suffix(".source.kicad_sch") else {
+                continue;
+            };
+            let tree =
+                schematic_extract::kicad_schema::sexp::parse(&std::fs::read_to_string(&path)?)?;
+            let symbol = tree
+                .get("lib_symbols")
+                .and_then(|n| n.get("symbol"))
+                .ok_or("missing library symbol")?;
+            let mut model = schematic_extract::LibrarySymbol::from_sexp(symbol);
+            // The source endpoint wraps a library symbol with its qualified id;
+            // the preview model uses the short symbol name.
+            if let Some((_, short)) = model.name.split_once(':') {
+                model.name = short.to_owned();
+            }
+            let preview = schematic_extract::symbol_scene(&model, &options.palette);
+            std::fs::write(
+                library_output.join(format!("{stem}.json")),
+                serde_json::to_vec(&preview)?,
+            )?;
+        }
     }
     Ok(())
 }

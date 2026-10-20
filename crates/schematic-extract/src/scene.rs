@@ -4,7 +4,7 @@ use crate::schematic_drawing::{self, Annotation, TitleInfo};
 use crate::symbol_graphics::{body_prims, Fill};
 use anyhow::{anyhow, Context, Result};
 use kicad_schema::{schema::schematic::Schematic, sexp::SExp};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use vector_view::{
     BBox, Group, GroupKind, Item, Layer, LayerKind, Net, Prim, Prop, Role, Scene, SceneKind, Side,
 };
@@ -426,7 +426,7 @@ fn collect_page(
     let instance_path = instance_path
         .map(str::to_owned)
         .unwrap_or_else(|| format!("/{}", s.uuid().unwrap_or_default()));
-    let nets = connectivity_names(&s);
+    let nets = connectivity_names(&s)?;
     b.scene
         .meta
         .push(Prop::new(format!("page:{page}:file"), file));
@@ -897,8 +897,29 @@ fn add_symbols(
     Ok(())
 }
 
-fn connectivity_names(s: &Schematic) -> HashMap<String, String> {
+fn connectivity_names(s: &Schematic) -> Result<HashMap<String, String>> {
     let mut n = HashMap::new();
+    // Hidden power-input pins name their connected net. Power-output markers
+    // such as PWR_FLAG do not supply a net name.
+    for inst in s.symbols() {
+        let power = s
+            .get_lib_symbol(&inst.lib_id)
+            .is_some_and(|lib| lib.get("power").is_some())
+            || inst.lib_id.starts_with("power:");
+        if !power || inst.value().is_empty() {
+            continue;
+        }
+        if let Some(lib) = s.get_lib_symbol_resolved(&inst.lib_id)? {
+            for pin in lib
+                .pins
+                .iter()
+                .filter(|p| (p.unit == 0 || p.unit == inst.unit) && p.pin_type == "power_in")
+            {
+                let at = transform(pin.position, inst.position, inst.rotation, &inst.mirror);
+                n.insert(key((at[0], at[1])), inst.value().to_owned());
+            }
+        }
+    }
     for l in s.labels() {
         n.insert(key(l.position), l.text.clone());
     }
@@ -908,26 +929,36 @@ fn connectivity_names(s: &Schematic) -> HashMap<String, String> {
     for l in s.global_labels() {
         n.insert(key(l.position), l.text.clone());
     }
-    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
-    for w in s.wires() {
-        let a = key(w.start);
-        let z = key(w.end);
-        edges.entry(a.clone()).or_default().push(z.clone());
-        edges.entry(z).or_default().push(a);
+    let edges: Vec<_> = s
+        .wires()
+        .iter()
+        .map(|w| (key(w.start), key(w.end)))
+        .collect();
+    let mut incident: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, (a, z)) in edges.iter().enumerate() {
+        incident.entry(a).or_default().push(i);
+        incident.entry(z).or_default().push(i);
     }
-    let mut seeds: Vec<_> = n.keys().cloned().collect();
-    seeds.sort();
-    let mut queue: VecDeque<_> = seeds.into();
-    while let Some(at) = queue.pop_front() {
-        let name = n[&at].clone();
-        for next in edges.get(&at).into_iter().flatten() {
-            if !n.contains_key(next) {
-                n.insert(next.clone(), name.clone());
-                queue.push_back(next.clone());
+    // Preserve wire-order propagation when conflicting labels meet. Schedule
+    // only newly affected edges instead of rescanning every wire on each pass.
+    let mut pending: BTreeSet<_> = (0..edges.len()).map(|i| (0usize, i)).collect();
+    while let Some((pass, i)) = pending.pop_first() {
+        let (a, z) = &edges[i];
+        let assignment = match (n.get(a), n.get(z)) {
+            (Some(name), None) => Some((z, name.clone())),
+            (None, Some(name)) => Some((a, name.clone())),
+            _ => None,
+        };
+        if let Some((at, name)) = assignment {
+            n.insert(at.clone(), name);
+            for &next in &incident[at.as_str()] {
+                if next != i {
+                    pending.insert((pass + usize::from(next < i), next));
+                }
             }
         }
     }
-    n
+    Ok(n)
 }
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
@@ -1237,6 +1268,45 @@ mod tests {
     (property "Value" "LM21421" (at 100 108 0) (effects (font (size 1.27 1.27))))
     (property "Footprint" "Tesla:TerminalBlock" (at 100 100 0) (effects (font (size 1.27 1.27))) (hide yes))
     (property "Datasheet" "https://example.com/ds.pdf" (at 100 100 0) (effects (font (size 1.27 1.27)) (hide yes)))))"#;
+
+    #[test]
+    fn hidden_power_inputs_name_nets_but_power_flags_do_not() {
+        let mut source = SCH
+            .replace("Tesla:U1", "power:Test")
+            .replace("LM21421", "GND");
+        source.pop();
+        source.push_str(r#"(wire (pts (xy 110 100) (xy 120 100)) (uuid "power-wire")))"#);
+        let schematic = Schematic::new(kicad_schema::sexp::parse(&source).unwrap(), None).unwrap();
+        let names = connectivity_names(&schematic).unwrap();
+        assert_eq!(
+            names.get(&key((110.0, 100.0))).map(String::as_str),
+            Some("GND")
+        );
+        assert_eq!(
+            names.get(&key((120.0, 100.0))).map(String::as_str),
+            Some("GND")
+        );
+        let schematic = Schematic::new(
+            kicad_schema::sexp::parse(&source.replace("power_in", "power_out")).unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(connectivity_names(&schematic).unwrap().is_empty());
+    }
+
+    #[test]
+    fn conflicting_labels_keep_wire_order_propagation() {
+        let source = r#"(kicad_sch (version 20231120) (uuid root) (lib_symbols)
+          (label "A" (at 0 0) (uuid a)) (label "B" (at 3 0) (uuid b))
+          (wire (pts (xy 2 0) (xy 3 0)) (uuid w1))
+          (wire (pts (xy 1 0) (xy 2 0)) (uuid w2))
+          (wire (pts (xy 0 0) (xy 1 0)) (uuid w3)))"#;
+        let schematic = Schematic::new(kicad_schema::sexp::parse(source).unwrap(), None).unwrap();
+        let names = connectivity_names(&schematic).unwrap();
+        assert_eq!(names[&key((0.0, 0.0))], "A");
+        assert_eq!(names[&key((1.0, 0.0))], "B");
+        assert_eq!(names[&key((2.0, 0.0))], "B");
+    }
 
     fn scene() -> Scene {
         let s = Schematic::new(kicad_schema::sexp::parse(SCH).unwrap(), None).unwrap();

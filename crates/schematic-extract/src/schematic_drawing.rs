@@ -189,10 +189,10 @@ pub(crate) fn frame(w: f64, h: f64, info: &TitleInfo) -> Furniture {
         let mut put = |s: String, x: f64, y: f64, size: f64, bold: bool, italic: bool| {
             f.texts.push(text(s, at(x, y), size, left, bold, italic))
         };
+        put(format!("Date: {}", info.date), 87.0, 6.9, 1.0, false, false);
         if let Some(label) = &info.frame_label {
             put(label.clone(), 109.0, 4.1, 1.5, false, false);
         }
-        put(format!("Date: {}", info.date), 87.0, 6.9, 1.0, false, false);
         put(format!("Rev: {}", info.rev), 24.0, 6.9, 1.5, true, false);
         put(
             format!("Size: {}", info.paper),

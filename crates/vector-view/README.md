@@ -9,6 +9,11 @@ The default build provides scenes, hit testing, pan/zoom transforms, interaction
 state, styling, and standalone SVG export without browser dependencies. Enable
 `canvas` for the `web-sys` Canvas2D renderer. Both configurations support WASM.
 
+The `schematic` module provides typed sheet and placed-symbol metadata,
+page bounds/item filters, parent/child navigation, and producer warnings.
+It has no KiCad parser or font dependency. Page order follows the producer's
+hierarchy traversal; missing legacy properties have documented defaults.
+
 ```rust
 use vector_view::{Scene, SceneKind};
 use vector_view::svg::SvgOptions;
