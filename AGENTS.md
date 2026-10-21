@@ -5,19 +5,15 @@ Shareable interactive PCB BOM viewer. Upload a PCB file, get a link to an intera
 ## Architecture
 
 - **Cargo workspace** crates:
-  - `crates/pcb-extract` — PCB file parser library + CLI (KiCad, EasyEDA, Eagle, Altium, Gerber, ODB++, GDSII)
-  - `crates/server` — Axum web server, handles uploads and serves viewer
+  - `crates/eda-view` — the one published library (crates.io, independent 0.x version), every part behind a feature (nothing on by default). Shared with kicadmium. Modules: `vector` (always: reified 2D scene, view/input/hit/style, SVG export, `vector::schematic` page/symbol accessors; `canvas` adds the Canvas2D renderer), `components` (`yew`: VectorSceneCanvas, search, SchematicView), `kicad` (`kicad`: s-expr + schematic/library models), `strokes` (`strokes`: NewStroke font), `schematic` (`schematic`: filesystem-free `.kicad_sch` hierarchy → Scene), `pcb` (`pcb`: KiCad/EasyEDA/Eagle/Altium/Gerber/ODB++/GDSII parsers, BOM, SVG thumbnail), `gerber_view` (`gerber-view`: wasm-bindgen Gerber viewer). The `pcb-extract` CLI is its `[[bin]]` behind `cli`. Frontend features (`yew`, `canvas`, `gerber-view`) must never enable `kicad`/`strokes`/`schematic`; CI checks it with `cargo tree -e features`. Feature-gated tests/examples are named `<feature>_<name>` with `required-features`
+  - `crates/server` — Axum web server, handles uploads and serves viewer (`eda-view` features `pcb`, `schematic`)
   - `crates/viewer` — Yew WASM frontend, built with Trunk
   - `crates/gds-viewer` — Yew WASM frontend for tiled GDSII, built with Trunk
-  - `crates/sch-viewer` — Yew WASM schematic viewer over a stored `vector_view::Scene`, built with Trunk (public_url `/sview/`), opened at `/b/{id}/schematic`
-  - `crates/vector-view` — reified 2D vector scene schema (PCB, schematic, Gerber, footprint, symbol) plus an optional Canvas2D viewer core (`canvas` feature). Shared with kicadmium, which pins it by git rev
-  - `crates/schematic-extract` — filesystem-free KiCad schematic/project parser to `vector_view::Scene`; page, symbol, and layer metadata support SVG export and cross-probing
-  - `crates/kicad-schema` — reusable KiCad s-expression and schematic/library models extracted from KiCadmium
-  - `crates/kicad-strokes` — NewStroke font and text layout to vector polylines, shared by Canvas and SVG
-  - `crates/gerber-view` — framework-free embeddable Gerber viewer (wasm-bindgen library, built with wasm-pack, NOT Trunk). Consumed by external hosts (Backplane); keep its JS API stable and documented in its README
+  - `crates/sch-viewer` — Yew WASM schematic page hosting `eda_view::components::SchematicView` (`symbol_selection` on), built with Trunk (public_url `/sview/`), opened at `/b/{id}/schematic`
+  - `crates/gerber-view` — unpublished wasm-pack wrapper that re-exports `eda_view::gerber_view`, so the `gerber_view` JS package (`pkg/`), its README and `examples/` stay here. Consumed by external hosts (Backplane); keep its JS API stable (diff the generated `.d.ts` on changes)
 - **Storage**: S3 in production, filesystem locally (`STORAGE_PATH` env var)
 - **Viewer assets**: Trunk builds to `crates/viewer/dist/`, server reads from `VIEWER_DIR`
-- **Schematics** (`crates/server/src/schematic.rs`): a `.kicad_sch` upload, several KiCad files in one multipart (repeated `file` fields), or a zip containing `.kicad_sch`/`.kicad_pcb` is a KiCad project. Its board goes down the PcbData path (`boms/{id}.json`); its sheets become `boms/{id}.schematic.json` via `schematic_extract::parse_files`. `boms/{id}.meta.json` records `has_pcb`/`has_schematic`; schematic-only uploads redirect `/b/{id}` to `/b/{id}/schematic`. A schematic failure only fails the upload when there is no board (else `schematic_error` in meta). Cross-probe: BOM viewer links `/b/{id}/schematic?ref=R1`, schematic viewer links `/b/{id}#ref=R1`
+- **Schematics** (`crates/server/src/schematic.rs`): a `.kicad_sch` upload, several KiCad files in one multipart (repeated `file` fields), or a zip containing `.kicad_sch`/`.kicad_pcb` is a KiCad project. Its board goes down the PcbData path (`boms/{id}.json`); its sheets become `boms/{id}.schematic.json` via `eda_view::schematic::parse_files`. `boms/{id}.meta.json` records `has_pcb`/`has_schematic`; schematic-only uploads redirect `/b/{id}` to `/b/{id}/schematic`. A schematic failure only fails the upload when there is no board (else `schematic_error` in meta). Cross-probe: BOM viewer links `/b/{id}/schematic?ref=R1`, schematic viewer links `/b/{id}#ref=R1`
 - **`/gh-render`** (`crates/server/src/github.rs`): storage indexes `gh/{repo}/{ref}/{sha256(path)}.json` → blob SHA and `gh-blob/{blob_sha}.json` → render outcome (board id or cached parse failure). Commit-SHA refs never call the GitHub API. Old versions' raw uploads and boards are kept, never garbage-collected. Tests run against a stub GitHub server via `GhRender::new(api_base, raw_base)` and `S3Client::filesystem(tmpdir)`
 
 ## Dev Script
@@ -119,20 +115,22 @@ IMPORTANT: Always run `cargo fmt` before committing any code changes!
 ## Versioning
 
 - Version is defined once in the root `Cargo.toml` under `[workspace.package]`
-- All crates inherit it via `version.workspace = true`
-- Reusable libraries `vector-view`, `kicad-schema`, `kicad-strokes`, and `schematic-extract` have independent 0.x versions for their public APIs
+- All app crates inherit it via `version.workspace = true`
+- `eda-view` has its own 0.x version (its public API); bump it, and publish, only with the owner's go-ahead. Publish check: `cargo publish --dry-run -p eda-view`
 - The server exposes the version via `/health` and the upload page displays it
 - When releasing a new version: bump `version` in root `Cargo.toml` and add a new entry to `CHANGELOG.md`
 
 ## Rendering
 
-- The interactive viewer (`crates/viewer/src/render.rs`) and the SVG thumbnail generator (`crates/pcb-extract/src/thumbnail.rs`) are separate rendering paths over the same PcbData JSON. When fixing rendering bugs in the viewer, check whether the thumbnail has the same issue and fix it there too.
+- The interactive viewer (`crates/viewer/src/render.rs`) and the SVG thumbnail generator (`crates/eda-view/src/pcb/thumbnail.rs`) are separate rendering paths over the same PcbData JSON. When fixing rendering bugs in the viewer, check whether the thumbnail has the same issue and fix it there too.
 
 ## Build Notes
 
 - Viewer requires `wasm32-unknown-unknown` target and `trunk` installed
-- Server depends on `pcb-extract` as a library
+- Server depends on `eda-view` (features `pcb`, `schematic`)
 - Trunk config is at `crates/viewer/Trunk.toml` (public_url = `/viewer/`)
-- `pcb-extract` must stay wasm32-compatible (gerber-view depends on it with `default-features = false`). The CLI deps live behind the default `cli` feature, and `zip` uses only `deflate` because bzip2/lzma pull in C code. Check with `cargo check -p pcb-extract --lib --no-default-features --target wasm32-unknown-unknown`
+- `eda-view`'s `pcb` feature must stay wasm32-compatible (gerber-view uses it). The CLI deps live behind `cli`, and `zip` uses only `deflate` because bzip2/lzma pull in C code. Check with `cargo check -p eda-view --features gerber-view --target wasm32-unknown-unknown`
+- Build the CLI: `cargo build --release -p eda-view --features cli --bin pcb-extract`
+- Test everything: `cargo test -p eda-view --features yew,schematic,pcb,cli`
 - Build gerber-view: `cd crates/gerber-view && wasm-pack build --release --target web --out-dir pkg`. Smoke-test it by serving the crate dir and opening `examples/index.html?src=url1,url2`. KiCad demo Gerbers live at `/usr/share/kicad/demos/tiny_tapeout/pcba/gerber/`
-- Gerber coordinates from pcb-extract are mm with Y negated (screen Y-down)
+- Gerber coordinates from `eda_view::pcb` are mm with Y negated (screen Y-down)

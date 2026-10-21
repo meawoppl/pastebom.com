@@ -38,28 +38,29 @@ Cargo workspace:
 
 ```
 crates/
-├── pcb-extract/    Parser library + CLI. Reads PCB files, outputs JSON.
+├── eda-view/       The published library: parsers, scenes, renderers, components (features).
 ├── server/         Axum web server. Handles uploads, serves viewer.
 ├── viewer/         Yew WASM frontend. Canvas-based board rendering.
 ├── gds-viewer/     Yew WASM frontend for tiled GDSII layouts.
-├── sch-viewer/     Yew WASM schematic viewer (sheets, search, layers, cross-probe).
-├── vector-view/    Reified 2D vector scene schema + Canvas2D/SVG rendering.
-├── schematic-extract/  KiCad schematic hierarchy → vector-view scene (reusable, no I/O).
-├── kicad-schema/   KiCad s-expression and schematic/symbol models.
-├── kicad-strokes/  KiCad NewStroke font → polylines.
-└── gerber-view/    Embeddable, framework-free Gerber viewer (wasm-bindgen).
+├── sch-viewer/     Yew WASM schematic page hosting eda-view's SchematicView.
+└── gerber-view/    wasm-pack build of eda-view's embeddable Gerber viewer.
 ```
 
-`schematic-extract` is a standalone library: `parse_files(&HashMap<path, bytes>)`
-turns a KiCad project into a layered `vector_view::Scene` (one layer per element
-class, symbols grouped with reference/value/footprint properties) that renders to
-Canvas or SVG. See [`crates/schematic-extract/README.md`](crates/schematic-extract/README.md).
+[`eda-view`](crates/eda-view/README.md) is one crate with a feature per part:
+
+- `pcb`: PCB/BOM parsers (KiCad, EasyEDA, Eagle, Altium, Gerber, ODB++, GDSII) and the `pcb-extract` CLI (`cli`);
+- `schematic`: KiCad schematic hierarchies to a layered vector scene (`kicad`, `strokes` for the models and font);
+- the always-on `vector` scene with SVG export, plus the `canvas` renderer;
+- `yew` components;
+- `gerber-view`: the embeddable Gerber viewer.
+
+A wasm frontend enables only rendering features and links no parser code.
 
 `gerber-view` lets other sites reuse pastebom's Gerber parsing and rendering
 without the app shell. See [`crates/gerber-view/README.md`](crates/gerber-view/README.md).
 A built copy is served at `/gerber-view/pkg/`, with a demo at `/gerber-view/`.
 
-**Upload flow:** Browser POST `/upload` → server detects format from extension → `pcb-extract` parses to intermediate types → serialized to JSON → stored with UUID → returns viewer URL.
+**Upload flow:** Browser POST `/upload` → server detects format from extension → `eda_view::pcb` (boards) or `eda_view::schematic` (KiCad schematics) parses → serialized to JSON → stored with UUID → returns viewer URL.
 
 **Viewer flow:** Browser loads `/b/{id}` → WASM app fetches `/b/{id}/data` → deserializes into typed Rust structs → renders board layers on stacked canvases (background, fabrication, silkscreen, highlight).
 
