@@ -24,3 +24,6 @@ pub mod schematic;
 
 #[cfg(feature = "pcb")]
 pub mod pcb;
+
+#[cfg(feature = "gerber-view")]
+pub mod gerber_view;

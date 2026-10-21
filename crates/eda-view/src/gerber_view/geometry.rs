@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
-use eda_view::pcb::types::Drawing;
+use crate::pcb::types::Drawing;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathOp {

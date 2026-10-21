@@ -1,6 +1,6 @@
 //! Default colours, opacity, and visibility for each kind of fabrication layer.
 
-use eda_view::pcb::parsers::gerber::layers::{GerberLayerType, LayerFunction, LayerSide};
+use crate::pcb::parsers::gerber::layers::{GerberLayerType, LayerFunction, LayerSide};
 use serde::Serialize;
 
 pub const DEFAULT_BACKGROUND: &str = "#12161c";

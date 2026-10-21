@@ -29,6 +29,8 @@ serde = { workspace = true, features = ["derive"] }
 wasm-bindgen = { version = "0.2", optional = true }
 web-sys = { version = "0.3.106", features = ["CanvasRenderingContext2d", "CanvasWindingRule", "Document", "Element", "HtmlCanvasElement", "Node", "Path2d"], optional = true }
 yew = { version = "0.23", features = ["csr"], optional = true }
+serde-wasm-bindgen = { version = "0.6.5", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [features]
 default = []
@@ -37,6 +39,38 @@ strokes = []
 schematic = ["kicad", "strokes", "dep:thiserror"]
 pcb = ["dep:roxmltree", "dep:cfb", "dep:zip", "dep:flate2", "dep:tar", "dep:postcard", "dep:thiserror", "dep:log", "dep:serde_json"]
 cli = ["pcb", "dep:clap", "dep:env_logger"]
+# Embeddable Gerber viewer with a wasm-bindgen JS API (`gerber_view`).
+gerber-view = [
+    "pcb",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:serde-wasm-bindgen",
+    "dep:web-sys",
+    "web-sys?/AddEventListenerOptions",
+    "web-sys?/Blob",
+    "web-sys?/CanvasRenderingContext2d",
+    "web-sys?/CanvasWindingRule",
+    "web-sys?/CssStyleDeclaration",
+    "web-sys?/Document",
+    "web-sys?/DomRect",
+    "web-sys?/Element",
+    "web-sys?/Event",
+    "web-sys?/EventTarget",
+    "web-sys?/File",
+    "web-sys?/FileList",
+    "web-sys?/HtmlCanvasElement",
+    "web-sys?/HtmlElement",
+    "web-sys?/HtmlInputElement",
+    "web-sys?/MouseEvent",
+    "web-sys?/Node",
+    "web-sys?/Path2d",
+    "web-sys?/PointerEvent",
+    "web-sys?/Response",
+    "web-sys?/WheelEvent",
+    "web-sys?/Window",
+    "web-sys?/console",
+]
 # Canvas2D scene renderer (`vector::render`).
 canvas = ["dep:web-sys", "dep:wasm-bindgen"]
 # Yew components (`components`): scene canvas, search, schematic viewer.
@@ -45,13 +79,13 @@ yew = [
     "dep:yew",
     "dep:gloo-events",
     "dep:js-sys",
-    "web-sys/DomRect",
-    "web-sys/HtmlInputElement",
-    "web-sys/HtmlSelectElement",
-    "web-sys/PointerEvent",
-    "web-sys/ResizeObserver",
-    "web-sys/WheelEvent",
-    "web-sys/Window",
+    "web-sys?/DomRect",
+    "web-sys?/HtmlInputElement",
+    "web-sys?/HtmlSelectElement",
+    "web-sys?/PointerEvent",
+    "web-sys?/ResizeObserver",
+    "web-sys?/WheelEvent",
+    "web-sys?/Window",
 ]
 
 [dev-dependencies]

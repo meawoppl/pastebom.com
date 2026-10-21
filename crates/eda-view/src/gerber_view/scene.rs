@@ -1,11 +1,11 @@
 //! Canvas rendering of compiled layer geometry.
 
-use eda_view::pcb::parsers::gerber::layers::GerberLayerType;
-use eda_view::pcb::parsers::gerber::GerberLayer;
+use crate::pcb::parsers::gerber::layers::GerberLayerType;
+use crate::pcb::parsers::gerber::GerberLayer;
 use wasm_bindgen::JsValue;
 use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, Path2d};
 
-use crate::geometry::{compile, to_svg_path, CompiledPaths, PathOp};
+use crate::gerber_view::geometry::{compile, to_svg_path, CompiledPaths, PathOp};
 
 /// Browser-side paths for one polarity of a layer.
 pub struct Paths {
