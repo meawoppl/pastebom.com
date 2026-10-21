@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "gds-viewer"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "gloo",
  "js-sys",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "gerber-view"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "js-sys",
  "pcb-extract",
@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "pastebom-server"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "pastebom-viewer"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "gloo",
  "js-sys",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "pcb-extract"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "approx",
  "cfb",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "sch-viewer"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "gloo-net 0.6.0",
  "js-sys",

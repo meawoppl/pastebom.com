@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.0
+
+- Publish the schematic libraries to crates.io at independent 0.1.0 versions: `vector-view`, `kicad-schema`, `kicad-strokes`, `schematic-extract`, and the new `vector-view-yew`
+- Add `vector-view-yew`, Yew 0.23 components shared with kicadmium: `VectorSceneCanvas`, component/net search, and a host-agnostic `SchematicView` (sheet navigation, search with sheet jump, layer toggles, net highlight, warnings, cross-probe and camera callbacks)
+- Rebuild the schematic page on `SchematicView`; selection, `?ref=` and the PCB link stay in sync across sheet changes and search
+- `schematic-extract`: overridable palette and frame label, symbol scenes for library previews, typed `vector_view::schematic` accessors, power-net naming from hidden power pins, filenames in parse errors
+- `schematic-extract`: an escaping or self-referencing child sheet, or an unrelated invalid file-map key, is skipped with a warning instead of failing the project
+- Move the PCB and GDSII viewers to Yew 0.23
+
 ## 1.11.0
 
 - Add KiCad schematic uploads and project ZIPs with an interactive schematic viewer, hierarchical sheet navigation, layer controls, and SVG export
