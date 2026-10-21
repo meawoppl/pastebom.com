@@ -15,7 +15,7 @@ anyhow = "1"
 kicad-schema = { version = "0.1.0", path = "../kicad-schema" }
 kicad-strokes = { version = "0.1.0", path = "../kicad-strokes" }
 thiserror = "2"
-vector-view.workspace = true
+vector-view = { package = "eda-view", path = "../eda-view" }
 
 [dev-dependencies]
 serde_json.workspace = true

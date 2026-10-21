@@ -11,7 +11,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-vector-view.workspace = true
+vector-view = { package = "eda-view", path = "../eda-view" }
 
 [dev-dependencies]
 sha2 = { workspace = true }

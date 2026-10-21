@@ -1,12 +1,11 @@
 //! pastebom's schematic page at `/b/{id}/schematic`: loads the stored scene and
-//! hosts `vector_view_yew::SchematicView`, keeping `?ref=` in the URL and
+//! hosts `eda_view::components::SchematicView`, keeping `?ref=` in the URL and
 //! cross-probing to the board viewer at `/b/{id}#ref=`.
 use std::rc::Rc;
 
-use vector_view_yew::{
-    schematic::DEFAULT_CSS,
-    vector_view::{Scene, SCENE_VERSION},
-    Reveal, SchematicView,
+use eda_view::{
+    components::{schematic::DEFAULT_CSS, Reveal, SchematicView},
+    vector::{Scene, SCENE_VERSION},
 };
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;

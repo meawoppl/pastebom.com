@@ -2,13 +2,14 @@
 name = "sch-viewer"
 version.workspace = true
 edition = "2021"
-description = "Interactive schematic viewer over vector-view scenes"
+description = "pastebom's schematic page, hosting eda-view's SchematicView"
+publish = false
 
 [dependencies]
+eda-view = { workspace = true, features = ["yew"] }
 gloo-net = "0.6"
 js-sys = "0.3"
 serde_json.workspace = true
-vector-view-yew = { version = "0.1.0", path = "../vector-view-yew" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4.79"
 web-sys = { version = "0.3.106", features = ["Document", "History", "Location", "UrlSearchParams", "Window"] }

@@ -1119,6 +1119,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "eda-view"
+version = "0.1.0"
+dependencies = [
+ "gloo-events",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+ "yew",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2222,8 +2235,8 @@ dependencies = [
 name = "kicad-strokes"
 version = "0.1.0"
 dependencies = [
+ "eda-view",
  "sha2",
- "vector-view",
 ]
 
 [[package]]
@@ -3095,10 +3108,10 @@ dependencies = [
 name = "sch-viewer"
 version = "1.12.0"
 dependencies = [
+ "eda-view",
  "gloo-net 0.6.0",
  "js-sys",
  "serde_json",
- "vector-view-yew",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3119,11 +3132,11 @@ name = "schematic-extract"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "eda-view",
  "kicad-schema",
  "kicad-strokes",
  "serde_json",
  "thiserror 2.0.18",
- "vector-view",
 ]
 
 [[package]]
@@ -3889,28 +3902,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "vector-view"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "vector-view-yew"
-version = "0.1.0"
-dependencies = [
- "gloo-events",
- "js-sys",
- "vector-view",
- "wasm-bindgen",
- "web-sys",
- "yew",
-]
 
 [[package]]
 name = "version_check"
