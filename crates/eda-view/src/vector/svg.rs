@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
-use crate::{BBox, ItemId, LayerId, Point, Prim, Scene};
+use crate::vector::{BBox, ItemId, LayerId, Point, Prim, Scene};
 
 /// Controls the exported drawing in scene units (millimetres).
 #[derive(Clone, Debug)]
@@ -250,7 +250,7 @@ fn stroke_path(svg: &mut String, d: &str, width: f64) {
 #[cfg(test)]
 mod tests {
     use super::{to_svg, SvgOptions};
-    use crate::{Item, Layer, LayerKind, Prim, Role, Scene, SceneKind, Side};
+    use crate::vector::{Item, Layer, LayerKind, Prim, Role, Scene, SceneKind, Side};
 
     #[test]
     fn export_filters_layers_and_items_and_escapes_names() {

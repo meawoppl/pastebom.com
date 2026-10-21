@@ -1,7 +1,7 @@
 //! Component/net lookup over any scene (PCB or schematic) and a compact
 //! search field.
+use crate::vector::{GroupKind, ItemId, Scene};
 use std::collections::{HashMap, HashSet};
-use vector_view::{GroupKind, ItemId, Scene};
 use yew::prelude::*;
 
 #[derive(Default, Clone, PartialEq)]
@@ -22,7 +22,7 @@ pub fn find(scene: &Scene, query: &str) -> Matches {
         .iter()
         .filter(|g| matches!(g.kind, GroupKind::Footprint | GroupKind::Symbol))
         .collect();
-    let group_names = |g: &vector_view::Group| {
+    let group_names = |g: &crate::vector::Group| {
         std::iter::once(g.label.as_str())
             .chain(
                 g.props
@@ -141,7 +141,7 @@ pub fn viewer_search(props: &SearchProps) -> Html {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vector_view::{Group, Item, Net, Prim, Prop, Role, SceneKind};
+    use crate::vector::{Group, Item, Net, Prim, Prop, Role, SceneKind};
     #[test]
     fn net_matches_geometry_and_connected_components_only() {
         let mut s = Scene::new(SceneKind::Pcb, true);

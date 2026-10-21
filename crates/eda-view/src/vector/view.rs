@@ -5,7 +5,7 @@
 //! the mirror and Y flip. Screen units are CSS pixels; [`View::canvas_transform`]
 //! folds in the device pixel ratio.
 
-use crate::scene::{BBox, Point, Scene};
+use crate::vector::scene::{BBox, Point, Scene};
 
 pub const MIN_SCALE: f64 = 1e-3;
 pub const MAX_SCALE: f64 = 1e5;

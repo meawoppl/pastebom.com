@@ -1,8 +1,6 @@
-//! Yew/DOM host for format-independent `vector_view` scenes: Canvas2D drawing,
+//! Yew/DOM host for format-independent vector scenes: Canvas2D drawing,
 //! pan/zoom/pinch input, tap picking, fitting, and camera reporting.
-use gloo_events::EventListener;
-use std::{cell::RefCell, collections::HashSet, rc::Rc};
-use vector_view::{
+use crate::vector::{
     hit::HitIndex,
     input::{InputEvent, InputOutcome},
     render::{clear, draw_cached, PathCache},
@@ -10,6 +8,8 @@ use vector_view::{
     view::View,
     BBox, ItemId, Scene,
 };
+use gloo_events::EventListener;
+use std::{cell::RefCell, collections::HashSet, rc::Rc};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{
@@ -91,7 +91,7 @@ const FOCUS_MIN_PAD: f64 = 5.0;
 
 struct Runtime {
     state: ViewState,
-    input: crate::input::ViewInput,
+    input: crate::components::input::ViewInput,
     hit: HitIndex,
     cache: PathCache,
     /// The view is valid for drawing (fitted, restored or user-driven).
@@ -117,7 +117,7 @@ impl Runtime {
         view.mirrored = mirrored;
         Self {
             state: ViewState::new(view),
-            input: crate::input::ViewInput::default(),
+            input: crate::components::input::ViewInput::default(),
             hit: HitIndex::new(s),
             cache: PathCache::new(),
             fitted: initial_view.is_some(),
@@ -657,7 +657,7 @@ fn pointer(
 #[cfg(test)]
 mod tests {
     use super::{fit_view, frames};
-    use vector_view::{view::View, BBox};
+    use crate::vector::{view::View, BBox};
 
     const BOARD: BBox = BBox {
         min: [100.0, 50.0],

@@ -5,7 +5,7 @@
 //! [`View`] and reports what happened. No DOM listeners live here, so the
 //! logic is unit-testable natively.
 
-use crate::view::View;
+use crate::vector::view::View;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputEvent {

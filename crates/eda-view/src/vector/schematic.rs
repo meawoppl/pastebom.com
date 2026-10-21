@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::{BBox, GroupId, GroupKind, ItemId, Prop, Scene};
+use crate::vector::{BBox, GroupId, GroupKind, ItemId, Prop, Scene};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Page {
@@ -139,7 +139,7 @@ pub fn symbols(scene: &Scene) -> Vec<Symbol> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Group, Item, Prim, Role, SceneKind};
+    use crate::vector::{Group, Item, Prim, Role, SceneKind};
 
     #[test]
     fn traversal_and_paper_validation() {

@@ -3,8 +3,8 @@
 //! The canvas renderer (`render`, feature `canvas`) only executes what this
 //! module resolves, so the decisions are unit-testable natively.
 
-use crate::scene::{GroupId, Item, ItemId, Layer, LayerId, NetId, Role, Scene, Side};
-use crate::view::View;
+use crate::vector::scene::{GroupId, Item, ItemId, Layer, LayerId, NetId, Role, Scene, Side};
+use crate::vector::view::View;
 use std::collections::{HashMap, HashSet};
 
 pub type Rgba = [u8; 4];
@@ -81,7 +81,7 @@ impl LayerVisibility {
         self.overrides.insert(id, visible);
     }
 
-    /// Predicate for [`crate::hit::hit_test`].
+    /// Predicate for [`crate::vector::hit::hit_test`].
     pub fn predicate<'a>(&'a self, scene: &'a Scene) -> impl Fn(LayerId) -> bool + 'a {
         move |id| scene.layer(id).is_some_and(|l| self.is_visible(l))
     }
@@ -476,7 +476,7 @@ pub fn parse_css_color(s: &str) -> Option<Rgba> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::*;
+    use crate::vector::scene::*;
 
     fn scene() -> Scene {
         let mut s = Scene::new(SceneKind::Pcb, true);

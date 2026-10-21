@@ -5,8 +5,8 @@
 //! (pad > via > track > text > others), then by the topmost layer, then by
 //! drawing order.
 
-use crate::scene::{BBox, Item, ItemId, LayerId, Point, Prim, Role, Scene};
-use crate::style::{PickPlan, ViewState};
+use crate::vector::scene::{BBox, Item, ItemId, LayerId, Point, Prim, Role, Scene};
+use crate::vector::style::{PickPlan, ViewState};
 use std::f64::consts::TAU;
 
 /// Higher wins when several items are under the cursor.
@@ -373,7 +373,7 @@ impl HitIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::*;
+    use crate::vector::scene::*;
 
     fn layer(id: LayerId, z: i32) -> Layer {
         Layer {
@@ -550,8 +550,8 @@ mod tests {
 
     #[test]
     fn view_hit_respects_visibility_hidden_and_passes() {
-        use crate::style::{Pass, ViewState};
-        use crate::view::View;
+        use crate::vector::style::{Pass, ViewState};
+        use crate::vector::view::View;
         let s = scene();
         let idx = HitIndex::new(&s);
         let mut st = ViewState::new(View::default());

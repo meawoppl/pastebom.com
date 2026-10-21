@@ -11,8 +11,8 @@
 //! canvas and composited at its alpha, so translucent layers blend as one
 //! unit. `ViewState::overlay` draws a highlight over everything the same way.
 
-use crate::scene::{Item, Point, Prim, Scene};
-use crate::style::{css_rgba, ItemPaint, Rgba, ViewState};
+use crate::vector::scene::{Item, Point, Prim, Scene};
+use crate::vector::style::{css_rgba, ItemPaint, Rgba, ViewState};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use wasm_bindgen::JsCast;
@@ -486,7 +486,7 @@ fn draw_inner(
             let color = overlay.color;
             let hole = state.theme.hole;
             let paint = |item: &Item| {
-                let c = if item.role == crate::scene::Role::Hole {
+                let c = if item.role == crate::vector::scene::Role::Hole {
                     hole.unwrap_or(color)
                 } else {
                     color

@@ -4,7 +4,7 @@
 //! held still while another pinches can therefore look like a tap when it lifts
 //! last. Remember the whole gesture, until every pointer has left the canvas.
 
-use vector_view::{
+use crate::vector::{
     input::{Input, InputEvent, InputOutcome},
     view::View,
 };

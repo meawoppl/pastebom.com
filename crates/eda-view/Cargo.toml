@@ -1,0 +1,41 @@
+[package]
+name = "eda-view"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "EDA file parsing and vector rendering: KiCad schematics, PCB and Gerber parsers, a reified 2D scene with SVG/Canvas renderers, and Yew/wasm viewer components, each behind a feature"
+repository = "https://github.com/meawoppl/pastebom.com"
+readme = "README.md"
+keywords = ["kicad", "schematic", "pcb", "gerber", "viewer"]
+categories = ["parser-implementations", "visualization", "wasm", "gui"]
+include = ["src/**", "README.md", "LICENSE*", "NOTICE.md"]
+
+[dependencies]
+gloo-events = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde = { workspace = true, features = ["derive"] }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3.106", features = ["CanvasRenderingContext2d", "CanvasWindingRule", "Document", "Element", "HtmlCanvasElement", "Node", "Path2d"], optional = true }
+yew = { version = "0.23", features = ["csr"], optional = true }
+
+[features]
+default = []
+# Canvas2D scene renderer (`vector::render`).
+canvas = ["dep:web-sys", "dep:wasm-bindgen"]
+# Yew components (`components`): scene canvas, search, schematic viewer.
+yew = [
+    "canvas",
+    "dep:yew",
+    "dep:gloo-events",
+    "dep:js-sys",
+    "web-sys/DomRect",
+    "web-sys/HtmlInputElement",
+    "web-sys/HtmlSelectElement",
+    "web-sys/PointerEvent",
+    "web-sys/ResizeObserver",
+    "web-sys/WheelEvent",
+    "web-sys/Window",
+]
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,5 +1,6 @@
-//! Schematic viewer over a `vector_view::Scene` produced by `schematic-extract`
-//! (or any producer following its page/symbol conventions).
+//! Schematic viewer over a [`Scene`] produced by the `schematic` feature's
+//! extractor (usually on a server) or any producer following its page/symbol
+//! conventions.
 //!
 //! One sheet is shown at a time. The host owns all I/O: it supplies the scene
 //! (replacing it on live refresh keeps the open sheet and its camera), and
@@ -11,7 +12,7 @@ use std::{
     rc::Rc,
 };
 
-use vector_view::{
+use crate::vector::{
     schematic,
     style::{Highlight, LayerVisibility, Rgba, Theme},
     view::View,
@@ -20,8 +21,8 @@ use vector_view::{
 use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 
-use crate::canvas::{Focus, VectorSceneCanvas};
-use crate::search::{find, ViewerSearch};
+use crate::components::canvas::{Focus, VectorSceneCanvas};
+use crate::components::search::{find, ViewerSearch};
 
 /// Canvas background matching the default (Tokyo Night) scene palette.
 pub const DEFAULT_BACKGROUND: Rgba = [0x1a, 0x1b, 0x26, 255];
@@ -562,8 +563,8 @@ fn remembered_view(
 /// Symbol properties first, then the item's own, then role/net/group.
 fn property_rows(
     scene: &Scene,
-    item: &vector_view::Item,
-    group: Option<&vector_view::Group>,
+    item: &crate::vector::Item,
+    group: Option<&crate::vector::Group>,
     symbol_fields: bool,
 ) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
@@ -593,7 +594,7 @@ fn property_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vector_view::{Group, Item, Prim, SceneKind};
+    use crate::vector::{Group, Item, Prim, SceneKind};
 
     fn item(id: ItemId, page: &str, group: Option<GroupId>) -> Item {
         Item {
