@@ -12,3 +12,15 @@ pub mod vector;
 
 #[cfg(feature = "yew")]
 pub mod components;
+
+#[cfg(feature = "kicad")]
+pub mod kicad;
+
+#[cfg(feature = "strokes")]
+pub mod strokes;
+
+#[cfg(feature = "schematic")]
+pub mod schematic;
+
+#[cfg(feature = "pcb")]
+pub mod pcb;

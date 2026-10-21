@@ -1122,13 +1122,26 @@ dependencies = [
 name = "eda-view"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "approx",
+ "cfb",
+ "clap",
+ "env_logger",
+ "flate2",
  "gloo-events",
  "js-sys",
+ "log",
+ "postcard",
+ "roxmltree",
  "serde",
  "serde_json",
+ "sha2",
+ "tar",
+ "thiserror 2.0.18",
  "wasm-bindgen",
  "web-sys",
  "yew",
+ "zip",
 ]
 
 [[package]]
@@ -1399,8 +1412,8 @@ dependencies = [
 name = "gerber-view"
 version = "1.12.0"
 dependencies = [
+ "eda-view",
  "js-sys",
- "pcb-extract",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -2224,22 +2237,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kicad-schema"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
-]
-
-[[package]]
-name = "kicad-strokes"
-version = "0.1.0"
-dependencies = [
- "eda-view",
- "sha2",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2506,12 +2503,11 @@ dependencies = [
  "axum",
  "brotli",
  "chrono",
+ "eda-view",
  "flate2",
  "hex",
  "mime_guess",
- "pcb-extract",
  "reqwest",
- "schematic-extract",
  "serde",
  "serde_json",
  "sha1",
@@ -2539,25 +2535,6 @@ dependencies = [
  "wasm-logger",
  "web-sys",
  "yew",
-]
-
-[[package]]
-name = "pcb-extract"
-version = "1.12.0"
-dependencies = [
- "approx",
- "cfb",
- "clap",
- "env_logger",
- "flate2",
- "log",
- "postcard",
- "roxmltree",
- "serde",
- "serde_json",
- "tar",
- "thiserror 2.0.18",
- "zip",
 ]
 
 [[package]]
@@ -3125,18 +3102,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "schematic-extract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "eda-view",
- "kicad-schema",
- "kicad-strokes",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]

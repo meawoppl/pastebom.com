@@ -1,7 +1,7 @@
 //! Board-to-screen transform: uniform scale, translation, and an optional
 //! horizontal mirror for viewing the board from the bottom side.
 
-use pcb_extract::types::BBox;
+use eda_view::pcb::types::BBox;
 
 const MIN_SCALE: f64 = 1e-3;
 const MAX_SCALE: f64 = 1e5;

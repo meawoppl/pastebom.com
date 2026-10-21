@@ -23,10 +23,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
+use eda_view::pcb::parsers::gerber::layers::{LayerFunction, LayerSide};
+use eda_view::pcb::parsers::gerber::{board_bbox, parse_source, GerberLayer, GerberProject};
+use eda_view::pcb::types::BBox;
 use js_sys::{Array, Function, Promise, Reflect};
-use pcb_extract::parsers::gerber::layers::{LayerFunction, LayerSide};
-use pcb_extract::parsers::gerber::{board_bbox, parse_source, GerberLayer, GerberProject};
-use pcb_extract::types::BBox;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;

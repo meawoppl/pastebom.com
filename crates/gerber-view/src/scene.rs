@@ -1,7 +1,7 @@
 //! Canvas rendering of compiled layer geometry.
 
-use pcb_extract::parsers::gerber::layers::GerberLayerType;
-use pcb_extract::parsers::gerber::GerberLayer;
+use eda_view::pcb::parsers::gerber::layers::GerberLayerType;
+use eda_view::pcb::parsers::gerber::GerberLayer;
 use wasm_bindgen::JsValue;
 use web_sys::{CanvasRenderingContext2d, CanvasWindingRule, Path2d};
 

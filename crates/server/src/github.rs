@@ -255,7 +255,7 @@ impl Target {
                 "Use: ?file=owner/repo/path/to/file".to_string(),
             ));
         }
-        if pcb_extract::detect_format(std::path::Path::new(parts[2])).is_none() {
+        if eda_view::pcb::detect_format(std::path::Path::new(parts[2])).is_none() {
             return Err(RenderError::Unsupported);
         }
         if let Some(r) = &params.git_ref {
@@ -446,7 +446,7 @@ async fn render_blob(
         None => download_raw(state, &target.repo, git_ref, &target.path).await?,
     };
     let file_path = std::path::Path::new(&target.path);
-    let format = pcb_extract::detect_format_with_content(file_path, &bytes)
+    let format = eda_view::pcb::detect_format_with_content(file_path, &bytes)
         .ok_or(RenderError::Unsupported)?;
 
     let pcb_data = match crate::routes::parse_pcb_guarded(state, bytes.clone(), format).await {
@@ -520,7 +520,7 @@ async fn render_blob(
         .await;
     }
 
-    let svg = tokio::task::spawn_blocking(move || pcb_extract::thumbnail::render_svg(&pcb_data))
+    let svg = tokio::task::spawn_blocking(move || eda_view::pcb::thumbnail::render_svg(&pcb_data))
         .await
         .map_err(|_| RenderError::Internal("Thumbnail render failed".to_string()))?;
     let _ = state

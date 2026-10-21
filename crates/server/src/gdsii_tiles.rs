@@ -14,8 +14,8 @@ use axum::{
     http::{header, StatusCode, Uri},
     response::{Html, IntoResponse, Response},
 };
-use pcb_extract::parsers::gdsii::tile::WorldBox;
-use pcb_extract::parsers::gdsii::tileset::{self, Manifest, TileIndex};
+use eda_view::pcb::parsers::gdsii::tile::WorldBox;
+use eda_view::pcb::parsers::gdsii::tileset::{self, Manifest, TileIndex};
 use uuid::Uuid;
 
 use crate::AppState;

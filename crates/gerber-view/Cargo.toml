@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 js-sys = "0.3"
-pcb-extract = { path = "../pcb-extract", default-features = false }
+eda-view = { workspace = true, features = ["pcb"] }
 serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
 serde_json.workspace = true

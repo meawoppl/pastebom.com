@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/eda-view", "crates/pcb-extract", "crates/server", "crates/viewer", "crates/gds-viewer", "crates/sch-viewer", "crates/gerber-view", "crates/kicad-schema", "crates/kicad-strokes", "crates/schematic-extract"]
+members = ["crates/eda-view", "crates/server", "crates/viewer", "crates/gds-viewer", "crates/sch-viewer", "crates/gerber-view"]
 resolver = "2"
 
 [workspace.package]

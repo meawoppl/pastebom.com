@@ -16,7 +16,7 @@ use axum::{
     http::{header, StatusCode, Uri},
     response::{Html, IntoResponse, Response},
 };
-use schematic_extract::vector_view::{svg::SvgOptions, BBox, Scene};
+use eda_view::vector::{svg::SvgOptions, BBox, Scene};
 use uuid::Uuid;
 
 use crate::routes::ParseError;
@@ -185,7 +185,7 @@ pub async fn parse_guarded(
     // counts against MAX_CONCURRENT_PARSES until it actually finishes.
     let handle = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        schematic_extract::parse_files(&files)
+        eda_view::schematic::parse_files(&files)
     });
     tokio::time::timeout(PARSE_TIMEOUT, handle)
         .await
@@ -199,9 +199,7 @@ pub fn symbol_count(scene: &Scene) -> usize {
     scene
         .groups
         .iter()
-        .filter(|g| {
-            g.kind == schematic_extract::vector_view::GroupKind::Symbol && !g.label.starts_with('#')
-        })
+        .filter(|g| g.kind == eda_view::vector::GroupKind::Symbol && !g.label.starts_with('#'))
         .count()
 }
 
