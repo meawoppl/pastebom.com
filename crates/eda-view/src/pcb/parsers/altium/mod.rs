@@ -1,0 +1,834 @@
+mod layers;
+mod records;
+
+use crate::pcb::bom::{generate_bom, BomConfig};
+use crate::pcb::error::ExtractError;
+use crate::pcb::types::*;
+use crate::pcb::ExtractOptions;
+use std::collections::HashMap;
+use std::io::{Read, Seek};
+
+/// Parse an Altium .PcbDoc file from bytes into PcbData.
+pub fn parse(data: &[u8], opts: &ExtractOptions) -> Result<PcbData, ExtractError> {
+    let cursor = std::io::Cursor::new(data);
+    let mut cfb = cfb::CompoundFile::open(cursor)
+        .map_err(|e| ExtractError::ParseError(format!("Not a valid OLE2/CFB file: {e}")))?;
+
+    // 1. Parse string table
+    let wide_strings = parse_wide_strings(&mut cfb)?;
+
+    // 2. Parse board config
+    let board_records = read_text_records(&mut cfb, "/Board6/Data")?;
+    let layer_map = layers::build_layer_map(&board_records);
+
+    // 3. Parse components (detect format from text records)
+    let comp_records = read_text_records(&mut cfb, "/Components6/Data")?;
+
+    // Detect PCB 6.0 format: text coords have "mil" suffix, finer binary scale
+    let use_fine_scale =
+        records::detect_mil_format(&comp_records) || records::detect_mil_format(&board_records);
+    let units_per_mil: i32 = if use_fine_scale { 10000 } else { 1000 };
+
+    let components = records::parse_components(&comp_records, &wide_strings, units_per_mil);
+
+    // 4. Parse nets
+    let net_records = read_text_records(&mut cfb, "/Nets6/Data")?;
+    let nets = records::parse_nets(&net_records);
+
+    // 5. Parse geometry objects
+    let pads = read_binary_stream(&mut cfb, "/Pads6/Data")
+        .map(|data| records::parse_pads(&data, use_fine_scale))
+        .unwrap_or_default();
+
+    let tracks = read_binary_stream(&mut cfb, "/Tracks6/Data")
+        .map(|data| records::parse_tracks(&data))
+        .unwrap_or_default();
+
+    let arcs = read_binary_stream(&mut cfb, "/Arcs6/Data")
+        .map(|data| records::parse_arcs(&data))
+        .unwrap_or_default();
+
+    let vias = read_binary_stream(&mut cfb, "/Vias6/Data")
+        .map(|data| records::parse_vias(&data))
+        .unwrap_or_default();
+
+    let fills = read_binary_stream(&mut cfb, "/Fills6/Data")
+        .map(|data| records::parse_fills(&data))
+        .unwrap_or_default();
+
+    let texts = read_binary_stream(&mut cfb, "/Texts6/Data")
+        .map(|data| records::parse_texts(&data, use_fine_scale))
+        .unwrap_or_default();
+
+    let scale = if use_fine_scale {
+        SCALE_FINE
+    } else {
+        SCALE_COARSE
+    };
+
+    // 6. Build footprints from components + child objects
+    let footprints = build_footprints(
+        &components,
+        &pads,
+        &tracks,
+        &arcs,
+        &fills,
+        &texts,
+        &nets,
+        &layer_map,
+        scale,
+    );
+
+    // 6b. Build Component structs for BOM generation
+    let bom_components: Vec<Component> = components
+        .iter()
+        .enumerate()
+        .map(|(idx, comp)| {
+            let side = if layer_map.side(comp.layer) == "B" {
+                Side::Back
+            } else {
+                Side::Front
+            };
+            Component {
+                ref_: comp.designator.clone(),
+                val: comp.comment.clone(),
+                footprint_name: comp.pattern.clone(),
+                layer: side,
+                footprint_index: idx,
+                extra_fields: HashMap::new(),
+                attr: None,
+            }
+        })
+        .collect();
+
+    let bom = Some(generate_bom(
+        &footprints,
+        &bom_components,
+        &BomConfig::default(),
+    ));
+
+    // 7. Board edges
+    let edges = extract_board_edges(&board_records, units_per_mil, scale);
+    let edges_bbox = BBox::from_drawings(&edges);
+
+    // 8. Categorize board-level drawings (silkscreen, fabrication)
+    let drawings = categorize_drawings(&tracks, &arcs, &fills, &layer_map, scale);
+
+    // 9. Tracks and zones
+    let (track_data, zone_data) = if opts.include_tracks {
+        (
+            Some(build_track_data(
+                &tracks, &arcs, &vias, &nets, &layer_map, scale,
+            )),
+            Some(LayerData {
+                front: Vec::new(),
+                back: Vec::new(),
+                inner: HashMap::new(),
+            }),
+        )
+    } else {
+        (None, None)
+    };
+
+    let net_names = if opts.include_nets {
+        Some(nets.iter().map(|n| n.name.clone()).collect())
+    } else {
+        None
+    };
+
+    Ok(PcbData {
+        edges_bbox,
+        edges,
+        drawings,
+        footprints,
+        metadata: extract_metadata(&board_records),
+        format: None,
+        bom,
+        parser_version: None,
+        ibom_version: None,
+        tracks: track_data,
+        copper_pads: None,
+        zones: zone_data,
+        nets: net_names,
+        font_data: None,
+    })
+}
+
+// ─── CFB stream reading ──────────────────────────────────────────────
+
+fn read_stream<R: Read + Seek>(cfb: &mut cfb::CompoundFile<R>, path: &str) -> Option<Vec<u8>> {
+    let mut stream = cfb.open_stream(path).ok()?;
+    let mut data = Vec::new();
+    stream.read_to_end(&mut data).ok()?;
+    Some(data)
+}
+
+fn read_text_records<R: Read + Seek>(
+    cfb: &mut cfb::CompoundFile<R>,
+    path: &str,
+) -> Result<Vec<HashMap<String, String>>, ExtractError> {
+    let data = read_stream(cfb, path).unwrap_or_default();
+    Ok(parse_text_record_stream(&data))
+}
+
+fn read_binary_stream<R: Read + Seek>(
+    cfb: &mut cfb::CompoundFile<R>,
+    path: &str,
+) -> Option<Vec<u8>> {
+    read_stream(cfb, path)
+}
+
+fn parse_wide_strings<R: Read + Seek>(
+    cfb: &mut cfb::CompoundFile<R>,
+) -> Result<HashMap<u32, String>, ExtractError> {
+    let data = match read_stream(cfb, "/WideStrings6/Data") {
+        Some(d) => d,
+        None => return Ok(HashMap::new()),
+    };
+    let mut strings = HashMap::new();
+    if data.len() < 4 {
+        return Ok(strings);
+    }
+    let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let mut offset = 4;
+    for _ in 0..count {
+        if offset + 8 > data.len() {
+            break;
+        }
+        let id = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
+        offset += 4;
+        let len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        offset += 4;
+        let byte_len = len * 2;
+        if offset + byte_len > data.len() {
+            break;
+        }
+        let (pairs, _) = data[offset..offset + byte_len].as_chunks::<2>();
+        let utf16: Vec<u16> = pairs.iter().map(|&c| u16::from_le_bytes(c)).collect();
+        strings.insert(id, String::from_utf16_lossy(&utf16));
+        offset += byte_len;
+    }
+    Ok(strings)
+}
+
+// ─── Text property record parsing ────────────────────────────────────
+
+fn parse_text_record_stream(data: &[u8]) -> Vec<HashMap<String, String>> {
+    let mut records = Vec::new();
+    let mut offset = 0;
+    while offset + 4 <= data.len() {
+        let len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        offset += 4;
+        if offset + len > data.len() {
+            break;
+        }
+        let record_bytes = &data[offset..offset + len];
+        offset += len;
+
+        // Parse as Latin-1 (Altium uses Windows-1252)
+        let text: String = record_bytes
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as char)
+            .collect();
+
+        let mut props = HashMap::new();
+        for pair in text.split('|').filter(|s| !s.is_empty()) {
+            if let Some((key, value)) = pair.split_once('=') {
+                props.insert(key.to_uppercase(), value.to_string());
+            }
+        }
+        if !props.is_empty() {
+            records.push(props);
+        }
+    }
+    records
+}
+
+// ─── Coordinate conversion ───────────────────────────────────────────
+
+/// mm per internal unit. PCB 6.0 files use 10x finer resolution.
+const SCALE_COARSE: f64 = 0.0000254; // 1 unit = 0.001 mil
+const SCALE_FINE: f64 = 0.00000254; // 1 unit = 0.0001 mil
+
+fn altium_to_mm(units: i32, scale: f64) -> f64 {
+    units as f64 * scale
+}
+
+fn convert_point(x: i32, y: i32, scale: f64) -> [f64; 2] {
+    [altium_to_mm(x, scale), -altium_to_mm(y, scale)]
+}
+
+// ─── Board edges ─────────────────────────────────────────────────────
+
+fn extract_board_edges(
+    board_records: &[HashMap<String, String>],
+    units_per_mil: i32,
+    scale: f64,
+) -> Vec<Drawing> {
+    let mut edges = Vec::new();
+
+    for record in board_records {
+        // Accept records with KIND=0 (region outline) or the main board record
+        // which has KIND=Protel_Advanced_PCB or RECORD=Board
+        let kind = record.get("KIND").map(|v| v.as_str()).unwrap_or("");
+        let is_outline = kind == "0";
+        let is_board =
+            kind.contains("Protel") || record.get("RECORD").map(|v| v.as_str()) == Some("Board");
+
+        if !is_outline && !is_board {
+            continue;
+        }
+
+        // Determine vertex count: use VCOUNT if present, otherwise count VX* keys
+        let vcount: usize = record
+            .get("VCOUNT")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| {
+                (0..)
+                    .take_while(|i| record.contains_key(&format!("VX{i}")))
+                    .count()
+            });
+
+        if vcount < 2 {
+            continue;
+        }
+
+        for i in 0..vcount {
+            let x0 = parse_altium_coord(record, &format!("VX{i}"), units_per_mil);
+            let y0 = parse_altium_coord(record, &format!("VY{i}"), units_per_mil);
+            let next = (i + 1) % vcount;
+            let x1 = parse_altium_coord(record, &format!("VX{next}"), units_per_mil);
+            let y1 = parse_altium_coord(record, &format!("VY{next}"), units_per_mil);
+
+            let start = convert_point(x0, y0, scale);
+            let end = convert_point(x1, y1, scale);
+
+            // Check for arc segment (SA = start angle, EA = end angle, CX/CY = center)
+            let sa_key = format!("SA{i}");
+            let ea_key = format!("EA{i}");
+            let cx_key = format!("CX{i}");
+            let cy_key = format!("CY{i}");
+
+            let sa: f64 = record
+                .get(&sa_key)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.0);
+            let ea: f64 = record
+                .get(&ea_key)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.0);
+            let has_arc = (ea - sa).abs() > 0.001;
+
+            if has_arc {
+                let cx = parse_altium_coord(record, &cx_key, units_per_mil);
+                let cy = parse_altium_coord(record, &cy_key, units_per_mil);
+                let center = convert_point(cx, cy, scale);
+
+                // Compute radius from center to start point
+                let dx = start[0] - center[0];
+                let dy = start[1] - center[1];
+                let radius = (dx * dx + dy * dy).sqrt();
+
+                edges.push(Drawing::Arc {
+                    start: center,
+                    radius,
+                    startangle: -ea,
+                    endangle: -sa,
+                    width: 0.05,
+                });
+            } else {
+                edges.push(Drawing::Segment {
+                    start,
+                    end,
+                    width: 0.05,
+                });
+            }
+        }
+    }
+    edges
+}
+
+fn parse_altium_coord(record: &HashMap<String, String>, key: &str, units_per_mil: i32) -> i32 {
+    record
+        .get(key)
+        .and_then(|v| records::parse_altium_value(v, units_per_mil))
+        .unwrap_or(0)
+}
+
+// ─── Build footprints ────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn build_footprints(
+    components: &[records::AltiumComponent],
+    pads: &[records::AltiumPad],
+    tracks: &[records::AltiumTrack],
+    arcs: &[records::AltiumArc],
+    fills: &[records::AltiumFill],
+    texts: &[records::AltiumText],
+    nets: &[records::AltiumNet],
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> Vec<Footprint> {
+    components
+        .iter()
+        .enumerate()
+        .map(|(idx, comp)| {
+            let comp_id = idx as u16;
+            let center = convert_point(comp.x, comp.y, scale);
+
+            // Collect pads belonging to this component
+            let fp_pads: Vec<Pad> = pads
+                .iter()
+                .filter(|p| p.component_id == comp_id)
+                .map(|p| convert_pad(p, comp, nets, layer_map, scale))
+                .collect();
+
+            // Collect drawings
+            let mut fp_drawings = Vec::new();
+            for t in tracks.iter().filter(|t| t.component_id == comp_id) {
+                if let Some(d) = convert_track_drawing(t, layer_map, scale) {
+                    fp_drawings.push(d);
+                }
+            }
+            for a in arcs.iter().filter(|a| a.component_id == comp_id) {
+                if let Some(d) = convert_arc_drawing(a, layer_map, scale) {
+                    fp_drawings.push(d);
+                }
+            }
+            for f in fills.iter().filter(|f| f.component_id == comp_id) {
+                if let Some(d) = convert_fill_drawing(f, layer_map, scale) {
+                    fp_drawings.push(d);
+                }
+            }
+            for txt in texts.iter().filter(|t| t.component_id == comp_id) {
+                if let Some(d) = convert_text_drawing(txt, comp, layer_map, scale) {
+                    fp_drawings.push(d);
+                }
+            }
+
+            let side = layer_map.side(comp.layer);
+
+            Footprint {
+                ref_: comp.designator.clone(),
+                center,
+                bbox: FootprintBBox::from_pads(&fp_pads, center, comp.rotation),
+                pads: fp_pads,
+                drawings: fp_drawings,
+                layer: side.to_string(),
+            }
+        })
+        .collect()
+}
+
+fn convert_pad(
+    pad: &records::AltiumPad,
+    _comp: &records::AltiumComponent,
+    nets: &[records::AltiumNet],
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> Pad {
+    let pos = convert_point(pad.x, pad.y, scale);
+    let size_x = altium_to_mm(pad.size_x, scale);
+    let size_y = altium_to_mm(pad.size_y, scale);
+
+    let (shape, polygons) = match pad.shape {
+        1 => ("circle", None),
+        2 => ("rect", None),
+        3 => {
+            // Octagonal pad — generate 8-vertex polygon
+            let sx = size_x / 2.0;
+            let sy = size_y / 2.0;
+            let chamfer = sx.min(sy) * 0.3; // ~30% chamfer for octagon
+            let verts = vec![
+                [sx, sy - chamfer],
+                [sx - chamfer, sy],
+                [-(sx - chamfer), sy],
+                [-sx, sy - chamfer],
+                [-sx, -(sy - chamfer)],
+                [-(sx - chamfer), -sy],
+                [sx - chamfer, -sy],
+                [sx, -(sy - chamfer)],
+            ];
+            ("custom", Some(vec![verts]))
+        }
+        9 => ("roundrect", None),
+        _ => ("rect", None),
+    };
+
+    let is_th = pad.hole_size > 0;
+    let pad_type = if is_th { "th" } else { "smd" };
+
+    let layers = if pad.layer == 74 || is_th {
+        vec!["F".to_string(), "B".to_string()]
+    } else {
+        vec![layer_map.side(pad.layer).to_string()]
+    };
+
+    let net = nets
+        .get(pad.net_id as usize)
+        .map(|n| n.name.clone())
+        .filter(|n| !n.is_empty());
+
+    let pin1 = if pad.name == "1" || pad.name == "A1" {
+        Some(1u8)
+    } else {
+        None
+    };
+
+    let (drillshape, drillsize) = if is_th {
+        let d = altium_to_mm(pad.hole_size, scale);
+        (Some("circle".to_string()), Some([d, d]))
+    } else {
+        (None, None)
+    };
+
+    let angle = if pad.rotation != 0.0 {
+        Some(pad.rotation)
+    } else {
+        None
+    };
+
+    Pad {
+        layers,
+        pos,
+        size: [size_x, size_y],
+        shape: shape.to_string(),
+        pad_type: pad_type.to_string(),
+        angle,
+        pin1,
+        net,
+        offset: None,
+        radius: None,
+        chamfpos: None,
+        chamfratio: None,
+        drillshape,
+        drillsize,
+        svgpath: None,
+        polygons,
+    }
+}
+
+fn convert_track_drawing(
+    track: &records::AltiumTrack,
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> Option<FootprintDrawing> {
+    let cat = layer_map.category(track.layer);
+    let side = match cat {
+        layers::LayerCategory::SilkF | layers::LayerCategory::FabF => "F",
+        layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
+        _ => return None,
+    };
+    let start = convert_point(track.start_x, track.start_y, scale);
+    let end = convert_point(track.end_x, track.end_y, scale);
+    let width = altium_to_mm(track.width, scale);
+    Some(FootprintDrawing {
+        layer: side.to_string(),
+        drawing: FootprintDrawingItem::Shape(Drawing::Segment { start, end, width }),
+    })
+}
+
+fn convert_arc_drawing(
+    arc: &records::AltiumArc,
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> Option<FootprintDrawing> {
+    let cat = layer_map.category(arc.layer);
+    let side = match cat {
+        layers::LayerCategory::SilkF | layers::LayerCategory::FabF => "F",
+        layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
+        _ => return None,
+    };
+    let center = convert_point(arc.center_x, arc.center_y, scale);
+    let radius = altium_to_mm(arc.radius, scale);
+    let width = altium_to_mm(arc.width, scale);
+    Some(FootprintDrawing {
+        layer: side.to_string(),
+        drawing: FootprintDrawingItem::Shape(Drawing::Arc {
+            start: center,
+            radius,
+            startangle: -arc.end_angle,
+            endangle: -arc.start_angle,
+            width,
+        }),
+    })
+}
+
+fn convert_fill_drawing(
+    fill: &records::AltiumFill,
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> Option<FootprintDrawing> {
+    let cat = layer_map.category(fill.layer);
+    let side = match cat {
+        layers::LayerCategory::SilkF | layers::LayerCategory::FabF => "F",
+        layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
+        _ => return None,
+    };
+    let start = convert_point(fill.x1, fill.y1, scale);
+    let end = convert_point(fill.x2, fill.y2, scale);
+    Some(FootprintDrawing {
+        layer: side.to_string(),
+        drawing: FootprintDrawingItem::Shape(Drawing::Rect {
+            start,
+            end,
+            width: 0.0,
+        }),
+    })
+}
+
+fn convert_text_drawing(
+    txt: &records::AltiumText,
+    comp: &records::AltiumComponent,
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> Option<FootprintDrawing> {
+    let cat = layer_map.category(txt.layer);
+    let side = match cat {
+        layers::LayerCategory::SilkF | layers::LayerCategory::FabF => "F",
+        layers::LayerCategory::SilkB | layers::LayerCategory::FabB => "B",
+        _ => return None,
+    };
+    let pos = convert_point(txt.x, txt.y, scale);
+    let height = altium_to_mm(txt.height, scale);
+
+    let text_content = if txt.is_designator {
+        comp.designator.clone()
+    } else if txt.is_comment {
+        comp.comment.clone()
+    } else {
+        txt.text.clone()
+    };
+
+    let is_ref = if txt.is_designator { Some(1u8) } else { None };
+    let val = if txt.is_comment { Some(1u8) } else { None };
+    let angle = if txt.rotation != 0.0 {
+        Some(txt.rotation)
+    } else {
+        None
+    };
+
+    Some(FootprintDrawing {
+        layer: side.to_string(),
+        drawing: FootprintDrawingItem::Text(TextDrawing {
+            svgpath: None,
+            thickness: None,
+            is_ref,
+            val,
+            pos: Some(pos),
+            text: Some(text_content),
+            height: Some(height),
+            width: None,
+            justify: None,
+            angle,
+            attr: None,
+        }),
+    })
+}
+
+// ─── Board-level drawings ────────────────────────────────────────────
+
+fn categorize_drawings(
+    tracks: &[records::AltiumTrack],
+    arcs: &[records::AltiumArc],
+    fills: &[records::AltiumFill],
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> Drawings {
+    let mut silk_f = Vec::new();
+    let mut silk_b = Vec::new();
+    let mut fab_f = Vec::new();
+    let mut fab_b = Vec::new();
+
+    // Free tracks (component_id == 0xFFFF)
+    for t in tracks.iter().filter(|t| t.component_id == 0xFFFF) {
+        let start = convert_point(t.start_x, t.start_y, scale);
+        let end = convert_point(t.end_x, t.end_y, scale);
+        let width = altium_to_mm(t.width, scale);
+        let drawing = Drawing::Segment { start, end, width };
+        match layer_map.category(t.layer) {
+            layers::LayerCategory::SilkF => silk_f.push(drawing),
+            layers::LayerCategory::SilkB => silk_b.push(drawing),
+            layers::LayerCategory::FabF => fab_f.push(drawing),
+            layers::LayerCategory::FabB => fab_b.push(drawing),
+            _ => {}
+        }
+    }
+
+    for a in arcs.iter().filter(|a| a.component_id == 0xFFFF) {
+        let center = convert_point(a.center_x, a.center_y, scale);
+        let radius = altium_to_mm(a.radius, scale);
+        let width = altium_to_mm(a.width, scale);
+        let drawing = Drawing::Arc {
+            start: center,
+            radius,
+            startangle: -a.end_angle,
+            endangle: -a.start_angle,
+            width,
+        };
+        match layer_map.category(a.layer) {
+            layers::LayerCategory::SilkF => silk_f.push(drawing),
+            layers::LayerCategory::SilkB => silk_b.push(drawing),
+            layers::LayerCategory::FabF => fab_f.push(drawing),
+            layers::LayerCategory::FabB => fab_b.push(drawing),
+            _ => {}
+        }
+    }
+
+    for f in fills.iter().filter(|f| f.component_id == 0xFFFF) {
+        let start = convert_point(f.x1, f.y1, scale);
+        let end = convert_point(f.x2, f.y2, scale);
+        let drawing = Drawing::Rect {
+            start,
+            end,
+            width: 0.0,
+        };
+        match layer_map.category(f.layer) {
+            layers::LayerCategory::SilkF => silk_f.push(drawing),
+            layers::LayerCategory::SilkB => silk_b.push(drawing),
+            layers::LayerCategory::FabF => fab_f.push(drawing),
+            layers::LayerCategory::FabB => fab_b.push(drawing),
+            _ => {}
+        }
+    }
+
+    Drawings {
+        silkscreen: LayerData {
+            front: silk_f,
+            back: silk_b,
+            inner: HashMap::new(),
+        },
+        fabrication: LayerData {
+            front: fab_f,
+            back: fab_b,
+            inner: HashMap::new(),
+        },
+    }
+}
+
+// ─── Track data ──────────────────────────────────────────────────────
+
+fn build_track_data(
+    tracks: &[records::AltiumTrack],
+    arcs: &[records::AltiumArc],
+    vias: &[records::AltiumVia],
+    nets: &[records::AltiumNet],
+    layer_map: &layers::LayerMap,
+    scale: f64,
+) -> LayerData<Vec<Track>> {
+    let mut front = Vec::new();
+    let mut back = Vec::new();
+    let mut inner: HashMap<String, Vec<Track>> = HashMap::new();
+
+    for t in tracks.iter().filter(|t| t.component_id == 0xFFFF) {
+        let start = convert_point(t.start_x, t.start_y, scale);
+        let end = convert_point(t.end_x, t.end_y, scale);
+        let width = altium_to_mm(t.width, scale);
+        let net = nets
+            .get(t.net_id as usize)
+            .map(|n| n.name.clone())
+            .filter(|n| !n.is_empty());
+        let track = Track::Segment {
+            start,
+            end,
+            width,
+            net,
+            drillsize: None,
+        };
+        match layer_map.category(t.layer) {
+            layers::LayerCategory::CopperF => front.push(track),
+            layers::LayerCategory::CopperB => back.push(track),
+            layers::LayerCategory::CopperInner => {
+                inner
+                    .entry(layer_map.inner_layer_name(t.layer))
+                    .or_default()
+                    .push(track);
+            }
+            _ => {}
+        }
+    }
+
+    for a in arcs.iter().filter(|a| a.component_id == 0xFFFF) {
+        let center = convert_point(a.center_x, a.center_y, scale);
+        let radius = altium_to_mm(a.radius, scale);
+        let width = altium_to_mm(a.width, scale);
+        let net = nets
+            .get(a.net_id as usize)
+            .map(|n| n.name.clone())
+            .filter(|n| !n.is_empty());
+        let track = Track::Arc {
+            center,
+            startangle: -a.end_angle,
+            endangle: -a.start_angle,
+            radius,
+            width,
+            net,
+        };
+        match layer_map.category(a.layer) {
+            layers::LayerCategory::CopperF => front.push(track),
+            layers::LayerCategory::CopperB => back.push(track),
+            layers::LayerCategory::CopperInner => {
+                inner
+                    .entry(layer_map.inner_layer_name(a.layer))
+                    .or_default()
+                    .push(track);
+            }
+            _ => {}
+        }
+    }
+
+    for v in vias {
+        let pos = convert_point(v.x, v.y, scale);
+        let size = altium_to_mm(v.diameter, scale);
+        let drill = altium_to_mm(v.hole_size, scale);
+        let net = nets
+            .get(v.net_id as usize)
+            .map(|n| n.name.clone())
+            .filter(|n| !n.is_empty());
+        let via = Track::Segment {
+            start: pos,
+            end: pos,
+            width: size,
+            net: net.clone(),
+            drillsize: Some(drill),
+        };
+        front.push(via.clone());
+        back.push(via.clone());
+        for layer_tracks in inner.values_mut() {
+            layer_tracks.push(via.clone());
+        }
+    }
+
+    LayerData { front, back, inner }
+}
+
+// ─── Metadata ────────────────────────────────────────────────────────
+
+fn extract_metadata(board_records: &[HashMap<String, String>]) -> Metadata {
+    let board = board_records.first();
+    Metadata {
+        title: board
+            .and_then(|b| b.get("DESIGNNAME"))
+            .cloned()
+            .unwrap_or_default(),
+        revision: String::new(),
+        company: String::new(),
+        date: String::new(),
+    }
+}

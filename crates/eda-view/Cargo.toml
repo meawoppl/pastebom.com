@@ -1,0 +1,144 @@
+[package]
+name = "eda-view"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "EDA file parsing and vector rendering: KiCad schematics, PCB and Gerber parsers, a reified 2D scene with SVG/Canvas renderers, and Yew/wasm viewer components, each behind a feature"
+repository = "https://github.com/meawoppl/pastebom.com"
+readme = "README.md"
+keywords = ["kicad", "schematic", "pcb", "gerber", "viewer"]
+categories = ["parser-implementations", "visualization", "wasm", "gui"]
+include = ["src/**", "docs/**", "README.md", "LICENSE*", "NOTICE.md"]
+
+[dependencies]
+anyhow = { version = "1", optional = true }
+cfb = { version = "0.14", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+env_logger = { version = "0.11", optional = true }
+flate2 = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+postcard = { version = "1", features = ["alloc"], optional = true }
+roxmltree = { version = "0.20", optional = true }
+serde_json = { workspace = true, optional = true }
+tar = { version = "0.4.44", optional = true }
+thiserror = { version = "2", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+gloo-events = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde = { workspace = true, features = ["derive"] }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3.106", features = ["CanvasRenderingContext2d", "CanvasWindingRule", "Document", "Element", "HtmlCanvasElement", "Node", "Path2d"], optional = true }
+yew = { version = "0.23", features = ["csr"], optional = true }
+serde-wasm-bindgen = { version = "0.6.5", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+
+[features]
+default = []
+kicad = ["dep:anyhow"]
+strokes = []
+schematic = ["kicad", "strokes", "dep:thiserror"]
+pcb = ["dep:roxmltree", "dep:cfb", "dep:zip", "dep:flate2", "dep:tar", "dep:postcard", "dep:thiserror", "dep:log", "dep:serde_json"]
+cli = ["pcb", "dep:clap", "dep:env_logger"]
+# Embeddable Gerber viewer with a wasm-bindgen JS API (`gerber_view`).
+gerber-view = [
+    "pcb",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:serde-wasm-bindgen",
+    "dep:web-sys",
+    "web-sys?/AddEventListenerOptions",
+    "web-sys?/Blob",
+    "web-sys?/CanvasRenderingContext2d",
+    "web-sys?/CanvasWindingRule",
+    "web-sys?/CssStyleDeclaration",
+    "web-sys?/Document",
+    "web-sys?/DomRect",
+    "web-sys?/Element",
+    "web-sys?/Event",
+    "web-sys?/EventTarget",
+    "web-sys?/File",
+    "web-sys?/FileList",
+    "web-sys?/HtmlCanvasElement",
+    "web-sys?/HtmlElement",
+    "web-sys?/HtmlInputElement",
+    "web-sys?/MouseEvent",
+    "web-sys?/Node",
+    "web-sys?/Path2d",
+    "web-sys?/PointerEvent",
+    "web-sys?/Response",
+    "web-sys?/WheelEvent",
+    "web-sys?/Window",
+    "web-sys?/console",
+]
+# Canvas2D scene renderer (`vector::render`).
+canvas = ["dep:web-sys", "dep:wasm-bindgen"]
+# Yew components (`components`): scene canvas, search, schematic viewer.
+yew = [
+    "canvas",
+    "dep:yew",
+    "dep:gloo-events",
+    "dep:js-sys",
+    "web-sys?/DomRect",
+    "web-sys?/HtmlInputElement",
+    "web-sys?/HtmlSelectElement",
+    "web-sys?/PointerEvent",
+    "web-sys?/ResizeObserver",
+    "web-sys?/WheelEvent",
+    "web-sys?/Window",
+]
+
+[dev-dependencies]
+serde_json.workspace = true
+
+sha2.workspace = true
+approx = "0.5.1"
+
+[[bin]]
+name = "pcb-extract"
+path = "src/bin/pcb_extract.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "pcb_gdsii_corpus"
+required-features = ["pcb"]
+
+[[test]]
+name = "schematic_corpus"
+required-features = ["schematic"]
+
+[[test]]
+name = "schematic_discovery"
+required-features = ["schematic"]
+
+[[test]]
+name = "schematic_project"
+required-features = ["schematic"]
+
+[[test]]
+name = "schematic_symbols"
+required-features = ["schematic"]
+
+[[test]]
+name = "strokes_glyphs"
+required-features = ["strokes"]
+
+[[test]]
+name = "strokes_kicad_compare"
+required-features = ["strokes"]
+
+[[test]]
+name = "strokes_layout"
+required-features = ["strokes"]
+
+[[example]]
+name = "schematic_golden_scenes"
+required-features = ["schematic"]
+
+[[example]]
+name = "schematic_render"
+required-features = ["schematic"]
+
+[[example]]
+name = "strokes_gen_glyphs"
+required-features = ["strokes"]

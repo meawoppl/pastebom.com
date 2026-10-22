@@ -44,6 +44,23 @@ jobs:
 
       - run: cargo clippy -p sch-viewer --target wasm32-unknown-unknown -- -D warnings
 
+      - run: cargo clippy -p eda-view --features schematic,pcb,cli -- -D warnings
+
+      - name: eda-view wasm feature sets
+        run: |
+          for features in "" canvas yew gerber-view yew,gerber-view; do
+            cargo clippy -p eda-view --no-default-features --features "$features" --target wasm32-unknown-unknown -- -D warnings
+          done
+
+      - name: Frontend features never pull in the schematic parser or font
+        run: |
+          for pkg in sch-viewer gerber-view; do
+            if cargo tree -p "$pkg" -e features --target wasm32-unknown-unknown \
+                | grep -E 'eda-view feature "(kicad|strokes|schematic)"'; then
+              echo "$pkg links parser/font code into wasm" && exit 1
+            fi
+          done
+
       - run: cargo clippy -p gerber-view --target wasm32-unknown-unknown -- -D warnings
 
   gerber-view:
@@ -90,6 +107,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo test --workspace --exclude pastebom-viewer --exclude gds-viewer --exclude sch-viewer
+
+      - run: cargo test -p eda-view --features yew,schematic,pcb,cli
 
   container:
     name: Container Build

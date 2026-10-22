@@ -1,5 +1,5 @@
 use crate::s3::S3Client;
-use pcb_extract::ExtractOptions;
+use eda_view::pcb::ExtractOptions;
 use std::io::Write;
 use std::path::Path;
 
@@ -30,7 +30,7 @@ struct VersionProbe {
     #[serde(default)]
     parser_version: Option<String>,
     #[serde(default)]
-    format: Option<pcb_extract::PcbFormat>,
+    format: Option<eda_view::pcb::PcbFormat>,
 }
 
 /// True when reparse is switched off via `SKIP_REPARSE` or `DISABLE_REPARSE`.
@@ -176,7 +176,7 @@ async fn check_and_reparse(
     };
 
     // Skip formats no longer supported on the site
-    if probe.format == Some(pcb_extract::PcbFormat::Gdsii) {
+    if probe.format == Some(eda_view::pcb::PcbFormat::Gdsii) {
         return ReparseResult::Skipped("unsupported format (gdsii)".into());
     }
 
@@ -237,7 +237,7 @@ async fn check_and_reparse(
 
     // Detect format and re-parse
     let path = Path::new(&filename);
-    let format = match pcb_extract::detect_format_with_content(path, &upload_data) {
+    let format = match eda_view::pcb::detect_format_with_content(path, &upload_data) {
         Some(f) => f,
         None => return ReparseResult::Skipped("could not detect format".into()),
     };
@@ -247,7 +247,7 @@ async fn check_and_reparse(
             include_tracks: true,
             include_nets: true,
         };
-        pcb_extract::extract_bytes(&upload_data, format, &opts)
+        eda_view::pcb::extract_bytes(&upload_data, format, &opts)
     })
     .await
     {

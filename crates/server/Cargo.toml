@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-pcb-extract = { path = "../pcb-extract" }
+eda-view = { workspace = true, features = ["pcb", "schematic"] }
 axum = { version = "0.8", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
@@ -25,4 +25,3 @@ flate2 = { workspace = true }
 mime_guess = "2.0.5"
 sha1 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-schematic-extract = { version = "1.10.0", path = "../schematic-extract" }

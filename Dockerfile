@@ -22,31 +22,26 @@ WORKDIR /build
 # Cache dependencies by copying manifests first
 COPY Cargo.toml Cargo.toml
 COPY Cargo.lock Cargo.lock
-COPY crates/pcb-extract/Cargo.toml crates/pcb-extract/Cargo.toml
+COPY crates/eda-view/Cargo.toml crates/eda-view/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/viewer/Cargo.toml crates/viewer/Cargo.toml
 COPY crates/gds-viewer/Cargo.toml crates/gds-viewer/Cargo.toml
 COPY crates/gerber-view/Cargo.toml crates/gerber-view/Cargo.toml
-COPY crates/vector-view/Cargo.toml crates/vector-view/Cargo.toml
-COPY crates/kicad-schema/Cargo.toml crates/kicad-schema/Cargo.toml
-COPY crates/kicad-strokes/Cargo.toml crates/kicad-strokes/Cargo.toml
-COPY crates/schematic-extract/Cargo.toml crates/schematic-extract/Cargo.toml
 COPY crates/sch-viewer/Cargo.toml crates/sch-viewer/Cargo.toml
+# eda-view declares its tests and examples explicitly, so their files must exist
+COPY crates/eda-view/tests crates/eda-view/tests
+COPY crates/eda-view/examples crates/eda-view/examples
 
 # Create dummy source files for dependency caching
-RUN mkdir -p crates/pcb-extract/src crates/server/src crates/server/static crates/viewer/src crates/gds-viewer/src crates/gerber-view/src \
-        crates/vector-view/src crates/kicad-schema/src crates/kicad-strokes/src crates/schematic-extract/src crates/sch-viewer/src \
-    && echo "pub fn main() {}" > crates/pcb-extract/src/main.rs \
-    && echo "pub fn lib() {}" > crates/pcb-extract/src/lib.rs \
+RUN mkdir -p crates/eda-view/src/bin crates/server/src crates/server/static crates/viewer/src crates/gds-viewer/src \
+        crates/gerber-view/src crates/sch-viewer/src \
+    && echo "pub fn lib() {}" > crates/eda-view/src/lib.rs \
+    && echo "fn main() {}" > crates/eda-view/src/bin/pcb_extract.rs \
     && echo "fn main() {}" > crates/server/src/main.rs \
     && echo "<html></html>" > crates/server/static/index.html \
     && echo "fn main() {}" > crates/viewer/src/main.rs \
     && echo "fn main() {}" > crates/gds-viewer/src/main.rs \
     && echo "pub fn lib() {}" > crates/gerber-view/src/lib.rs \
-    && echo "pub fn lib() {}" > crates/vector-view/src/lib.rs \
-    && echo "pub fn lib() {}" > crates/kicad-schema/src/lib.rs \
-    && echo "pub fn lib() {}" > crates/kicad-strokes/src/lib.rs \
-    && echo "pub fn lib() {}" > crates/schematic-extract/src/lib.rs \
     && echo "fn main() {}" > crates/sch-viewer/src/main.rs
 
 # Build dependencies only (cached layer)
@@ -56,20 +51,17 @@ RUN cargo build --release --locked 2>/dev/null || true
 COPY crates/ crates/
 
 # Touch source files to invalidate cache
-RUN touch crates/pcb-extract/src/main.rs \
-    crates/pcb-extract/src/lib.rs \
+RUN touch crates/eda-view/src/lib.rs \
+    crates/eda-view/src/bin/pcb_extract.rs \
     crates/server/src/main.rs \
     crates/viewer/src/main.rs \
     crates/gds-viewer/src/main.rs \
     crates/gerber-view/src/lib.rs \
-    crates/vector-view/src/lib.rs \
-    crates/kicad-schema/src/lib.rs \
-    crates/kicad-strokes/src/lib.rs \
-    crates/schematic-extract/src/lib.rs \
     crates/sch-viewer/src/main.rs
 
-# Build release binaries
-RUN cargo build --release --locked
+# Build release binaries (the pcb-extract CLI is eda-view's `cli` feature)
+RUN cargo build --release --locked \
+    && cargo build --release --locked -p eda-view --features cli --bin pcb-extract
 
 # Build viewer WASM
 RUN cd crates/viewer && trunk build --release

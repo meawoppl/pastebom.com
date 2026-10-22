@@ -21,8 +21,9 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "crates/pcb-extract/src/parsers/gdsii/**"
-      - "crates/pcb-extract/tests/gdsii_corpus.*"
+      - "crates/eda-view/src/pcb/parsers/gdsii/**"
+      - "crates/eda-view/tests/pcb_gdsii_corpus.rs"
+      - "crates/eda-view/tests/fixtures/pcb/gdsii_corpus.json"
       - "scripts/fetch-gds-corpus.sh"
       - ".github/workflows/gds-corpus.yml"
 
@@ -50,7 +51,7 @@ jobs:
         with:
           path: gds-corpus-files
           # Re-download only when the catalog changes (or tier differs).
-          key: gds-corpus-${{ env.TIER }}-${{ hashFiles('crates/pcb-extract/tests/gdsii_corpus.json') }}
+          key: gds-corpus-${{ env.TIER }}-${{ hashFiles('crates/eda-view/tests/fixtures/pcb/gdsii_corpus.json') }}
           restore-keys: |
             gds-corpus-${{ env.TIER }}-
 
@@ -63,4 +64,4 @@ jobs:
         env:
           GDS_CORPUS_DIR: ${{ github.workspace }}/gds-corpus-files
           GDS_CORPUS_TIER: ${{ env.TIER }}
-        run: cargo test -p pcb-extract --test gdsii_corpus -- --ignored --nocapture
+        run: cargo test -p eda-view --features pcb --test pcb_gdsii_corpus -- --ignored --nocapture

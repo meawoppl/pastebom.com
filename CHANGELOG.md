@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.12.0
+
+- Consolidate the reusable libraries into one crate, `eda-view` 0.1.0, with a feature per part and nothing on by default: `vector` scene + SVG (always), `canvas`, `yew`, `kicad`, `strokes`, `schematic`, `pcb` (formerly `pcb-extract`), `gerber-view` and `cli` (the `pcb-extract` binary). It replaces `vector-view`, `kicad-schema`, `kicad-strokes`, `schematic-extract` and `pcb-extract`. Frontend features never compile parser or font code (checked in CI)
+- `crates/gerber-view` is now a thin wasm-pack wrapper over `eda_view::gerber_view`; the JS package API is unchanged
+- Add Yew 0.23 components shared with kicadmium (`eda_view::components`): `VectorSceneCanvas`, component/net search, and a host-agnostic `SchematicView` (sheet navigation, search with sheet jump, layer toggles, net highlight, warnings, cross-probe and camera callbacks)
+- Rebuild the schematic page on `SchematicView`; selection, `?ref=` and the PCB link stay in sync across sheet changes and search
+- `eda_view::schematic`: overridable palette and frame label, symbol scenes for library previews, typed `eda_view::vector::schematic` accessors, power-net naming from hidden power pins, filenames in parse errors
+- `eda_view::schematic`: an escaping or self-referencing child sheet, or an unrelated invalid file-map key, is skipped with a warning instead of failing the project
+- Move the PCB and GDSII viewers to Yew 0.23
+
 ## 1.11.0
 
 - Add KiCad schematic uploads and project ZIPs with an interactive schematic viewer, hierarchical sheet navigation, layer controls, and SVG export

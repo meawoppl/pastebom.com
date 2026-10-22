@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use pcb_extract::ExtractOptions;
+use eda_view::pcb::ExtractOptions;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -48,8 +48,8 @@ impl std::fmt::Display for ParseError {
 pub async fn parse_pcb_guarded(
     state: &AppState,
     data: Vec<u8>,
-    format: pcb_extract::PcbFormat,
-) -> Result<pcb_extract::types::PcbData, ParseError> {
+    format: eda_view::pcb::PcbFormat,
+) -> Result<eda_view::pcb::types::PcbData, ParseError> {
     let _permit = tokio::time::timeout(SEMAPHORE_TIMEOUT, state.parse_semaphore.acquire())
         .await
         .map_err(|_| ParseError::Busy)?
@@ -59,7 +59,7 @@ pub async fn parse_pcb_guarded(
             include_tracks: true,
             include_nets: true,
         };
-        pcb_extract::extract_bytes(&data, format, &opts)
+        eda_view::pcb::extract_bytes(&data, format, &opts)
     });
     // Bound parse wall-clock time so a pathological file can't hold the permit
     // indefinitely. On timeout the permit is released here; the blocking task
@@ -361,7 +361,7 @@ async fn upload(
     }
 
     let path = std::path::Path::new(&filename);
-    let format = pcb_extract::detect_format_with_content(path, &data)
+    let format = eda_view::pcb::detect_format_with_content(path, &data)
         .ok_or_else(|| error_response(StatusCode::BAD_REQUEST, "Unsupported file format"))?;
 
     let file_size = data.len();
@@ -464,7 +464,7 @@ async fn upload_project(
     let mut components = 0;
     let has_pcb = match project.pcb() {
         Some((name, data)) => {
-            let pcb = parse_pcb_guarded(state, data.to_vec(), pcb_extract::PcbFormat::KiCad)
+            let pcb = parse_pcb_guarded(state, data.to_vec(), eda_view::pcb::PcbFormat::KiCad)
                 .await
                 .map_err(|e| {
                     tracing::error!("Parse error for {name} in {upload_name}: {e}");
@@ -686,7 +686,7 @@ pub async fn load_thumbnail(
             .map_err(|_| (StatusCode::NOT_FOUND, "BOM not found"));
     };
 
-    let pcb_data: pcb_extract::types::PcbData =
+    let pcb_data: eda_view::pcb::types::PcbData =
         serde_json::from_slice(&json_bytes).map_err(|_| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -694,7 +694,7 @@ pub async fn load_thumbnail(
             )
         })?;
 
-    let svg = tokio::task::spawn_blocking(move || pcb_extract::thumbnail::render_svg(&pcb_data))
+    let svg = tokio::task::spawn_blocking(move || eda_view::pcb::thumbnail::render_svg(&pcb_data))
         .await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Render failed"))?;
     let svg_bytes = svg.into_bytes();

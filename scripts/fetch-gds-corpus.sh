@@ -8,13 +8,13 @@
 # tier: smoke (default) | standard | stress | all
 #
 # Then run the harness:
-#   GDS_CORPUS_DIR=/tmp/gds cargo test -p pcb-extract --test gdsii_corpus -- --ignored --nocapture
+#   GDS_CORPUS_DIR=/tmp/gds cargo test -p eda-view --features pcb --test pcb_gdsii_corpus -- --ignored --nocapture
 #
 set -euo pipefail
 
 TIER="${1:-smoke}"
 DIR="${GDS_CORPUS_DIR:?set GDS_CORPUS_DIR to a download directory}"
-CORPUS="$(cd "$(dirname "$0")/.." && pwd)/crates/pcb-extract/tests/gdsii_corpus.json"
+CORPUS="$(cd "$(dirname "$0")/.." && pwd)/crates/eda-view/tests/fixtures/pcb/gdsii_corpus.json"
 
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
